@@ -1,7 +1,7 @@
 # transposition table: fixed size, allocated with the program
 #
 # the table is a statically sized array so the engine allocates nothing at
-# run time. 2^21 slots of 16 bytes is 32 MB, and because the size never
+# run time. 2^23 slots of 16 bytes is 128 MB, and because the size never
 # changes it is one less thing that can fail mid-search. The UCI Hash option
 # is therefore reported but not honoured.
 #
@@ -22,9 +22,9 @@ pub val LOWER: u8 = 1;
 # the score is an upper bound: no move beat alpha
 pub val UPPER: u8 = 2;
 
-pub val ENTRIES: i64 = 2097152;
+pub val ENTRIES: i64 = 8388608;
 # what the UCI Hash option reports: 2^21 slots of 16 bytes, a fixed size
-pub val MEGABYTES: i64 = 32;
+pub val MEGABYTES: i64 = 128;
 
 pub rec Entry {
     key:   u64;
@@ -44,7 +44,7 @@ rec Slot {
     data:  u64;
 }
 
-var TABLE: [2097152]Slot;
+var TABLE: [8388608]Slot;
 
 # move in the low 32 bits, then score (16, biased), depth (8) and flag (2)
 fun pack(move: Move, score: i64, depth: i64, flag: u8) u64 {

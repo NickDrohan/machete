@@ -150,13 +150,13 @@ That validation run is also how a bug in it was found. The first version accepte
 10 Elo" after a single game: with no losses yet, the variance estimate collapses and the
 likelihood ratio explodes. It now reports no evidence until both a win and a loss exist.
 
-### A pruning campaign that mostly failed
+### The pruning campaign, and the test that was measuring the wrong thing
 
 The engine was searching about ten times the nodes Stockfish did and reaching four plies less.
-That is the effective branching factor - the ratio of nodes between consecutive depths - which
-was about 2.4 here against roughly 1.5 for a strong engine.
+That is the effective branching factor - the ratio of nodes between consecutive depths - which was
+about 2.4 here against roughly 1.5 for a strong engine.
 
-Six changes were tried. Measured on Kiwipete, single thread, to depth 12, they worked:
+Six changes attacked it. Measured on Kiwipete, single thread, to depth 12:
 
 | stack | nodes to depth 12 | time |
 | --- | --- | --- |
@@ -167,37 +167,30 @@ Six changes were tried. Measured on Kiwipete, single thread, to depth 12, they w
 | + reverse futility to depth 8, internal iterative reduction | 807,300 | 1740 ms |
 | + 128 MB table, delta pruning in quiescence | 645,156 | 1499 ms |
 
-5.3x fewer nodes, 4.7x less time, and with 24 threads the depth reached in three seconds went
-from 11 to 15. Then the games were played, and almost none of it survived:
+5.6x fewer nodes, and with 24 threads the depth reached in three seconds went from 11 to 15.
+Then the games were played, at 40ms a move, and said the whole thing was worse:
 
-| configuration | Elo against the engine it replaced |
-| --- | --- |
-| reduction table alone | **+12 +/- 23** (900 games) |
-| + aggressive LMP, history, null move | -53 +/- 40 |
-| everything (40ms a move) | -34 +/- 34 |
-| everything, softened (40ms) | -21 +/- 26 (700 games) |
-| everything (300ms a move) | +10 +/- 48 |
+| configuration | 40ms a move | 300ms a move |
+| --- | --- | --- |
+| reduction table alone | +12 +/- 23 (900 games) | - |
+| + aggressive LMP, history, null | -53 +/- 40 | - |
+| everything | -34 +/- 34 | +10 +/- 48 |
+| everything, softened | -21 +/- 26 (700 games) | **+76 +/- 35 (400 games)** |
 
-**Only the reduction table is in the engine.** Everything below the first row was reverted.
+The bottom right cell is the one that matters, and it arrived last. **The same code is -21 Elo at
+40ms a move and +76 at 300ms.** Aggressive pruning trades accuracy for depth, and depth only pays
+when there is time to reach it: at 40ms the engine never gets deep enough to spend what the
+pruning bought. Every earlier test ran at 40ms because it was cheap, which measured the wrong
+regime and came within one commit of throwing the work away.
 
-Three things worth keeping from that:
+The softened configuration is what ships. Two of the six changes were bugs rather than bad ideas,
+and finding them moved the same stack about 60 Elo: internal iterative reduction was firing in
+principal variation nodes, dropping a ply exactly where the move gets chosen, and late move
+pruning was cutting after seven quiet moves at depth 2.
 
-**A 300-game match cannot resolve a 30 Elo change.** The softened stack measured +29 +/- 40 over
-300 games and -21 +/- 26 over 700. The first number was noise, and it had already been written up
-as a success before the second arrived.
-
-**Two of the changes were bugs rather than bad ideas.** Internal iterative reduction was firing in
-principal variation nodes, dropping a ply exactly where the move gets chosen; late move pruning
-was pruning after seven quiet moves at depth 2. Fixing both moved the same stack by about 60 Elo.
-
-**The time control decides the answer.** The full stack is -34 at 40ms a move and +10 at 300ms.
-Aggressive pruning trades accuracy for depth, and depth only pays when there is time to reach it.
-Testing a deep-search change at the fastest control available measured the wrong regime.
-
-The honest reading of the whole table is that depth is not the binding constraint. The evaluation
-is material, piece-square tables, the bishop pair and three pawn terms: no mobility, no king
-safety, no rook placement. Four more plies spent on distinctions the evaluation cannot make buys
-very little, which is what +12 +/- 23 for a 1.8x smaller tree looks like.
+One more lesson, cheaply bought: a 300-game match cannot resolve a 30 Elo change. The softened
+stack measured +29 +/- 40 over 300 games and -21 +/- 26 over 700 at the same control. The first
+number had already been written up as a success.
 
 ### Three changes the measurements rejected outright
 

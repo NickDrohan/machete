@@ -34,15 +34,15 @@ pub val MAX_PLY: i64 = 64;
 
 # How much to reduce the Nth quiet move at depth D.
 #
-# The old rule reduced by one, or two past the eighth move, which left an
-# effective branching factor above 2.3 where a strong engine's is nearer 1.5.
-# The shape here is the standard 0.75 + ln(depth) * ln(move) / 2.25: almost
-# nothing early, up to five plies deep in the move list. std has no natural
-# log, so the table is built once at startup with a bit-by-bit log2.
+# The old rule reduced by one, or two past the eighth move. That is far too
+# timid: it left an effective branching factor above 2.3, where the tree a
+# strong engine searches grows at about 1.5 per ply, and the difference is
+# what decides whether a second buys depth 10 or depth 16.
 #
-# This is the only one of six pruning changes that measured a gain over 900
-# games (+12 +/- 23 Elo). The others are recorded in README.md with what they
-# cost; nodes are not strength.
+# The shape is the standard one - 0.75 + ln(depth) * ln(move) / 2.25 - which
+# reduces almost nothing early and up to five plies for the fiftieth move at
+# depth 30. std has no natural log, so the table is built at startup with a
+# bit-by-bit log2, which costs microseconds once.
 var REDUCTION: [64][64]i64;
 var table_ready: i64 = 0;
 
@@ -83,7 +83,7 @@ pub fun init_tables() {
         var move: i64 = 0;
         for (move < 64) {
             var r: i64 = 0;
-            if (depth >= 3) {
+            if (depth >= 3 && move >= 1) {
                 r = (0.75 + ln_f64(depth::f64) * ln_f64((move + 1)::f64) / 2.25)::i64;
             }
             if (r < 0) { r = 0; }
@@ -141,6 +141,11 @@ pub rec Search {
     quiet:         u8;
     killers:       [64][2]Move;
     history:       [12][64]i64;
+    # the quiet move that refuted the same reply last time, indexed by the
+    # piece the opponent just moved and where it landed
+    counter:       [12][64]Move;
+    played:        [64]Move;
+    mover:         [64]u8;
     pv:            [64][64]Move;
     pv_len:        [64]i64;
 }
@@ -162,10 +167,43 @@ pub fun reset(s: *Search) {
         var sq: i64 = 0;
         for (sq < 64) {
             s.history[pc][sq] = 0;
+            s.counter[pc][sq] = mv.NONE;
             sq                = sq + 1;
         }
         pc = pc + 1;
     }
+    i = 0;
+    for (i < MAX_PLY) {
+        s.played[i] = mv.NONE;
+        s.mover[i]  = 0;
+        i           = i + 1;
+    }
+}
+
+# History with gravity: a cutoff raises a move's score and a quiet move that
+# failed lowers it, both scaled by depth, and each update pulls the value
+# towards zero in proportion to its size. That keeps the table bounded without
+# a hard cap and lets old information decay as new arrives.
+val HISTORY_MAX: i64 = 16384;
+
+fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
+    val piece: u8  = p.board[mv.from(m)];
+    val to:    i64 = mv.to(m);
+    var bonus: i64 = depth * depth;
+    if (bonus > 400)  { bonus = 400; }
+    if (!good)        { bonus = 0 - bonus; }
+    var magnitude: i64 = bonus;
+    if (magnitude < 0) { magnitude = 0 - magnitude; }
+    val current: i64 = s.history[piece][to];
+    s.history[piece][to] = current + bonus * 32 - current * magnitude / 512;
+}
+
+# the counter-move slot for whatever the opponent just played
+fun counter_slot(s: *Search, ply: i64) Move {
+    if (ply == 0)                 { ret mv.NONE; }
+    val prev: Move = s.played[ply - 1];
+    if (prev == mv.NONE)          { ret mv.NONE; }
+    ret s.counter[s.mover[ply - 1]][mv.to(prev)];
 }
 
 # set by any thread to end every search in flight; read on the same schedule
@@ -222,8 +260,9 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
         if (gain >= 0) { ret 800000000 + gain * 100 + capture_score(p, m); }
         ret 50000000 + gain;
     }
-    if (m == s.killers[ply][0]) { ret 700000000; }
-    if (m == s.killers[ply][1]) { ret 600000000; }
+    if (m == s.killers[ply][0])   { ret 700000000; }
+    if (m == s.killers[ply][1])   { ret 600000000; }
+    if (m == counter_slot(s, ply)) { ret 550000000; }
     ret s.history[p.board[mv.from(m)]][mv.to(m)];
 }
 
@@ -275,6 +314,14 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         if (mv.is_capture(m) && see.evaluate(p, m) < 0) {
             i = i + 1;
             cnt;
+        }
+        # delta pruning: even winning this piece outright would not reach alpha
+        if (!mv.is_promotion(m) && p.board[mv.to(m)] != pos.EMPTY) {
+            val gain: i64 = see.piece_value(pos.kind_of(p.board[mv.to(m)]));
+            if (stand + gain + 200 < alpha) {
+                i = i + 1;
+                cnt;
+            }
         }
         pos.make(p, m);
         if (pos.left_in_check(p)) {
@@ -329,17 +376,25 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # reverse futility: if the position is already so far above beta that a
     # whole piece of swing would not bring it back, take the score. the margin
     # grows with depth because there is more time for the position to change.
-    if (!is_pv && !in_check && depth <= 6) {
-        val margin: i64 = 110 * depth;
+    if (!is_pv && !in_check && depth <= 8) {
+        val margin: i64 = 85 * depth;
         val stand:  i64 = eval.evaluate(p);
         if (stand - margin >= beta && stand < MATE_FOUND) { ret stand - margin; }
     }
+
+    # internal iterative reduction, but never in a principal variation node:
+    # losing a ply where the move actually gets chosen is not worth the
+    # ordering it saves
+    if (tt_move == mv.NONE && depth >= 6 && !in_check && !is_pv) { depth = depth - 1; }
 
     # null-move pruning: if passing still leaves the opponent unable to reach
     # beta, this position is good enough to cut. skipped in check, in pawn-only
     # endgames (zugzwang), and when the previous move was already a pass.
     if (allow_null && !is_pv && !in_check && depth >= 3 && has_pieces(p, p.side)) {
-        val reduction: i64 = 2 + depth / 6;
+        # a deeper null search still refutes almost everything it used to, and
+        # the plies saved compound: 2 + depth/6 was costing about a ply of
+        # final depth against 3 + depth/3
+        val reduction: i64 = 3 + depth / 3;
         pos.make_null(p);
         val score: i64 = 0 - search_node(s, p, depth - 1 - reduction, 0 - beta, 1 - beta, ply + 1, false);
         pos.unmake_null(p);
@@ -360,6 +415,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var best_move: Move = mv.NONE;
     var legal:     i64  = 0;
     var flag:      u8   = tt.UPPER;
+    var quiets:    [64]Move;
+    var quiet_n:   i64 = 0;
 
     # futility: near the horizon, a quiet move that cannot lift a losing
     # position to alpha is not worth a node. captures, promotions and checks
@@ -381,15 +438,31 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             i = i + 1;
             cnt;
         }
-        # a quiet move that gives check is never futile: it can be mate. that
-        # is only knowable after the move, which is why this sits here rather
-        # than before make - pruning on the move alone lost a mate in two.
-        if (futile && legal > 0 && !mv.is_capture(m) && !mv.is_promotion(m) && !pos.in_check(p)) {
+        # A quiet move that gives check is never prunable: it can be mate, and
+        # that is only knowable after the move. Both prunes below therefore sit
+        # after make - pruning on the move alone lost a mate in two twice, once
+        # for futility and once for late move pruning.
+        val tactical: bool = mv.is_capture(m) || mv.is_promotion(m) || pos.in_check(p);
+        if (futile && legal > 0 && !tactical) {
+            pos.unmake(p);
+            i = i + 1;
+            cnt;
+        }
+        # late move pruning: near the horizon, once enough quiet moves have
+        # failed, the rest almost never rescue the position
+        if (!is_pv && !in_check && depth <= 4 && legal > 0 && !tactical
+            && best > 0 - MATE_FOUND && legal > 6 + depth * depth) {
             pos.unmake(p);
             i = i + 1;
             cnt;
         }
         legal = legal + 1;
+        s.played[ply] = m;
+        s.mover[ply]  = p.board[mv.to(m)];
+        if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
+            quiets[quiet_n] = m;
+            quiet_n         = quiet_n + 1;
+        }
         var score: i64 = 0;
         if (legal == 1) {
             score = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
@@ -417,10 +490,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (n > 63) { n = 63; }
                 reduction = REDUCTION[d][n];
                 # a principal variation node is where being wrong is expensive
-                if (is_pv)                 { reduction = reduction - 1; }
-                if (reduction < 0)         { reduction = 0; }
+                if (is_pv)                  { reduction = reduction - 1; }
+                if (reduction < 0)          { reduction = 0; }
                 # never reduce straight into quiescence: leave a ply to look
-                if (reduction > depth - 2) { reduction = depth - 2; }
+                if (reduction > depth - 2)  { reduction = depth - 2; }
             }
             score = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
             if (score > alpha && reduction > 0) {
@@ -441,13 +514,21 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 flag  = tt.EXACT;
                 copy_pv(s, m, ply);
                 if (alpha >= beta) {
-                    if (!mv.is_capture(m)) {
+                    if (!mv.is_capture(m) && !mv.is_promotion(m)) {
                         s.killers[ply][1] = s.killers[ply][0];
                         s.killers[ply][0] = m;
-                        var bonus: i64 = s.history[p.board[mv.from(m)]][mv.to(m)] + depth * depth;
-                        # keep history under the losing-capture band at 50000000
-                        if (bonus > 10000000) { bonus = 10000000; }
-                        s.history[p.board[mv.from(m)]][mv.to(m)] = bonus;
+                        if (ply > 0 && s.played[ply - 1] != mv.NONE) {
+                            s.counter[s.mover[ply - 1]][mv.to(s.played[ply - 1])] = m;
+                        }
+                        history_update(s, p, m, depth, true);
+                        # every quiet move that was tried and did not cut gets
+                        # the matching penalty, which is what gives the table
+                        # its ordering signal rather than just a hit count
+                        var q: i64 = 0;
+                        for (q < quiet_n) {
+                            if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false); }
+                            q = q + 1;
+                        }
                     }
                     flag = tt.LOWER;
                     brk;
