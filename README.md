@@ -189,6 +189,24 @@ models are refused so positions never leave this machine.
 The `Hash` option is reported but fixed at 64 MB: the table is a static array, so the engine
 allocates nothing at all, at startup or during search.
 
+## Watching it play
+
+`harness/watch.py` plays machete against another UCI engine and serves a live board on
+`127.0.0.1:8730` — the position, the move list, and what each side thinks the score, depth and
+node count are. It is one file with no CDN and no assets: the page is plain HTML with a polling
+fetch, and the board is drawn with CSS grid and Unicode pieces.
+
+```bash
+python harness/watch.py                               # vs Stockfish at 1500 Elo
+python harness/watch.py --elo 2200 --threads 8 --movetime 500
+python harness/watch.py --opponent other-engine.exe --games 30
+```
+
+It plays games back to back, swapping colours each time, and keeps a running W-L-D tally, so the
+board is never idle. This is a viewer rather than a measurement: `harness/match.py` is what
+produces numbers, and nothing here is gated, because it needs an opponent engine that the gates
+cannot assume is installed.
+
 ## Deliberately not built
 
 No neural network evaluation, opening book, endgame tablebases or pondering. Gated on
