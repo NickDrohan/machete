@@ -1,0 +1,318 @@
+# the UCI protocol: read commands on stdin, search on a second thread
+#
+# the search runs on its own thread so `stop` and `isready` can be answered
+# while it is thinking, which is what the protocol requires. the two threads
+# share exactly two words: the stop flag inside Search, and `thinking`. both
+# are written with std.sync.atomic.
+#
+# the game position and the search state are module-level, not per-command, so
+# the position's move history survives across `position` commands and gives the
+# search its repetition detection.
+
+use std.input;
+use std.print;
+use std.sync.atomic;
+use std.sync.thread;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use mv: machete.move;
+use machete.move.Move;
+use machete.movegen;
+use pos: machete.position;
+use machete.position.Position;
+use machete.search;
+use machete.smp;
+use machete.tt;
+
+val LINE_CAP:   usize = 8192;
+val MAX_TOKENS: i64   = 1024;
+
+# a search thread needs room for MAX_PLY frames, each holding a move list
+val SEARCH_STACK: usize = 8388608;
+
+var GAME:   Position;
+var ENGINE: search.Search;
+var LIMITS: search.Limits;
+var worker: thread.Thread;
+
+# 1 while the search thread is running; written with atomics by both threads
+var thinking: i64 = 0;
+
+# how many search threads `go` uses; set by setoption name Threads
+var threads: i64 = 1;
+
+rec Tokens {
+    count: i64;
+    item:  [1024]str;
+}
+
+fun split(line: *u8, len: i64, t: *Tokens) {
+    t.count = 0;
+    var i: i64 = 0;
+    for (i < len) {
+        for (i < len && (line[i] == ' ' || line[i] == '\t')) {
+            line[i] = 0;
+            i       = i + 1;
+        }
+        if (i >= len) { brk; }
+        if (t.count < MAX_TOKENS) {
+            t.item[t.count] = ?line[i];
+            t.count         = t.count + 1;
+        }
+        for (i < len && line[i] != ' ' && line[i] != '\t') { i = i + 1; }
+    }
+}
+
+fun token_i64(t: *Tokens, index: i64, fallback: i64) i64 {
+    if (index >= t.count) { ret fallback; }
+    val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(t.item[index], 10);
+    if (sel parsed.err) { ret fallback; }
+    ret parsed.ok;
+}
+
+# the search thread's entry point: think, then report the move
+fun run_search(arg: *u8) {
+    val best:    Move = smp.think(?ENGINE, ?GAME, ?LIMITS, threads);
+    var spelled: [6]u8;
+    mv.to_uci(best, ?spelled[0]);
+    if (best == mv.NONE) { print.println("bestmove 0000"); }
+    or                   { print.printlnf("bestmove {}", ?spelled[0]); }
+    atomic.store(?thinking, 0);
+}
+
+fun is_thinking() bool {
+    ret atomic.load(?thinking) != 0;
+}
+
+# ask the search to stop and wait for its thread to finish
+fun halt() {
+    if (!is_thinking()) { ret; }
+    atomic.store(?ENGINE.stop, 1);
+    thread.join(?worker);
+    atomic.store(?thinking, 0);
+}
+
+fun start_search() {
+    halt();
+    search.reset(?ENGINE);
+    atomic.store(?thinking, 1);
+    var config: thread.Config;
+    thread.config_default(?config);
+    config.stack_reserve = SEARCH_STACK;
+    config.name          = "machete-search";
+    val started: thread.Operation = thread.spawn_with_config(run_search, nil, ?config, ?worker);
+    if (sel started.err) {
+        # without a thread, search in line: the move still has to be produced
+        atomic.store(?thinking, 0);
+        run_search(nil);
+    }
+}
+
+# position [startpos | fen <6 fields>] [moves <uci>...]
+fun set_position(t: *Tokens) {
+    var next: i64 = 2;
+    if (t.count >= 2 && str_equals(t.item[1], "startpos")) {
+        pos.set_fen(?GAME, pos.START_FEN);
+    }
+    or (t.count >= 3 && str_equals(t.item[1], "fen")) {
+        # rebuild the FEN from its space-separated fields
+        var fen: [128]u8;
+        var n:   i64 = 0;
+        var f:   i64 = 2;
+        for (f < t.count && f < 8 && !str_equals(t.item[f], "moves")) {
+            if (n > 0 && n < 127) {
+                fen[n] = ' ';
+                n      = n + 1;
+            }
+            var i: i64 = 0;
+            for (t.item[f][i] != 0 && n < 127) {
+                fen[n] = t.item[f][i];
+                n      = n + 1;
+                i      = i + 1;
+            }
+            f = f + 1;
+        }
+        fen[n] = 0;
+        next   = f;
+        if (!pos.set_fen(?GAME, ?fen[0])) {
+            print.println("info string invalid fen, keeping previous position");
+            ret;
+        }
+    }
+    or {
+        ret;
+    }
+
+    var i: i64 = next;
+    for (i < t.count && !str_equals(t.item[i], "moves")) { i = i + 1; }
+    i = i + 1;
+    for (i < t.count) {
+        if (GAME.ply >= pos.MAX_HISTORY - search.MAX_PLY - 2) { brk; }
+        val m: Move = movegen.parse_uci(?GAME, t.item[i]);
+        if (m == mv.NONE) {
+            print.printlnf("info string illegal move {}, ignoring the rest", t.item[i]);
+            brk;
+        }
+        pos.make(?GAME, m);
+        i = i + 1;
+    }
+}
+
+# go [depth n] [movetime ms] [wtime ms] [btime ms] [winc ms] [binc ms] [infinite]
+fun parse_go(t: *Tokens) {
+    LIMITS.depth    = 0;
+    LIMITS.movetime = 0;
+    LIMITS.wtime    = 0;
+    LIMITS.btime    = 0;
+    LIMITS.winc     = 0;
+    LIMITS.binc     = 0;
+    LIMITS.infinite = 0;
+    var i: i64 = 1;
+    for (i < t.count) {
+        val word: str = t.item[i];
+        if (str_equals(word, "depth"))    { LIMITS.depth = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "movetime")) { LIMITS.movetime = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "wtime"))    { LIMITS.wtime = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "btime"))    { LIMITS.btime = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "winc"))     { LIMITS.winc = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "binc"))     { LIMITS.binc = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "infinite")) { LIMITS.infinite = 1; }
+        i = i + 1;
+    }
+}
+
+# read commands until quit or end of input
+pub fun loop() i64 {
+    pos.init();
+    tt.clear();
+    pos.set_fen(?GAME, pos.START_FEN);
+    search.reset(?ENGINE);
+
+    var line: [8192]u8;
+    var t:    Tokens;
+    for {
+        val read: res[usize, input.InputError] = input.read_line(?line[0], LINE_CAP);
+        if (sel read.err) {
+            # end of input means the GUI is gone; leave as if told to quit
+            halt();
+            ret 0;
+        }
+        split(?line[0], read.ok::i64, ?t);
+        if (t.count == 0) { cnt; }
+        val command: str = t.item[0];
+
+        if (str_equals(command, "uci")) {
+            print.println("id name machete 0.1");
+            print.println("id author mach-portfolio");
+            print.printlnf("option name Hash type spin default {} min {} max {}",
+                tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
+            print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
+            print.println("uciok");
+        }
+        or (str_equals(command, "isready")) {
+            print.println("readyok");
+        }
+        or (str_equals(command, "ucinewgame")) {
+            halt();
+            tt.clear();
+            pos.set_fen(?GAME, pos.START_FEN);
+        }
+        or (str_equals(command, "position")) {
+            halt();
+            set_position(?t);
+        }
+        or (str_equals(command, "go")) {
+            parse_go(?t);
+            start_search();
+        }
+        or (str_equals(command, "stop")) {
+            halt();
+        }
+        or (str_equals(command, "setoption")) {
+            # "setoption name <id> value <v>": Threads is applied, Hash is not,
+            # because the table is a fixed-size static array
+            if (t.count >= 5 && str_equals(t.item[2], "Threads")) {
+                var wanted: i64 = token_i64(?t, 4, 1);
+                if (wanted < 1)               { wanted = 1; }
+                if (wanted > smp.MAX_THREADS) { wanted = smp.MAX_THREADS; }
+                threads = wanted;
+                print.printlnf("info string threads set to {}", threads);
+            }
+            or (t.count >= 3 && str_equals(t.item[2], "Hash")) {
+                print.printlnf("info string hash is fixed at {} MB", tt.MEGABYTES);
+            }
+        }
+        or (str_equals(command, "quit")) {
+            halt();
+            ret 0;
+        }
+        or (str_equals(command, "d")) {
+            var fen: [128]u8;
+            pos.to_fen(?GAME, ?fen[0]);
+            print.printlnf("{}", ?fen[0]);
+        }
+    }
+    ret 0;
+}
+
+test "uci: tokenises a command line" {
+    var line: [64]u8;
+    var t:    Tokens;
+    val text: str = "position startpos moves e2e4";
+    var n:    i64 = 0;
+    for (text[n] != 0) {
+        line[n] = text[n];
+        n       = n + 1;
+    }
+    line[n] = 0;
+    split(?line[0], n, ?t);
+    if (t.count != 4)                       { ret 1; }
+    if (!str_equals(t.item[0], "position")) { ret 2; }
+    if (!str_equals(t.item[3], "e2e4"))     { ret 3; }
+    ret 0;
+}
+
+test "uci: position command applies moves" {
+    pos.init();
+    var line: [64]u8;
+    var t:    Tokens;
+    val text: str = "position startpos moves e2e4 e7e5 g1f3";
+    var n:    i64 = 0;
+    for (text[n] != 0) {
+        line[n] = text[n];
+        n       = n + 1;
+    }
+    line[n] = 0;
+    split(?line[0], n, ?t);
+    set_position(?t);
+    if (GAME.ply != 3)                                     { ret 1; }
+    if (GAME.board[21] != pos.code(pos.WHITE, pos.KNIGHT)) { ret 2; }
+    if (GAME.side != pos.BLACK)                            { ret 3; }
+    ret 0;
+}
+
+test "uci: go parses its limits" {
+    var line: [64]u8;
+    var t:    Tokens;
+    val text: str = "go wtime 300000 btime 300000 winc 2000 movetime 500";
+    var n:    i64 = 0;
+    for (text[n] != 0) {
+        line[n] = text[n];
+        n       = n + 1;
+    }
+    line[n] = 0;
+    split(?line[0], n, ?t);
+    parse_go(?t);
+    if (LIMITS.wtime != 300000) { ret 1; }
+    if (LIMITS.winc != 2000)    { ret 2; }
+    if (LIMITS.movetime != 500) { ret 3; }
+    if (LIMITS.infinite != 0)   { ret 4; }
+    ret 0;
+}

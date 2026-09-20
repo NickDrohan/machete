@@ -1,0 +1,69 @@
+# perft: count the leaf nodes of the legal move tree to a fixed depth
+#
+# the counts for standard positions are published, so perft is the exact
+# correctness check for move generation and make/unmake together.
+
+use std.print;
+use std.types.bool.false;
+
+use mv: machete.move;
+use machete.movegen;
+use machete.movegen.MoveList;
+use pos: machete.position;
+use machete.position.Position;
+
+pub fun perft(p: *Position, depth: i64) u64 {
+    if (depth == 0) { ret 1; }
+    var list: MoveList;
+    movegen.generate(p, ?list, false);
+    var nodes: u64 = 0;
+    var i:     i64 = 0;
+    for (i < list.count) {
+        pos.make(p, list.moves[i]);
+        if (!pos.left_in_check(p)) {
+            if (depth == 1) { nodes = nodes + 1; }
+            or              { nodes = nodes + perft(p, depth - 1); }
+        }
+        pos.unmake(p);
+        i = i + 1;
+    }
+    ret nodes;
+}
+
+# print each legal root move with its subtree count, then the total
+pub fun divide(p: *Position, depth: i64) u64 {
+    var list: MoveList;
+    movegen.generate_legal(p, ?list);
+    var total:   u64 = 0;
+    var spelled: [6]u8;
+    var i:       i64 = 0;
+    for (i < list.count) {
+        pos.make(p, list.moves[i]);
+        var nodes: u64 = 1;
+        if (depth > 1) { nodes = perft(p, depth - 1); }
+        pos.unmake(p);
+        mv.to_uci(list.moves[i], ?spelled[0]);
+        print.printlnf("{} {}", ?spelled[0], nodes);
+        total = total + nodes;
+        i     = i + 1;
+    }
+    print.printlnf("total {}", total);
+    ret total;
+}
+
+fun count(fen: *u8, depth: i64) u64 {
+    var p: Position;
+    if (!pos.set_fen(?p, fen)) { ret 0; }
+    ret perft(?p, depth);
+}
+
+# shallow depths so the debug-profile test run stays quick; check.sh runs the deep ones
+test "perft: standard positions at shallow depth" {
+    if (count(pos.START_FEN, 3) != 8902)                                                              { ret 1; }
+    if (count("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 2) != 2039)     { ret 2; }
+    if (count("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 3) != 2812)                                { ret 3; }
+    if (count("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 3) != 9467)         { ret 4; }
+    if (count("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 2) != 1486)                { ret 5; }
+    if (count("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 2) != 2079) { ret 6; }
+    ret 0;
+}

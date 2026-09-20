@@ -1,0 +1,699 @@
+# board state: piece bitboards, a square-to-piece mailbox, incremental Zobrist
+# hashing, and an undo history that make/unmake push and pop
+#
+# pieces are coded colour * 6 + kind, so white pawn is 0 and black king is 11.
+# the history doubles as the repetition record: every entry keeps the key the
+# position had before its move.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.string.str;
+
+use machete.attacks;
+use bb: machete.bitboard;
+use machete.magic;
+use mv: machete.move;
+use machete.move.Move;
+
+pub val WHITE: u8 = 0;
+pub val BLACK: u8 = 1;
+
+pub val PAWN:   u8 = 0;
+pub val KNIGHT: u8 = 1;
+pub val BISHOP: u8 = 2;
+pub val ROOK:   u8 = 3;
+pub val QUEEN:  u8 = 4;
+pub val KING:   u8 = 5;
+pub val EMPTY:  u8 = 12;
+
+pub val NO_SQ: i64 = 64;
+
+pub val CASTLE_WK: u8 = 1;
+pub val CASTLE_WQ: u8 = 2;
+pub val CASTLE_BK: u8 = 4;
+pub val CASTLE_BQ: u8 = 8;
+
+pub val MAX_HISTORY: i64 = 1024;
+
+pub val START_FEN: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+val PIECE_CHARS: str = "PNBRQKpnbrqk";
+
+# what make() must remember for unmake() to restore the position exactly
+pub rec Undo {
+    move:     Move;
+    captured: u8;
+    castling: u8;
+    ep:       i64;
+    halfmove: i64;
+    key:      u64;
+}
+
+# ---
+# pieces:   one bitboard per piece code
+# occ:      all pieces of each colour
+# board:    piece code on each square, EMPTY when vacant
+# side:     colour to move
+# castling: CASTLE_* rights still available
+# ep:       en passant target square, NO_SQ when none
+# halfmove: plies since the last capture or pawn move
+# fullmove: move number, starting at 1
+# key:      Zobrist hash of everything above except the clocks
+# ply:      entries in use in hist
+pub rec Position {
+    pieces:   [12]u64;
+    occ:      [2]u64;
+    board:    [64]u8;
+    side:     u8;
+    castling: u8;
+    ep:       i64;
+    halfmove: i64;
+    fullmove: i64;
+    key:      u64;
+    ply:      i64;
+    hist:     [1024]Undo;
+}
+
+pub var Z_PIECE:  [12][64]u64;
+pub var Z_SIDE:   u64;
+pub var Z_CASTLE: [16]u64;
+pub var Z_EP:     [8]u64;
+
+# rights that survive a move touching each square
+var CASTLE_KEEP: [64]u8;
+
+var ready: i64 = 0;
+
+var seed: u64 = 0x2545F4914F6CDD1D;
+
+fun splitmix() u64 {
+    seed = seed + 0x9E3779B97F4A7C15;
+    var z: u64 = seed;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
+    ret z ^ (z >> 31);
+}
+
+# fill every table the engine reads; safe to call more than once
+pub fun init() {
+    if (ready != 0) { ret; }
+    attacks.init();
+    magic.init();
+    var pc: i64 = 0;
+    for (pc < 12) {
+        var sq: i64 = 0;
+        for (sq < 64) {
+            Z_PIECE[pc][sq] = splitmix();
+            sq              = sq + 1;
+        }
+        pc = pc + 1;
+    }
+    Z_SIDE = splitmix();
+    var i: i64 = 0;
+    for (i < 16) {
+        Z_CASTLE[i] = splitmix();
+        i           = i + 1;
+    }
+    i = 0;
+    for (i < 8) {
+        Z_EP[i] = splitmix();
+        i       = i + 1;
+    }
+    i = 0;
+    for (i < 64) {
+        CASTLE_KEEP[i] = 15;
+        i              = i + 1;
+    }
+    CASTLE_KEEP[0]  = 15 ^ CASTLE_WQ;
+    CASTLE_KEEP[4]  = 15 ^ (CASTLE_WK | CASTLE_WQ);
+    CASTLE_KEEP[7]  = 15 ^ CASTLE_WK;
+    CASTLE_KEEP[56] = 15 ^ CASTLE_BQ;
+    CASTLE_KEEP[60] = 15 ^ (CASTLE_BK | CASTLE_BQ);
+    CASTLE_KEEP[63] = 15 ^ CASTLE_BK;
+    ready           = 1;
+}
+
+pub fun code(color: u8, kind: u8) u8 {
+    ret color * 6 + kind;
+}
+
+pub fun color_of(pc: u8) u8 {
+    ret pc / 6;
+}
+
+pub fun kind_of(pc: u8) u8 {
+    ret pc % 6;
+}
+
+pub fun all(p: *Position) u64 {
+    ret p.occ[0] | p.occ[1];
+}
+
+pub fun king_square(p: *Position, color: u8) i64 {
+    ret bb.lsb(p.pieces[code(color, KING)]);
+}
+
+fun put(p: *Position, pc: u8, sq: i64) {
+    val b: u64 = bb.bit(sq);
+    p.pieces[pc]        = p.pieces[pc] | b;
+    p.occ[color_of(pc)] = p.occ[color_of(pc)] | b;
+    p.board[sq]         = pc;
+    p.key               = p.key ^ Z_PIECE[pc][sq];
+}
+
+fun remove(p: *Position, sq: i64) {
+    val pc: u8  = p.board[sq];
+    val b:  u64 = bb.bit(sq);
+    p.pieces[pc]        = p.pieces[pc] ^ b;
+    p.occ[color_of(pc)] = p.occ[color_of(pc)] ^ b;
+    p.board[sq]         = EMPTY;
+    p.key               = p.key ^ Z_PIECE[pc][sq];
+}
+
+fun shift(p: *Position, from: i64, to: i64) {
+    val pc: u8 = p.board[from];
+    remove(p, from);
+    put(p, pc, to);
+}
+
+# whether any piece of colour `by` attacks sq
+pub fun attacked(p: *Position, sq: i64, by: u8) bool {
+    if ((attacks.PAWN[by ^ 1][sq] & p.pieces[code(by, PAWN)]) != 0) { ret true; }
+    if ((attacks.KNIGHT[sq] & p.pieces[code(by, KNIGHT)]) != 0)     { ret true; }
+    if ((attacks.KING[sq] & p.pieces[code(by, KING)]) != 0)         { ret true; }
+    val occ:      u64 = all(p);
+    val diagonal: u64 = p.pieces[code(by, BISHOP)] | p.pieces[code(by, QUEEN)];
+    if (diagonal != 0 && (magic.bishop(sq, occ) & diagonal) != 0) { ret true; }
+    val straight: u64 = p.pieces[code(by, ROOK)] | p.pieces[code(by, QUEEN)];
+    if (straight != 0 && (magic.rook(sq, occ) & straight) != 0) { ret true; }
+    ret false;
+}
+
+pub fun in_check(p: *Position) bool {
+    ret attacked(p, king_square(p, p.side), p.side ^ 1);
+}
+
+# whether the side that just moved left its own king attacked
+pub fun left_in_check(p: *Position) bool {
+    val mover: u8 = p.side ^ 1;
+    ret attacked(p, king_square(p, mover), p.side);
+}
+
+# apply a pseudo-legal move and record how to take it back
+pub fun make(p: *Position, m: Move) {
+    val u: *Undo = ?p.hist[p.ply];
+    u.move     = m;
+    u.captured = EMPTY;
+    u.castling = p.castling;
+    u.ep       = p.ep;
+    u.halfmove = p.halfmove;
+    u.key      = p.key;
+    p.ply      = p.ply + 1;
+
+    val us:   u8  = p.side;
+    val from: i64 = mv.from(m);
+    val to:   i64 = mv.to(m);
+    val flag: u32 = mv.flag(m);
+    val pc:   u8  = p.board[from];
+
+    p.halfmove = p.halfmove + 1;
+    if (p.ep != NO_SQ) {
+        p.key = p.key ^ Z_EP[p.ep & 7];
+        p.ep  = NO_SQ;
+    }
+
+    if (flag == mv.EP_CAPTURE) {
+        var victim: i64 = to - 8;
+        if (us == BLACK) { victim = to + 8; }
+        u.captured = p.board[victim];
+        remove(p, victim);
+    }
+    or (mv.is_capture(m)) {
+        u.captured = p.board[to];
+        remove(p, to);
+        p.halfmove = 0;
+    }
+    if (kind_of(pc) == PAWN) { p.halfmove = 0; }
+
+    if (mv.is_promotion(m)) {
+        remove(p, from);
+        put(p, code(us, mv.promotion_type(m)), to);
+    }
+    or {
+        shift(p, from, to);
+    }
+
+    if (flag == mv.DOUBLE_PUSH) {
+        p.ep  = (from + to) / 2;
+        p.key = p.key ^ Z_EP[p.ep & 7];
+    }
+    or (flag == mv.KING_CASTLE) {
+        shift(p, from + 3, from + 1);
+    }
+    or (flag == mv.QUEEN_CASTLE) {
+        shift(p, from - 4, from - 1);
+    }
+
+    p.key      = p.key ^ Z_CASTLE[p.castling];
+    p.castling = p.castling & CASTLE_KEEP[from] & CASTLE_KEEP[to];
+    p.key      = p.key ^ Z_CASTLE[p.castling];
+
+    p.side = p.side ^ 1;
+    p.key  = p.key ^ Z_SIDE;
+    if (us == BLACK) { p.fullmove = p.fullmove + 1; }
+}
+
+# take back the most recent make()
+pub fun unmake(p: *Position) {
+    p.ply = p.ply - 1;
+    val u: *Undo = ?p.hist[p.ply];
+    val m: Move  = u.move;
+    p.side = p.side ^ 1;
+    val us:   u8  = p.side;
+    val from: i64 = mv.from(m);
+    val to:   i64 = mv.to(m);
+    val flag: u32 = mv.flag(m);
+
+    if (mv.is_promotion(m)) {
+        remove(p, to);
+        put(p, code(us, PAWN), from);
+    }
+    or {
+        shift(p, to, from);
+    }
+
+    if (flag == mv.KING_CASTLE) {
+        shift(p, from + 1, from + 3);
+    }
+    or (flag == mv.QUEEN_CASTLE) {
+        shift(p, from - 1, from - 4);
+    }
+    or (flag == mv.EP_CAPTURE) {
+        var victim: i64 = to - 8;
+        if (us == BLACK) { victim = to + 8; }
+        put(p, u.captured, victim);
+    }
+    or (u.captured != EMPTY) {
+        put(p, u.captured, to);
+    }
+
+    p.castling = u.castling;
+    p.ep       = u.ep;
+    p.halfmove = u.halfmove;
+    p.key      = u.key;
+    if (us == BLACK) { p.fullmove = p.fullmove - 1; }
+}
+
+# pass the move to the opponent, for null-move pruning
+pub fun make_null(p: *Position) {
+    val u: *Undo = ?p.hist[p.ply];
+    u.move     = mv.NONE;
+    u.captured = EMPTY;
+    u.castling = p.castling;
+    u.ep       = p.ep;
+    u.halfmove = p.halfmove;
+    u.key      = p.key;
+    p.ply      = p.ply + 1;
+    if (p.ep != NO_SQ) {
+        p.key = p.key ^ Z_EP[p.ep & 7];
+        p.ep  = NO_SQ;
+    }
+    p.halfmove = p.halfmove + 1;
+    p.side     = p.side ^ 1;
+    p.key      = p.key ^ Z_SIDE;
+}
+
+pub fun unmake_null(p: *Position) {
+    p.ply      = p.ply - 1;
+    p.side     = p.side ^ 1;
+    p.ep       = p.hist[p.ply].ep;
+    p.halfmove = p.hist[p.ply].halfmove;
+    p.key      = p.hist[p.ply].key;
+}
+
+# whether the current position occurred before since the last irreversible move
+pub fun is_repetition(p: *Position) bool {
+    var i:     i64 = p.ply - 2;
+    val limit: i64 = p.ply - p.halfmove;
+    for (i >= 0 && i >= limit) {
+        if (p.hist[i].key == p.key) { ret true; }
+        i = i - 2;
+    }
+    ret false;
+}
+
+# the Zobrist key recomputed from scratch, to check the incremental one
+pub fun compute_key(p: *Position) u64 {
+    var k:  u64 = 0;
+    var sq: i64 = 0;
+    for (sq < 64) {
+        if (p.board[sq] != EMPTY) { k = k ^ Z_PIECE[p.board[sq]][sq]; }
+        sq = sq + 1;
+    }
+    if (p.side == BLACK) { k = k ^ Z_SIDE; }
+    k = k ^ Z_CASTLE[p.castling];
+    if (p.ep != NO_SQ) { k = k ^ Z_EP[p.ep & 7]; }
+    ret k;
+}
+
+fun clear(p: *Position) {
+    var i: i64 = 0;
+    for (i < 12) {
+        p.pieces[i] = 0;
+        i           = i + 1;
+    }
+    p.occ[0] = 0;
+    p.occ[1] = 0;
+    i        = 0;
+    for (i < 64) {
+        p.board[i] = EMPTY;
+        i          = i + 1;
+    }
+    p.side     = WHITE;
+    p.castling = 0;
+    p.ep       = NO_SQ;
+    p.halfmove = 0;
+    p.fullmove = 1;
+    p.key      = 0;
+    p.ply      = 0;
+}
+
+fun piece_from_char(c: u8) u8 {
+    var i: u8 = 0;
+    for (i < 12) {
+        if (PIECE_CHARS[i] == c) { ret i; }
+        i = i + 1;
+    }
+    ret EMPTY;
+}
+
+fun is_digit(c: u8) bool {
+    ret c >= '0' && c <= '9';
+}
+
+# load a FEN string; on failure the position is left cleared and false is returned
+#
+# the move clocks are optional. a position without exactly one king per side
+# is rejected, since nothing downstream can search it.
+pub fun set_fen(p: *Position, fen: str) bool {
+    init();
+    clear(p);
+    var i:    i64 = 0;
+    var rank: i64 = 7;
+    var file: i64 = 0;
+
+    for (fen[i] != 0 && fen[i] != ' ') {
+        val c: u8 = fen[i];
+        if (c == '/') {
+            if (file != 8 || rank == 0) {
+                clear(p);
+                ret false;
+            }
+            rank = rank - 1;
+            file = 0;
+        }
+        or (c >= '1' && c <= '8') {
+            file = file + (c - '0')::i64;
+            if (file > 8) {
+                clear(p);
+                ret false;
+            }
+        }
+        or {
+            val pc: u8 = piece_from_char(c);
+            if (pc == EMPTY || file > 7) {
+                clear(p);
+                ret false;
+            }
+            put(p, pc, rank * 8 + file);
+            file = file + 1;
+        }
+        i = i + 1;
+    }
+    if (rank != 0 || file != 8) {
+        clear(p);
+        ret false;
+    }
+    if (bb.count(p.pieces[code(WHITE, KING)]) != 1 || bb.count(p.pieces[code(BLACK, KING)]) != 1) {
+        clear(p);
+        ret false;
+    }
+
+    for (fen[i] == ' ') { i = i + 1; }
+    if (fen[i] == 'b') { p.side = BLACK; }
+    or (fen[i] != 'w') {
+        clear(p);
+        ret false;
+    }
+    i = i + 1;
+
+    for (fen[i] == ' ') { i = i + 1; }
+    if (fen[i] == '-') {
+        i = i + 1;
+    }
+    or {
+        for (fen[i] != 0 && fen[i] != ' ') {
+            val c: u8 = fen[i];
+            if (c == 'K') { p.castling = p.castling | CASTLE_WK; }
+            or (c == 'Q') { p.castling = p.castling | CASTLE_WQ; }
+            or (c == 'k') { p.castling = p.castling | CASTLE_BK; }
+            or (c == 'q') { p.castling = p.castling | CASTLE_BQ; }
+            or {
+                clear(p);
+                ret false;
+            }
+            i = i + 1;
+        }
+    }
+
+    for (fen[i] == ' ') { i = i + 1; }
+    if (fen[i] == '-') {
+        i = i + 1;
+    }
+    or (fen[i] >= 'a' && fen[i] <= 'h' && fen[i + 1] >= '1' && fen[i + 1] <= '8') {
+        p.ep = ((fen[i + 1] - '1')::i64) * 8 + (fen[i] - 'a')::i64;
+        i    = i + 2;
+    }
+    or {
+        clear(p);
+        ret false;
+    }
+
+    for (fen[i] == ' ') { i = i + 1; }
+    if (is_digit(fen[i])) {
+        var n: i64 = 0;
+        for (is_digit(fen[i])) {
+            n = n * 10 + (fen[i] - '0')::i64;
+            i = i + 1;
+        }
+        p.halfmove = n;
+        for (fen[i] == ' ') { i = i + 1; }
+        if (is_digit(fen[i])) {
+            n = 0;
+            for (is_digit(fen[i])) {
+                n = n * 10 + (fen[i] - '0')::i64;
+                i = i + 1;
+            }
+            p.fullmove = n;
+        }
+    }
+
+    p.key = compute_key(p);
+    ret true;
+}
+
+fun write_number(out: *u8, at: i64, n: i64) i64 {
+    var digits: [20]u8;
+    var count:  i64 = 0;
+    var v:      i64 = n;
+    if (v == 0) {
+        digits[0] = '0';
+        count     = 1;
+    }
+    for (v > 0) {
+        digits[count] = ('0'::i64 + v % 10)::u8;
+        count         = count + 1;
+        v             = v / 10;
+    }
+    var i: i64 = at;
+    for (count > 0) {
+        count  = count - 1;
+        out[i] = digits[count];
+        i      = i + 1;
+    }
+    ret i;
+}
+
+# write the position as FEN into out, which needs 100 bytes; returns the length
+pub fun to_fen(p: *Position, out: *u8) i64 {
+    var i:    i64 = 0;
+    var rank: i64 = 7;
+    for (rank >= 0) {
+        var empty: i64 = 0;
+        var file:  i64 = 0;
+        for (file < 8) {
+            val pc: u8 = p.board[rank * 8 + file];
+            if (pc == EMPTY) {
+                empty = empty + 1;
+            }
+            or {
+                if (empty > 0) {
+                    out[i] = ('0'::i64 + empty)::u8;
+                    i      = i + 1;
+                    empty  = 0;
+                }
+                out[i] = PIECE_CHARS[pc];
+                i      = i + 1;
+            }
+            file = file + 1;
+        }
+        if (empty > 0) {
+            out[i] = ('0'::i64 + empty)::u8;
+            i      = i + 1;
+        }
+        if (rank > 0) {
+            out[i] = '/';
+            i      = i + 1;
+        }
+        rank = rank - 1;
+    }
+
+    out[i] = ' ';
+    if (p.side == WHITE) { out[i + 1] = 'w'; }
+    or                   { out[i + 1] = 'b'; }
+    out[i + 2] = ' ';
+    i          = i + 3;
+
+    if (p.castling == 0) {
+        out[i] = '-';
+        i      = i + 1;
+    }
+    or {
+        if ((p.castling & CASTLE_WK) != 0) {
+            out[i] = 'K';
+            i      = i + 1;
+        }
+        if ((p.castling & CASTLE_WQ) != 0) {
+            out[i] = 'Q';
+            i      = i + 1;
+        }
+        if ((p.castling & CASTLE_BK) != 0) {
+            out[i] = 'k';
+            i      = i + 1;
+        }
+        if ((p.castling & CASTLE_BQ) != 0) {
+            out[i] = 'q';
+            i      = i + 1;
+        }
+    }
+
+    out[i] = ' ';
+    i      = i + 1;
+    if (p.ep == NO_SQ) {
+        out[i] = '-';
+        i      = i + 1;
+    }
+    or {
+        out[i]     = ('a'::i64 + (p.ep & 7))::u8;
+        out[i + 1] = ('1'::i64 + (p.ep >> 3))::u8;
+        i          = i + 2;
+    }
+
+    out[i] = ' ';
+    i      = write_number(out, i + 1, p.halfmove);
+    out[i] = ' ';
+    i      = write_number(out, i + 1, p.fullmove);
+    out[i] = 0;
+    ret i;
+}
+
+# whether two positions are identical in every field make/unmake maintains
+pub fun same(a: *Position, b: *Position) bool {
+    var i: i64 = 0;
+    for (i < 12) {
+        if (a.pieces[i] != b.pieces[i]) { ret false; }
+        i = i + 1;
+    }
+    if (a.occ[0] != b.occ[0] || a.occ[1] != b.occ[1]) { ret false; }
+    i = 0;
+    for (i < 64) {
+        if (a.board[i] != b.board[i]) { ret false; }
+        i = i + 1;
+    }
+    ret a.side == b.side && a.castling == b.castling && a.ep == b.ep
+        && a.halfmove == b.halfmove && a.fullmove == b.fullmove && a.key == b.key;
+}
+
+fun fen_equals(p: *Position, want: str) bool {
+    var buf: [128]u8;
+    to_fen(p, ?buf[0]);
+    var i: i64 = 0;
+    for (want[i] != 0) {
+        if (buf[i] != want[i]) { ret false; }
+        i = i + 1;
+    }
+    ret buf[i] == 0;
+}
+
+test "position: FEN round-trips" {
+    var p: Position;
+    if (!set_fen(?p, START_FEN))    { ret 1; }
+    if (!fen_equals(?p, START_FEN)) { ret 2; }
+    val kiwipete: str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+    if (!set_fen(?p, kiwipete) || !fen_equals(?p, kiwipete)) { ret 3; }
+    val with_ep: str = "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3";
+    if (!set_fen(?p, with_ep) || !fen_equals(?p, with_ep)) { ret 4; }
+    if (p.ep != 45)                                        { ret 5; }
+    ret 0;
+}
+
+test "position: malformed FEN is rejected" {
+    var p: Position;
+    if (set_fen(?p, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP w KQkq - 0 1"))          { ret 1; }
+    if (set_fen(?p, "rnbqkbnr/pppppppp/9/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")) { ret 2; }
+    if (set_fen(?p, "rnbq1bnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")) { ret 3; }
+    if (set_fen(?p, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1")) { ret 4; }
+    ret 0;
+}
+
+test "position: checks are detected" {
+    var p: Position;
+    if (!set_fen(?p, "4k3/8/8/8/8/8/8/4K2r w - - 0 1"))  { ret 1; }
+    if (!in_check(?p))                                   { ret 2; }
+    if (!set_fen(?p, "4k3/8/8/8/8/8/3p4/4K3 w - - 0 1")) { ret 3; }
+    if (!in_check(?p))                                   { ret 4; }
+    if (!set_fen(?p, START_FEN))                         { ret 5; }
+    if (in_check(?p))                                    { ret 6; }
+    ret 0;
+}
+
+test "position: special moves unmake exactly and keep the key incremental" {
+    var p:      Position;
+    var before: Position;
+    # castling both ways, en passant, and a promotion capture
+    val fen: str = "r3k2r/1P6/8/3pP3/8/8/8/R3K2R w KQkq d6 0 1";
+    if (!set_fen(?p, fen) || !set_fen(?before, fen)) { ret 1; }
+    var moves: [5]Move;
+    moves[0] = mv.make(4, 6, mv.KING_CASTLE);
+    moves[1] = mv.make(4, 2, mv.QUEEN_CASTLE);
+    moves[2] = mv.make(36, 43, mv.EP_CAPTURE);
+    moves[3] = mv.make(49, 56, mv.PROMO_CAPTURE + 3);
+    moves[4] = mv.make(0, 56, mv.CAPTURE);
+    var i: i64 = 0;
+    for (i < 5) {
+        make(?p, moves[i]);
+        if (p.key != compute_key(?p)) { ret (10 + i)::i32; }
+        unmake(?p);
+        if (!same(?p, ?before)) { ret (20 + i)::i32; }
+        i = i + 1;
+    }
+    # en passant removed the captured pawn; promotion left a queen
+    make(?p, moves[2]);
+    if (p.board[35] != EMPTY || p.board[43] != code(WHITE, PAWN)) { ret 30; }
+    unmake(?p);
+    make(?p, moves[3]);
+    if (p.board[56] != code(WHITE, QUEEN) || (p.castling & CASTLE_BQ) != 0) { ret 31; }
+    unmake(?p);
+    ret 0;
+}

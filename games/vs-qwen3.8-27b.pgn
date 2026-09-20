@@ -1,0 +1,9 @@
+[Event "mate vs qwen3.8:27b"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "mate"]
+[Black "qwen3.8:27b"]
+[Result "*"]
+
+1. Nc3 e5 2. Nf3 Nf6 3. Nxe5 d6 4. Nf3 Nc6 *

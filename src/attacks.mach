@@ -1,0 +1,112 @@
+# attack sets: precomputed tables for leapers, ray scans for sliders
+#
+# tables are filled once by init() and never written again. sliding attacks
+# walk each ray to its first blocker: positive directions find it with lsb,
+# negative ones with msb, and the ray beyond the blocker is removed.
+
+use bb: machete.bitboard;
+
+# ray directions: N, NE, E, SE, S, SW, W, NW
+val DIR_FILE: [8]i64 = [8]i64{0, 1, 1, 1, 0, -1, -1, -1};
+val DIR_RANK: [8]i64 = [8]i64{1, 1, 0, -1, -1, -1, 0, 1};
+
+pub var KNIGHT: [64]u64;
+pub var KING:   [64]u64;
+# PAWN[c][sq]: squares a pawn of colour c on sq attacks
+pub var PAWN: [2][64]u64;
+pub var RAYS: [8][64]u64;
+
+var ready: i64 = 0;
+
+fun on_board(file: i64, rank: i64) u8 {
+    ret file >= 0 && file < 8 && rank >= 0 && rank < 8;
+}
+
+fun leap(sq: i64, df: i64, dr: i64) u64 {
+    val f: i64 = bb.file_of(sq) + df;
+    val r: i64 = bb.rank_of(sq) + dr;
+    if (!on_board(f, r)) { ret 0; }
+    ret bb.bit(r * 8 + f);
+}
+
+pub fun init() {
+    if (ready != 0) { ret; }
+    var sq: i64 = 0;
+    for (sq < 64) {
+        KNIGHT[sq] = leap(sq, 1, 2) | leap(sq, 2, 1) | leap(sq, 2, -1) | leap(sq, 1, -2)
+            | leap(sq, -1, -2) | leap(sq, -2, -1) | leap(sq, -2, 1) | leap(sq, -1, 2);
+        KING[sq] = leap(sq, 0, 1) | leap(sq, 1, 1) | leap(sq, 1, 0) | leap(sq, 1, -1)
+            | leap(sq, 0, -1) | leap(sq, -1, -1) | leap(sq, -1, 0) | leap(sq, -1, 1);
+        PAWN[0][sq] = leap(sq, -1, 1) | leap(sq, 1, 1);
+        PAWN[1][sq] = leap(sq, -1, -1) | leap(sq, 1, -1);
+
+        var d: i64 = 0;
+        for (d < 8) {
+            var ray: u64 = 0;
+            var f:   i64 = bb.file_of(sq) + DIR_FILE[d];
+            var r:   i64 = bb.rank_of(sq) + DIR_RANK[d];
+            for (on_board(f, r)) {
+                ray = ray | bb.bit(r * 8 + f);
+                f   = f + DIR_FILE[d];
+                r   = r + DIR_RANK[d];
+            }
+            RAYS[d][sq] = ray;
+            d           = d + 1;
+        }
+        sq = sq + 1;
+    }
+    ready = 1;
+}
+
+# N, NE, E and NW run towards higher square numbers
+fun positive_ray(sq: i64, d: i64, occ: u64) u64 {
+    var ray:      u64 = RAYS[d][sq];
+    val blockers: u64 = ray & occ;
+    if (blockers != 0) { ray = ray ^ RAYS[d][bb.lsb(blockers)]; }
+    ret ray;
+}
+
+fun negative_ray(sq: i64, d: i64, occ: u64) u64 {
+    var ray:      u64 = RAYS[d][sq];
+    val blockers: u64 = ray & occ;
+    if (blockers != 0) { ray = ray ^ RAYS[d][bb.msb(blockers)]; }
+    ret ray;
+}
+
+pub fun bishop_rays(sq: i64, occ: u64) u64 {
+    ret positive_ray(sq, 1, occ) | negative_ray(sq, 3, occ) | negative_ray(sq, 5, occ) | positive_ray(sq, 7, occ);
+}
+
+pub fun rook_rays(sq: i64, occ: u64) u64 {
+    ret positive_ray(sq, 0, occ) | positive_ray(sq, 2, occ) | negative_ray(sq, 4, occ) | negative_ray(sq, 6, occ);
+}
+
+pub fun queen_rays(sq: i64, occ: u64) u64 {
+    ret bishop_rays(sq, occ) | rook_rays(sq, occ);
+}
+
+test "attacks: leapers from corners and centre" {
+    init();
+    if (bb.count(KNIGHT[0]) != 2)  { ret 1; }
+    if (bb.count(KNIGHT[27]) != 8) { ret 2; }
+    if (bb.count(KING[0]) != 3)    { ret 3; }
+    if (bb.count(KING[27]) != 8)   { ret 4; }
+    # white pawn on a2 attacks only b3; black pawn on h7 attacks only g6
+    if (PAWN[0][8] != bb.bit(17))  { ret 5; }
+    if (PAWN[1][55] != bb.bit(46)) { ret 6; }
+    ret 0;
+}
+
+test "attacks: sliders stop at the first blocker" {
+    init();
+    # rook on a1, empty board: 14 squares
+    if (bb.count(rook_rays(0, 0)) != 14) { ret 1; }
+    # rook on a1 with a blocker on a4: a2, a3, a4 plus the first rank
+    val r: u64 = rook_rays(0, bb.bit(24));
+    if (bb.count(r) != 10 || !bb.has(r, 24) || bb.has(r, 32)) { ret 2; }
+    # bishop on d4 blocked on f6 and b2
+    val b: u64 = bishop_rays(27, bb.bit(45) | bb.bit(9));
+    if (!bb.has(b, 45) || bb.has(b, 54) || !bb.has(b, 9) || bb.has(b, 0)) { ret 3; }
+    if (bb.count(queen_rays(27, 0)) != 27)                                { ret 4; }
+    ret 0;
+}
