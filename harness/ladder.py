@@ -104,6 +104,39 @@ def interval(score, games):
     return (elo_from_score(hi) - elo_from_score(lo)) / 2.0
 
 
+def combine(usable):
+    """Pool the pairings, and refuse to claim more precision than they support.
+
+    Inverse-variance weighting assumes the estimates differ only by chance. Ask
+    five engines how strong one opponent is and they often disagree by far more
+    than their own error bars permit - published ratings come from a different
+    time control than the one being played, and that bias does not cancel.
+    Pooling regardless divides the margin by roughly the root of the pairing
+    count and prints a confident number the data never supported.
+
+    So the scatter is measured against what the error bars predicted. When it
+    is larger, the margin is scaled by the square root of that ratio, which is
+    the usual treatment for mutually inconsistent measurements of one quantity.
+    A ladder whose pairings genuinely agree is unaffected.
+    """
+    weights = [1.0 / (m * m) for _, m, _ in usable]
+    total = sum(weights)
+    pooled = sum(e * w for (e, _, _), w in zip(usable, weights)) / total
+    margin = math.sqrt(1.0 / total)
+    if len(usable) < 2:
+        return pooled, margin, 1.0
+    # the margins are 95% half-widths, so they are 1.96 standard errors. Pooling
+    # is linear in whatever unit they are quoted in and does not care, but the
+    # scatter test compares against a chi-square and does: leaving it out makes
+    # every set of estimates look four times more consistent than it is.
+    scatter = sum(w * 1.96 * 1.96 * (e - pooled) ** 2
+                  for (e, _, _), w in zip(usable, weights))
+    consistency = math.sqrt(scatter / (len(usable) - 1))
+    if consistency > 1.0:
+        margin = margin * consistency
+    return pooled, margin, max(1.0, consistency)
+
+
 def opening(rng, plies):
     board = chess.Board()
     for _ in range(plies):
@@ -312,10 +345,14 @@ def main():
     # combine the pairings that carry information, weighted by their precision
     usable = [(e, m, g) for e, m, g, _ in estimates if m != float("inf") and m < 400]
     if usable:
-        weights = [1.0 / (m * m) for _, m, _ in usable]
-        total = sum(weights)
-        pooled = sum(e * w for (e, _, _), w in zip(usable, weights)) / total
-        pooled_margin = math.sqrt(1.0 / total)
+        pooled, pooled_margin, consistency = combine(usable)
+        if consistency > 1.0:
+            print("\nthe pairings disagree by more than their own error bars allow "
+                  "(chi2/dof {:.1f}), so the".format(consistency * consistency))
+            print("margin below is widened {:.1f}x to say so. The opponent ratings are CCRL "
+                  "40/15 and".format(consistency))
+            print("this match is at {} ms a move, which is the usual reason.".format(
+                args.movetime))
         print("\nmachete is about {:.0f} Elo (+/- {:.0f}) on the CCRL scale at {} ms a move".format(
             pooled, pooled_margin, args.movetime))
         if LIVE is not None:
