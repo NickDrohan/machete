@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance gates for mate. Every gate is a claim that can fail.
+# Acceptance gates for machete. Every gate is a claim that can fail.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/../../scripts/gates.sh"
@@ -51,6 +51,18 @@ gate "finds every mate in three (depth 6)" 0 bash "$here/harness/solve.sh" "$rel
 # changes all move it, so it must be updated deliberately.
 "$release" bench 2>/dev/null >"$work/bench.txt"
 same "bench matches the recorded node count" "$here/fixtures/bench.expected" "$work/bench.txt"
+
+# NNUE: the engine and an independent numpy implementation of the same integer
+# arithmetic must agree to the centipawn. The network is generated from a seed
+# rather than committed, so this gate covers the code that writes the file as
+# well as the code that reads it, and no 400 KB blob lives in git.
+# The incremental accumulator is checked by the Mach test suite above, which
+# compares it against a from-scratch recompute after every move of a game.
+if [[ -n "$python" ]]; then
+    "$python" "$here/harness/nnue/reference.py" random "$work/random.nnue" --seed 1 >/dev/null
+    gate "network evaluation matches the numpy reference exactly" 0 \
+        "$python" "$here/harness/nnue/agree.py" "$release" "$work/random.nnue" --positions 150
+fi
 
 # Parallel search: it must find the same move as one thread, and it must
 # actually use the cores it was given.

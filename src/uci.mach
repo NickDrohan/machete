@@ -29,6 +29,7 @@ use pos: machete.position;
 use machete.position.Position;
 use machete.search;
 use machete.smp;
+use nn: machete.nnue;
 use machete.tt;
 
 val LINE_CAP:   usize = 8192;
@@ -116,6 +117,30 @@ fun start_search() {
 }
 
 # position [startpos | fen <6 fields>] [moves <uci>...]
+# glue tokens [from, until) back together with single spaces
+#
+# the tokeniser threw the spaces away, and both a FEN and a file path arrive
+# as several tokens. runs of spaces collapse to one, which a FEN does not
+# care about and a path on this platform cannot contain meaningfully.
+fun join_tokens(t: *Tokens, from: i64, until: i64, out: *u8, cap: i64) {
+    var n: i64 = 0;
+    var f: i64 = from;
+    for (f < until && f < t.count) {
+        if (n > 0 && n < cap - 1) {
+            out[n] = ' ';
+            n      = n + 1;
+        }
+        var i: i64 = 0;
+        for (t.item[f][i] != 0 && n < cap - 1) {
+            out[n] = t.item[f][i];
+            n      = n + 1;
+            i      = i + 1;
+        }
+        f = f + 1;
+    }
+    out[n] = 0;
+}
+
 fun set_position(t: *Tokens) {
     var next: i64 = 2;
     if (t.count >= 2 && str_equals(t.item[1], "startpos")) {
@@ -124,23 +149,10 @@ fun set_position(t: *Tokens) {
     or (t.count >= 3 && str_equals(t.item[1], "fen")) {
         # rebuild the FEN from its space-separated fields
         var fen: [128]u8;
-        var n:   i64 = 0;
         var f:   i64 = 2;
-        for (f < t.count && f < 8 && !str_equals(t.item[f], "moves")) {
-            if (n > 0 && n < 127) {
-                fen[n] = ' ';
-                n      = n + 1;
-            }
-            var i: i64 = 0;
-            for (t.item[f][i] != 0 && n < 127) {
-                fen[n] = t.item[f][i];
-                n      = n + 1;
-                i      = i + 1;
-            }
-            f = f + 1;
-        }
-        fen[n] = 0;
-        next   = f;
+        for (f < t.count && f < 8 && !str_equals(t.item[f], "moves")) { f = f + 1; }
+        join_tokens(t, 2, f, ?fen[0], 128);
+        next = f;
         if (!pos.set_fen(?GAME, ?fen[0])) {
             print.println("info string invalid fen, keeping previous position");
             ret;
@@ -214,6 +226,7 @@ pub fun loop() i64 {
             print.printlnf("option name Hash type spin default {} min {} max {}",
                 tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
+            print.println("option name EvalFile type string default <empty>");
             print.println("uciok");
         }
         or (str_equals(command, "isready")) {
@@ -247,6 +260,16 @@ pub fun loop() i64 {
             }
             or (t.count >= 3 && str_equals(t.item[2], "Hash")) {
                 print.printlnf("info string hash is fixed at {} MB", tt.MEGABYTES);
+            }
+            or (t.count >= 5 && str_equals(t.item[2], "EvalFile")) {
+                var path: [256]u8;
+                join_tokens(?t, 4, t.count, ?path[0], 256);
+                if (nn.load(?path[0])) {
+                    print.printlnf("info string network loaded from {}", ?path[0]);
+                }
+                or {
+                    print.printlnf("info string could not read {}, keeping the hand-written evaluation", ?path[0]);
+                }
             }
         }
         or (str_equals(command, "quit")) {

@@ -58,6 +58,8 @@ fun helper_entry(arg: *u8) {
     val h:     *Helper = ?HELPERS[index];
     search.reset(?h.engine);
     h.engine.quiet = 1;
+    # helper 0 is the main thread, so helpers take stacks 1 and up
+    h.engine.thread_id = index;
     # helpers never print and never own the clock: they run until stopped
     var limits: search.Limits;
     limits.depth    = search.MAX_PLY - 2;

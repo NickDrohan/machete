@@ -23,6 +23,7 @@ use machete.movegen.MoveList;
 use pos: machete.position;
 use machete.position.Position;
 use machete.see;
+use nn: machete.nnue;
 use machete.tt;
 
 pub val INFINITE: i64 = 31000;
@@ -139,6 +140,8 @@ pub rec Search {
     best:          Move;
     depth_reached: i64;
     quiet:         u8;
+    # which accumulator stack this search owns; every thread needs its own
+    thread_id:     i64;
     killers:       [64][2]Move;
     history:       [12][64]i64;
     # the quiet move that refuted the same reply last time, indexed by the
@@ -151,8 +154,9 @@ pub rec Search {
 }
 
 pub fun reset(s: *Search) {
-    s.nodes    = 0;
-    s.stop     = 0;
+    s.nodes     = 0;
+    s.thread_id = 0;
+    s.stop      = 0;
     s.deadline = 0;
     s.best     = mv.NONE;
     var i: i64 = 0;
@@ -629,6 +633,10 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     if (root.count == 0) { ret mv.NONE; }
     s.best = root.moves[0];
 
+    # the network follows the search from here, and is let go again at the end
+    # so that moves applied between searches cannot run the stack off its end
+    if (nn.loaded) { pos.attach(p, nn.stack(s.thread_id)); }
+
     var depth:    i64 = 1;
     var previous: i64 = 0;
     for (depth <= max_depth) {
@@ -673,6 +681,7 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         if (s.deadline != 0 && clock.now_ms() + elapsed / 2 >= s.deadline) { brk; }
         depth = depth + 1;
     }
+    pos.detach(p);
     ret s.best;
 }
 

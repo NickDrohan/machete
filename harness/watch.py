@@ -4,6 +4,14 @@
     python harness/watch.py --elo 2200 --movetime 500 --threads 8
     python harness/watch.py --opponent path/to/other-engine.exe
 
+    # the network against the hand-written evaluation, both of them machete
+    python harness/watch.py --opponent out/.../machete.exe --option EvalFile=net.nnue
+
+`--option` and `--opponent-option` pass UCI options to one side or the other,
+which is what makes an engine-against-itself comparison watchable. A side given
+an EvalFile is labelled "(net)" and a side without one "(classical)", so the
+board says which evaluation is playing rather than showing two identical names.
+
 Runs the game in one thread and serves a page from another, so the board
 updates as the moves are played. Everything is local: no CDN, no network, one
 file, and the page is plain HTML with a polling fetch.
@@ -340,6 +348,10 @@ def main():
     parser.add_argument("--port", type=int, default=8730)
     parser.add_argument("--games", type=int, default=20, help="games to play back to back")
     parser.add_argument("--pause", type=float, default=3.0, help="seconds between games")
+    parser.add_argument("--option", action="append", default=[],
+                        help="UCI option for machete as Name=Value; repeatable")
+    parser.add_argument("--opponent-option", action="append", default=[],
+                        help="UCI option for the opponent as Name=Value; repeatable")
     args = parser.parse_args()
 
     opponent_path = args.opponent or find_stockfish()
@@ -348,6 +360,11 @@ def main():
 
     if args.threads > 1:
         machete.configure({"Threads": args.threads})
+    for engine, options in ((machete, args.option), (opponent, args.opponent_option)):
+        for setting in options:
+            name, _, value = setting.partition("=")
+            engine.configure({name: int(value) if value.isdigit() else value})
+
     opponent_name = opponent.id.get("name", "opponent")
     try:
         opponent.configure({"UCI_LimitStrength": True, "UCI_Elo": args.elo})
@@ -356,6 +373,11 @@ def main():
         pass  # an engine without strength limiting just plays its best
 
     machete_name = "machete" + (" x{}".format(args.threads) if args.threads > 1 else "")
+    # when both sides are machete, say which evaluation each one is using
+    if args.opponent and "machete" in os.path.basename(opponent_path).lower():
+        loaded = lambda options: any(s.startswith("EvalFile=") for s in options)
+        machete_name += " (net)" if loaded(args.option) else " (classical)"
+        opponent_name = "machete " + ("(net)" if loaded(args.opponent_option) else "(classical)")
     game = Game(machete_name, opponent_name)
     game.machete_name = machete_name
     game.opponent_name = opponent_name

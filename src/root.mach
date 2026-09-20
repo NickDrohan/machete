@@ -21,6 +21,7 @@ use machete.clock;
 use machete.magic;
 use mv: machete.move;
 use machete.movegen;
+use nn: machete.nnue;
 use machete.perft;
 use pos: machete.position;
 use machete.position.Position;
@@ -38,6 +39,7 @@ fun usage() i64 {
     print.eprintln("       machete divide <depth> [fen]          per-root-move counts");
     print.eprintln("       machete go     <depth> [fen]          search one position");
     print.eprintln("       machete smp    <threads> <ms> [fen]   search with a thread pool");
+    print.eprintln("       machete nnue   <file> [fen]           the network's score for one position");
     print.eprintln("       machete bench                         node-count signature");
     print.eprintln("       machete magics                        regenerate magic constants");
     ret EXIT_USAGE;
@@ -217,6 +219,27 @@ fun see_of(argc: i64, argv: **u8) i64 {
     ret 0;
 }
 
+# the network's verdict on one position: `machete nnue <file> <fen...>`
+#
+# this exists for the gate that compares it with harness/nnue/reference.py.
+fun nnue_of(argc: i64, argv: **u8) i64 {
+    if (argc < 4) { ret usage(); }
+    if (!nn.load(argv[2])) {
+        print.eprintln("could not read that network file");
+        ret EXIT_USAGE;
+    }
+    var fen: [256]u8;
+    fen_from_args(argc, argv, 3, ?fen[0], 256);
+    var p: Position;
+    if (!pos.set_fen(?p, ?fen[0])) {
+        print.eprintln("invalid FEN");
+        ret EXIT_USAGE;
+    }
+    pos.attach(?p, nn.stack(0));
+    print.printlnf("{}", nn.output(?p.accs[p.acc_top], p.side));
+    ret 0;
+}
+
 #[symbol("main")]
 fun main(argc: i64, argv: **u8) i64 {
     pos.init();
@@ -228,6 +251,7 @@ fun main(argc: i64, argv: **u8) i64 {
     if (str_equals(command, "bench"))  { ret bench(); }
     if (str_equals(command, "smp"))    { ret smp_bench(argc, argv); }
     if (str_equals(command, "see"))    { ret see_of(argc, argv); }
+    if (str_equals(command, "nnue"))   { ret nnue_of(argc, argv); }
     if (str_equals(command, "magics")) {
         magic.print_found();
         ret 0;

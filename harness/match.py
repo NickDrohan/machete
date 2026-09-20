@@ -10,6 +10,13 @@ difference between them and prints an Elo estimate with an error bar.
 Colours alternate, and each opening is played twice, once from each side, so a
 lucky opening cannot decide the match.
 
+`--concurrency N` plays N games at once, which is the difference between a
+decisive match and an overnight one: 700 games at 300 ms a move is nine hours
+in one process and under an hour in twelve. Each worker owns its own pair of
+engines, and each opening's seed comes from its pair number rather than from a
+shared generator, so the openings played are the same whatever order the
+workers happen to finish in.
+
 `--sprt elo0 elo1` runs a sequential test instead of a fixed number of games:
 after every game it asks whether the evidence already favours "the change is
 worth less than elo0" or "more than elo1", and stops as soon as one of them is
@@ -23,6 +30,7 @@ import math
 import os
 import random
 import sys
+import threading
 
 import chess
 import chess.engine
@@ -38,12 +46,11 @@ def random_opening(rng, plies):
     return board.move_stack[:]
 
 
-def play(white, black, opening, movetime, max_plies):
+def play(white, black, opening, limit, max_plies):
     """Play one game; returns '1-0', '0-1', '1/2-1/2'."""
     board = chess.Board()
     for move in opening:
         board.push(move)
-    limit = chess.engine.Limit(time=movetime / 1000.0)
     while not board.is_game_over(claim_draw=True):
         if board.ply() >= max_plies:
             return "1/2-1/2"
@@ -99,15 +106,118 @@ def elo_difference(score, games):
     return elo, span / 2.0
 
 
+class Tally(object):
+    """The running score, and the sequential test's verdict once it has one."""
+
+    def __init__(self, args, lower, upper):
+        self.lock = threading.Lock()
+        self.wins = self.draws = self.losses = 0
+        self.verdict = None
+        self.args = args
+        self.lower = lower
+        self.upper = upper
+
+    def record(self, outcome, a_is_white):
+        """Add one game and re-run the sequential test. True means keep going."""
+        with self.lock:
+            if outcome == "1/2-1/2":
+                self.draws += 1
+            elif (outcome == "1-0") == a_is_white:
+                self.wins += 1
+            else:
+                self.losses += 1
+            played = self.wins + self.draws + self.losses
+            if self.args.sprt:
+                llr = log_likelihood_ratio(self.wins, self.draws, self.losses,
+                                           self.args.sprt[0], self.args.sprt[1])
+                if played < self.args.sprt_min_games:
+                    llr = 0.0
+                if played % 20 == 0:
+                    print("  {} games, LLR {:+.2f} (bounds {:+.2f} .. {:+.2f})".format(
+                        played, llr, self.lower, self.upper))
+                    sys.stdout.flush()
+                if llr >= self.upper:
+                    self.verdict = "accepted H1: the change is worth at least {:.0f} Elo".format(
+                        self.args.sprt[1])
+                elif llr <= self.lower:
+                    self.verdict = "accepted H0: the change is worth at most {:.0f} Elo".format(
+                        self.args.sprt[0])
+            return self.verdict is None and played < self.args.games
+
+
+def limit_from(args):
+    """What each side is given per move.
+
+    `--depth` exists to separate two questions that a timed match answers
+    together: whether an evaluation is better, and whether it is fast enough to
+    pay for itself. A slower evaluation loses Elo to its own cost at equal
+    time; at equal depth that cost is not charged, so what is left is the
+    evaluation. Neither number alone decides anything - a change has to win on
+    time to be worth shipping - but knowing which of the two is failing says
+    what to work on next.
+    """
+    if args.depth:
+        return chess.engine.Limit(depth=args.depth)
+    return chess.engine.Limit(time=args.movetime / 1000.0)
+
+
+def open_engine(path, options):
+    engine = chess.engine.SimpleEngine.popen_uci(path)
+    for setting in options:
+        name, _, value = setting.partition("=")
+        engine.configure({name: int(value) if value.isdigit() else value})
+    return engine
+
+
+def worker(args, paths, tally, pairs, failures):
+    """Play whole pairs of games until the tally says to stop."""
+    try:
+        a = open_engine(paths[0], args.option_a)
+        b = open_engine(paths[1], args.option_b)
+    except Exception as problem:
+        failures.append("could not start engines: {}".format(problem))
+        return
+    try:
+        while True:
+            with pairs["lock"]:
+                if pairs["next"] * 2 >= args.games or tally.verdict:
+                    return
+                pair = pairs["next"]
+                pairs["next"] += 1
+            # seeded by pair number, not by draw order, so concurrency does not
+            # change which openings get played
+            opening = random_opening(random.Random(args.seed * 1000003 + pair),
+                                     args.opening_plies)
+            for a_is_white in (True, False):
+                white, black = (a, b) if a_is_white else (b, a)
+                try:
+                    outcome = play(white, black, opening, limit_from(args), args.max_plies)
+                except Exception as problem:
+                    failures.append(str(problem))
+                    return
+                if not tally.record(outcome, a_is_white):
+                    return
+    finally:
+        for engine in (a, b):
+            try:
+                engine.quit()
+            except Exception:
+                pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("engine_a")
     parser.add_argument("engine_b", nargs="?")
     parser.add_argument("--games", type=int, default=20)
     parser.add_argument("--movetime", type=int, default=100, help="milliseconds per move")
+    parser.add_argument("--depth", type=int, default=0,
+                        help="fixed depth per move instead of a time budget")
     parser.add_argument("--opening-plies", type=int, default=4)
     parser.add_argument("--max-plies", type=int, default=300)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="games in flight at once; each one is a pair of engine processes")
     parser.add_argument("--option-a", action="append", default=[],
                         help="UCI option for engine A as Name=Value; repeatable")
     parser.add_argument("--option-b", action="append", default=[],
@@ -122,54 +232,32 @@ def main():
 
     path_a = os.path.abspath(args.engine_a)
     path_b = os.path.abspath(args.engine_b) if args.engine_b else path_a
-    rng = random.Random(args.seed)
 
-    a = chess.engine.SimpleEngine.popen_uci(path_a)
-    b = chess.engine.SimpleEngine.popen_uci(path_b)
-    for engine, options in ((a, args.option_a), (b, args.option_b)):
-        for setting in options:
-            name, _, value = setting.partition("=")
-            engine.configure({name: int(value) if value.isdigit() else value})
-    wins = draws = losses = 0
-    verdict = None
     upper = lower = None
     if args.sprt:
         upper = math.log((1.0 - args.beta) / args.alpha)
         lower = math.log(args.beta / (1.0 - args.alpha))
-    try:
-        for pair in range((args.games + 1) // 2):
-            opening = random_opening(rng, args.opening_plies)
-            for a_is_white in (True, False):
-                white, black = (a, b) if a_is_white else (b, a)
-                outcome = play(white, black, opening, args.movetime, args.max_plies)
-                if outcome == "1/2-1/2":
-                    draws += 1
-                elif (outcome == "1-0") == a_is_white:
-                    wins += 1
-                else:
-                    losses += 1
-                if args.sprt:
-                    llr = log_likelihood_ratio(wins, draws, losses, args.sprt[0], args.sprt[1])
-                    played = wins + draws + losses
-                    if played < args.sprt_min_games:
-                        llr = 0.0
-                    if played % 20 == 0:
-                        print("  {} games, LLR {:+.2f} (bounds {:+.2f} .. {:+.2f})".format(
-                            played, llr, lower, upper))
-                        sys.stdout.flush()
-                    if llr >= upper:
-                        verdict = "accepted H1: the change is worth at least {:.0f} Elo".format(args.sprt[1])
-                    elif llr <= lower:
-                        verdict = "accepted H0: the change is worth at most {:.0f} Elo".format(args.sprt[0])
-                if verdict or wins + draws + losses >= args.games:
-                    break
-            if verdict or wins + draws + losses >= args.games:
-                break
-    finally:
-        a.quit()
-        b.quit()
 
+    tally = Tally(args, lower, upper)
+    pairs = {"next": 0, "lock": threading.Lock()}
+    failures = []
+    threads = [threading.Thread(target=worker,
+                                args=(args, (path_a, path_b), tally, pairs, failures))
+               for _ in range(max(1, args.concurrency))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if failures:
+        print("match failed: {}".format(failures[0]))
+        return 1
+
+    wins, draws, losses = tally.wins, tally.draws, tally.losses
+    verdict = tally.verdict
     games = wins + draws + losses
+    if games == 0:
+        print("no games were played")
+        return 1
     score = (wins + 0.5 * draws) / games
     print("games {} wins {} draws {} losses {}".format(games, wins, draws, losses))
     print("score {:.3f}".format(score))

@@ -16,8 +16,10 @@ use bb: machete.bitboard;
 use machete.magic;
 use mv: machete.move;
 use machete.move.Move;
+use nn: machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
+use rng: machete.rng;
 
 pub val MAX_MOVES: i64 = 256;
 
@@ -217,5 +219,89 @@ test "movegen: parse_uci finds legal moves only" {
     if (m == mv.NONE || mv.flag(m) != mv.DOUBLE_PUSH) { ret 2; }
     if (parse_uci(?p, "e2e5") != mv.NONE)             { ret 3; }
     if (parse_uci(?p, "e2e") != mv.NONE)              { ret 4; }
+    ret 0;
+}
+
+# whether two accumulators hold the same hidden layer
+fun accs_equal(a: *nn.Acc, b: *nn.Acc) bool {
+    var side: i64 = 0;
+    for (side < 2) {
+        var i: i64 = 0;
+        for (i < nn.HIDDEN) {
+            if (a.v[side][i] != b.v[side][i]) { ret false; }
+            i = i + 1;
+        }
+        side = side + 1;
+    }
+    ret true;
+}
+
+test "nnue: the incremental accumulator matches a fresh one, move by move" {
+    pos.init();
+
+    # weights spread over a wide range, so a wrong feature index or a missed
+    # update cannot cancel out. no network file is needed: this checks the
+    # bookkeeping in make/unmake, not any particular set of numbers.
+    var r: rng.Rng = rng.seeded(0xD1B54A32D192ED03);
+    var i: i64 = 0;
+    for (i < nn.INPUTS * nn.HIDDEN) {
+        nn.FEATURE_WEIGHTS[i] = (rng.below(?r, 601)::i64 - 300)::i16;
+        i                     = i + 1;
+    }
+    i = 0;
+    for (i < nn.HIDDEN) {
+        nn.FEATURE_BIAS[i] = (rng.below(?r, 601)::i64 - 300)::i16;
+        i                  = i + 1;
+    }
+
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    pos.attach(?p, nn.stack(0));
+
+    # the same board accumulated on two stacks must agree, or nothing below
+    # this line means anything
+    var twin: Position = p;
+    pos.attach(?twin, nn.stack(1));
+    if (!accs_equal(?p.accs[0], ?twin.accs[0])) { ret 2; }
+
+    # a random game: captures, promotions, castling and en passant all turn up.
+    # generate_legal makes and unmakes every pseudo-legal move on the way, so
+    # this also covers a slot being reused by one sibling after another.
+    var played: i64 = 0;
+    for (played < 140) {
+        var list: MoveList;
+        generate_legal(?p, ?list);
+        if (list.count == 0) { brk; }
+        pos.make(?p, list.moves[rng.below(?r, list.count::u64)::i64]);
+
+        # the same position, accumulated from the board with no history.
+        # materialise() is what the evaluation calls, so building the deferred
+        # chain is part of what is under test: half these moves are checked
+        # without ever being evaluated, which leaves a run of deferred slots
+        # behind for a later move to build through.
+        var fresh: Position = p;
+        pos.attach(?fresh, nn.stack(2));
+        if (played % 2 == 0) {
+            nn.materialise(p.accs, p.acc_top);
+            if (!accs_equal(?p.accs[p.acc_top], ?fresh.accs[0])) { ret 3; }
+        }
+        played = played + 1;
+    }
+    if (played < 20) { ret 4; }
+
+    # and taking the whole game back lands on the start position again
+    for (played > 0) {
+        pos.unmake(?p);
+        played = played - 1;
+    }
+    var start: Position;
+    if (!pos.set_fen(?start, pos.START_FEN)) { ret 5; }
+    pos.attach(?start, nn.stack(1));
+    nn.materialise(p.accs, p.acc_top);
+    if (!accs_equal(?p.accs[p.acc_top], ?start.accs[0])) { ret 6; }
+    if (p.acc_top != 0)                                  { ret 7; }
+    # four recorded changes is the ceiling nnue.mach argues for; this is the
+    # argument being checked rather than believed
+    if (nn.OVERFLOW != 0)                                { ret 8; }
     ret 0;
 }

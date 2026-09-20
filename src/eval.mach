@@ -13,6 +13,7 @@ use std.types.bool.false;
 use std.types.bool.true;
 
 use bb:  machete.bitboard;
+use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
 
@@ -218,7 +219,20 @@ fun side_score(p: *Position, color: u8, phase: i64) i64 {
 }
 
 # centipawns from the side to move's point of view
+#
+# with a network loaded and an accumulator attached this is the network's
+# answer; otherwise it is the hand-written one below. the two disagree by
+# design, so nothing may compare scores across the boundary.
 pub fun evaluate(p: *Position) i64 {
+    if (nn.loaded && p.accs != nil) {
+        nn.materialise(p.accs, p.acc_top);
+        ret nn.output(?p.accs[p.acc_top], p.side);
+    }
+    ret classical(p);
+}
+
+# material, piece-square tables and a few pawn terms
+pub fun classical(p: *Position) i64 {
     init();
     val phase: i64 = phase_of(p);
     val white: i64 = side_score(p, pos.WHITE, phase);

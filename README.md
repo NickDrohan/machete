@@ -259,7 +259,139 @@ board is never idle. This is a viewer rather than a measurement: `harness/match.
 produces numbers, and nothing here is gated, because it needs an opponent engine that the gates
 cannot assume is installed.
 
+## Evaluation: the network
+
+The hand-written evaluation is material, piece-square tables, the bishop pair and three pawn
+terms. A blunder profile of 278 moves from real games said where that runs out: `positional
+drift` accounted for 44 moves and 5,746 centipawns of loss, four times the next category. That
+is not a search problem, and it is not a problem a few more hand-written terms would fix.
+
+So machete also has a network. `768 -> 256 -> 1`, a perspective net: a feature is (colour, piece,
+square) with all three relative to whichever side is looking, so one set of weights serves both
+sides and black's view is white's view with the colours swapped and the board turned around. The
+side to move's half of the hidden layer is read first, which lets the network learn that having
+the move is worth something.
+
+Everything is integers. Hidden values live on a scale where 1.0 is 255 and output weights on one
+where 1.0 is 64, so the dot product lands on their product and one divide at the end gives
+centipawns. The trainer clips weights every step so the quantized accumulator cannot overflow an
+int16, and refuses to export a net whose worst-case accumulator would - a net can train
+beautifully and then evaluate garbage once quantized, and that failure is silent.
+
+The trained network ships as `net/machete.nnue`; load it with
+`setoption name EvalFile value net/machete.nnue`. Without it the engine falls back to the
+hand-written evaluation silently, which is the right behaviour for a missing file and a trap for
+a mistyped one - check for `info string network loaded` if a result looks wrong. The two
+evaluations disagree by design, so no score may be compared across that boundary.
+
+It is worth **+259 +/- 44 Elo** over the hand-written evaluation: 400 games at 300 ms a move,
+312 wins, 29 draws, 59 losses. Both sides are this same binary, so that number is the
+evaluation and nothing else.
+
+Getting there took two separate things, and for a while only one of them was true. The first
+net, trained on half the data and running on a scalar forward pass, measured **+14 +/- 69** at
+equal time - indistinguishable from no change at all. At equal *depth* the same net measured
+**+135 +/- 75**. That pair of numbers is the whole diagnosis: the evaluation was already good,
+and the engine was handing all of it back in search speed. `--depth` exists in `harness/match.py`
+for exactly this, because a timed match answers two questions at once and cannot say which one
+failed.
+
+### The accumulator is never recomputed
+
+A move changes at most four features, so the hidden layer is patched rather than rebuilt. The
+patch hooks into `put` and `remove` in `position.mach` - the only two functions that touch the
+board - which means castling, en passant and promotion need no special handling anywhere in the
+network code. `make` copies the parent's hidden layer into the next slot and lets those two
+functions patch it; `unmake` pops.
+
+That last word cost an afternoon. The pop was originally the first line of `unmake`, which meant
+the `put` and `remove` calls that restore the board wrote their patches into the *parent's* slot
+and corrupted it. Every sibling move after the first was then evaluated from a poisoned
+accumulator. Nothing crashed and the engine played on.
+
+The gate that caught it plays a random game and, after every move, compares the patched
+accumulator against one built from the board with no history. It failed on the first move of the
+first game. It is in `movegen.mach` rather than `nnue.mach` because that is where legal move
+generation lives, and generating legal moves makes and unmakes every pseudo-legal move on the
+way - so the gate covers a slot being reused by one sibling after another, which is exactly the
+case that was broken.
+
+A second gate compares the engine's evaluation against `harness/nnue/reference.py`, an
+independent numpy implementation of the same integer arithmetic, and requires them to be equal to
+the centipawn rather than close. Perturbing the clipping bound by one moved a score from 3966 to
+3973 and the gate caught it. The network it checks is generated from a seed rather than
+committed, so the gate covers the code that writes the file as well as the code that reads it.
+
+### 128 bits at a time
+
+A network cost the search 3.0x its speed to begin with. Getting that to 1.13x took three
+changes, and the order they are described in is not the order they were tried, because the first
+guess about where the time went was wrong.
+
+The idiom underneath all of it: a vector written as a literal is eight scalar loads and seven
+lane inserts, so the pointer is reinterpreted instead and the whole register arrives in one move.
+
+    fun load8(p: *i16, at: i64) i16x8 {
+        ret @((?p[at]):~*i16x8);
+    }
+
+**Measuring the wrong thing.** Patching the hidden layer is 256 int16 additions per feature per
+perspective, so the accumulator looked like the whole problem, and short-circuiting the forward
+pass to a constant seemed to confirm it: 79,000 nodes per second became 89,000, apparently 12%.
+That number was worthless. An evaluation that always returns zero prunes differently, so the two
+runs searched different trees and their node rates were not comparable.
+
+The honest version is a marginal cost: run the forward pass *twice* and keep everything else
+identical. The tree stays byte-for-byte the same and the difference is what one extra pass costs.
+It came to 2.98 microseconds a node, against a total network overhead of 2.95 - so the forward
+pass was essentially the entire cost and the accumulator was already noise.
+
+**Deferring the accumulator.** A search reaches 69,928 positions through make() at depth 9 and
+evaluates 12,720 of them; the rest are illegal, or late move pruning throws them away. So a move
+now records what it changed and returns, and the hidden layer is built only when something asks
+for an evaluation - 13,398 slots built instead of 69,928. On its own this was worth almost
+nothing, 3.00x down to 2.90x, because it was optimising the thing that was not the bottleneck.
+Once the forward pass got fast it was worth 1.26x, and it stays.
+
+**The forward pass.** Every product fits an int16 exactly, because a clipped hidden value is
+0..255 and a weight is -127..127, and 255 * 127 = 32385. Only the sum needs to be wider.
+
+The first attempt widened the inputs and multiplied in `i32x4`, and measured *slower* than
+scalar - 222,000 nodes per second against 191,000. SSE2 has no packed 32-bit multiply, so that
+multiply is emulated. Multiplying in `i16x8`, which is a single instruction, and widening only
+the products afterwards gave 599,000.
+
+Widening wants a shift, and Mach has no vector shifts yet: they are "deferred to a later
+increment" because a per-lane variable shift is not 1:1 on the SSE2 baseline. So it is done by
+masking. Reinterpreted as `i32x4`, the low half of each lane holds one product; a second pass
+offset by one element puts the products in between into that same position, and a sum does not
+care what order it is taken in.
+
+    no network   676,000 nps
+    network      599,000 nps
+
+Both medians of three runs. A single reading had the network *ahead* of the baseline, which is
+not possible and was simply the top of the noise - one measurement of a fast thing is a rumour.
+
+### Where the training data comes from
+
+`harness/nnue/gen.py` has Stockfish 17 play itself from random openings and writes every
+position with the score its own search gave and the result the game reached. Generating and
+labelling are the same work that way: the search that picks the move is the search that produces
+the label.
+
+Three things in it were measured rather than assumed:
+
+- **A node budget, not a depth.** At a fixed depth a sharp middlegame costs many times what a
+  quiet opening does. 1,500 nodes reaches median depth 12 and costs 5.5 ms; 6,000 nodes reaches
+  median depth 13 and costs 18.8 ms. Four times the budget bought one ply.
+- **Processes, not threads.** python-chess drives every engine it owns from one asyncio loop on
+  one thread. Twenty threads took turns through a single interpreter and the whole box did the
+  work of about one core.
+- **The cheap game-over test.** `is_game_over(claim_draw=True)` walks the move stack looking for
+  a threefold repetition on every ply. It profiled at a seventh of the entire run - more than the
+  position encoding and board copying together. Dropping it took a position from 15 ms to 10 ms.
+
 ## Deliberately not built
 
-No neural network evaluation, opening book, endgame tablebases or pondering. Gated on
-windows-x86_64 only.
+No opening book, endgame tablebases or pondering. Gated on windows-x86_64 only.

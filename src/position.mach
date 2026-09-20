@@ -15,6 +15,7 @@ use bb: machete.bitboard;
 use machete.magic;
 use mv: machete.move;
 use machete.move.Move;
+use nn: machete.nnue;
 
 pub val WHITE: u8 = 0;
 pub val BLACK: u8 = 1;
@@ -73,6 +74,11 @@ pub rec Position {
     key:      u64;
     ply:      i64;
     hist:     [1024]Undo;
+    # the network's hidden layer for this position and its ancestors, or nil
+    # when no network is attached. put/remove patch the top slot, so the
+    # accumulator follows the board without knowing anything about moves.
+    accs:     *nn.Acc;
+    acc_top:  i64;
 }
 
 pub var Z_PIECE:  [12][64]u64;
@@ -160,6 +166,7 @@ fun put(p: *Position, pc: u8, sq: i64) {
     p.occ[color_of(pc)] = p.occ[color_of(pc)] | b;
     p.board[sq]         = pc;
     p.key               = p.key ^ Z_PIECE[pc][sq];
+    if (p.accs != nil) { nn.change(?p.accs[p.acc_top], pc, sq, 1); }
 }
 
 fun remove(p: *Position, sq: i64) {
@@ -169,6 +176,7 @@ fun remove(p: *Position, sq: i64) {
     p.occ[color_of(pc)] = p.occ[color_of(pc)] ^ b;
     p.board[sq]         = EMPTY;
     p.key               = p.key ^ Z_PIECE[pc][sq];
+    if (p.accs != nil) { nn.change(?p.accs[p.acc_top], pc, sq, 0); }
 }
 
 fun shift(p: *Position, from: i64, to: i64) {
@@ -210,6 +218,10 @@ pub fun make(p: *Position, m: Move) {
     u.halfmove = p.halfmove;
     u.key      = p.key;
     p.ply      = p.ply + 1;
+    if (p.accs != nil) {
+        p.acc_top = p.acc_top + 1;
+        nn.defer(?p.accs[p.acc_top]);
+    }
 
     val us:   u8  = p.side;
     val from: i64 = mv.from(m);
@@ -267,6 +279,10 @@ pub fun make(p: *Position, m: Move) {
 # take back the most recent make()
 pub fun unmake(p: *Position) {
     p.ply = p.ply - 1;
+    # throw away whatever this slot held first: the put and remove calls below
+    # then only append to a list that is about to be popped, instead of
+    # patching 512 lanes of an accumulator nobody will read again
+    if (p.accs != nil) { nn.defer(?p.accs[p.acc_top]); }
     val u: *Undo = ?p.hist[p.ply];
     val m: Move  = u.move;
     p.side = p.side ^ 1;
@@ -303,6 +319,10 @@ pub fun unmake(p: *Position) {
     p.halfmove = u.halfmove;
     p.key      = u.key;
     if (us == BLACK) { p.fullmove = p.fullmove - 1; }
+    # last, not first: the put/remove calls above are still patching the
+    # accumulator, and they must land in this move's slot rather than in the
+    # parent's, which has to survive untouched for the next sibling move.
+    if (p.accs != nil) { p.acc_top = p.acc_top - 1; }
 }
 
 # pass the move to the opponent, for null-move pruning
@@ -357,6 +377,25 @@ pub fun compute_key(p: *Position) u64 {
     ret k;
 }
 
+# give this position its own accumulator stack and fill the first slot from
+# the board as it stands. every thread needs its own stack, so a position
+# copied to a helper thread must be attached again before it is searched.
+pub fun attach(p: *Position, stack: *nn.Acc) {
+    p.accs    = stack;
+    p.acc_top = 0;
+    nn.reset(?p.accs[0]);
+    var sq: i64 = 0;
+    for (sq < 64) {
+        if (p.board[sq] != EMPTY) { nn.add(?p.accs[0], p.board[sq], sq); }
+        sq = sq + 1;
+    }
+}
+
+pub fun detach(p: *Position) {
+    p.accs    = nil;
+    p.acc_top = 0;
+}
+
 fun clear(p: *Position) {
     var i: i64 = 0;
     for (i < 12) {
@@ -377,6 +416,8 @@ fun clear(p: *Position) {
     p.fullmove = 1;
     p.key      = 0;
     p.ply      = 0;
+    p.accs     = nil;
+    p.acc_top  = 0;
 }
 
 fun piece_from_char(c: u8) u8 {
