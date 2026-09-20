@@ -5,7 +5,7 @@
 # changes it is one less thing that can fail mid-search. The UCI Hash option
 # is therefore reported but not honoured.
 #
-# a stored machete score counts from the root, so it must be converted to and
+# a stored mate score counts from the root, so it must be converted to and
 # from "distance from this node" as it crosses the table; search does that.
 
 use std.types.bool.bool;

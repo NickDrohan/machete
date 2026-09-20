@@ -150,6 +150,65 @@ That validation run is also how a bug in it was found. The first version accepte
 10 Elo" after a single game: with no losses yet, the variance estimate collapses and the
 likelihood ratio explodes. It now reports no evidence until both a win and a loss exist.
 
+### A pruning campaign that mostly failed
+
+The engine was searching about ten times the nodes Stockfish did and reaching four plies less.
+That is the effective branching factor - the ratio of nodes between consecutive depths - which
+was about 2.4 here against roughly 1.5 for a strong engine.
+
+Six changes were tried. Measured on Kiwipete, single thread, to depth 12, they worked:
+
+| stack | nodes to depth 12 | time |
+| --- | --- | --- |
+| before | 3,411,900 | 7119 ms |
+| + logarithmic reduction table | 1,924,603 | 3641 ms |
+| + late move pruning | 1,349,700 | 3029 ms |
+| + null move at `3 + depth/3` | 876,271 | 1943 ms |
+| + reverse futility to depth 8, internal iterative reduction | 807,300 | 1740 ms |
+| + 128 MB table, delta pruning in quiescence | 645,156 | 1499 ms |
+
+5.3x fewer nodes, 4.7x less time, and with 24 threads the depth reached in three seconds went
+from 11 to 15. Then the games were played, and almost none of it survived:
+
+| configuration | Elo against the engine it replaced |
+| --- | --- |
+| reduction table alone | **+12 +/- 23** (900 games) |
+| + aggressive LMP, history, null move | -53 +/- 40 |
+| everything (40ms a move) | -34 +/- 34 |
+| everything, softened (40ms) | -21 +/- 26 (700 games) |
+| everything (300ms a move) | +10 +/- 48 |
+
+**Only the reduction table is in the engine.** Everything below the first row was reverted.
+
+Three things worth keeping from that:
+
+**A 300-game match cannot resolve a 30 Elo change.** The softened stack measured +29 +/- 40 over
+300 games and -21 +/- 26 over 700. The first number was noise, and it had already been written up
+as a success before the second arrived.
+
+**Two of the changes were bugs rather than bad ideas.** Internal iterative reduction was firing in
+principal variation nodes, dropping a ply exactly where the move gets chosen; late move pruning
+was pruning after seven quiet moves at depth 2. Fixing both moved the same stack by about 60 Elo.
+
+**The time control decides the answer.** The full stack is -34 at 40ms a move and +10 at 300ms.
+Aggressive pruning trades accuracy for depth, and depth only pays when there is time to reach it.
+Testing a deep-search change at the fastest control available measured the wrong regime.
+
+The honest reading of the whole table is that depth is not the binding constraint. The evaluation
+is material, piece-square tables, the bishop pair and three pawn terms: no mobility, no king
+safety, no rook placement. Four more plies spent on distinctions the evaluation cannot make buys
+very little, which is what +12 +/- 23 for a 1.8x smaller tree looks like.
+
+### Three changes the measurements rejected outright
+
+- **Razoring** broke mate in two. Every other prune survived that fixture; this one did not.
+- **Removing check extensions** lost both the mate-in-two and mate-in-three suites *and* was
+  slower, because the search found nothing and re-searched.
+- **A cheaper evaluation** was the obvious guess for the per-node cost. Material-only raised nps
+  15% and searched 10% *more* nodes, for no net gain, so the evaluation was left alone rather
+  than made incremental. Replacing the static exchange evaluation with plain MVV-LVA ordering
+  also raised nps and cost 33% more nodes.
+
 ### Tactics are generated and proved, not chosen
 
 `harness/make_tactics.py` plays random games to checkmate, rewinds, and keeps only positions

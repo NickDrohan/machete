@@ -32,6 +32,69 @@ pub val MATE_FOUND: i64 = 29000;
 
 pub val MAX_PLY: i64 = 64;
 
+# How much to reduce the Nth quiet move at depth D.
+#
+# The old rule reduced by one, or two past the eighth move, which left an
+# effective branching factor above 2.3 where a strong engine's is nearer 1.5.
+# The shape here is the standard 0.75 + ln(depth) * ln(move) / 2.25: almost
+# nothing early, up to five plies deep in the move list. std has no natural
+# log, so the table is built once at startup with a bit-by-bit log2.
+#
+# This is the only one of six pruning changes that measured a gain over 900
+# games (+12 +/- 23 Elo). The others are recorded in README.md with what they
+# cost; nodes are not strength.
+var REDUCTION: [64][64]i64;
+var table_ready: i64 = 0;
+
+fun log2_f64(x: f64) f64 {
+    var m:      f64 = x;
+    var result: f64 = 0.0;
+    for (m >= 2.0) {
+        m      = m / 2.0;
+        result = result + 1.0;
+    }
+    for (m < 1.0) {
+        m      = m * 2.0;
+        result = result - 1.0;
+    }
+    # each squaring decides one more bit of the fraction
+    var weight: f64 = 0.5;
+    var i:      i64 = 0;
+    for (i < 24) {
+        m = m * m;
+        if (m >= 2.0) {
+            m      = m / 2.0;
+            result = result + weight;
+        }
+        weight = weight / 2.0;
+        i      = i + 1;
+    }
+    ret result;
+}
+
+fun ln_f64(x: f64) f64 {
+    ret log2_f64(x) * 0.6931471805599453;
+}
+
+pub fun init_tables() {
+    if (table_ready != 0) { ret; }
+    var depth: i64 = 0;
+    for (depth < 64) {
+        var move: i64 = 0;
+        for (move < 64) {
+            var r: i64 = 0;
+            if (depth >= 3) {
+                r = (0.75 + ln_f64(depth::f64) * ln_f64((move + 1)::f64) / 2.25)::i64;
+            }
+            if (r < 0) { r = 0; }
+            REDUCTION[depth][move] = r;
+            move = move + 1;
+        }
+        depth = depth + 1;
+    }
+    table_ready = 1;
+}
+
 # how many nodes the rest of a thread pool has searched
 #
 # the pool lives in machete.smp, which imports this module, so it cannot be asked
@@ -348,9 +411,16 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             var reduction: i64  = 0;
             val quiet:     bool = !mv.is_capture(m) && !mv.is_promotion(m);
             if (depth >= 3 && legal > 3 && !in_check && quiet) {
-                reduction = 1;
-                if (legal > 8)              { reduction = 2; }
-                if (is_pv && reduction > 0) { reduction = reduction - 1; }
+                var d: i64 = depth;
+                if (d > 63) { d = 63; }
+                var n: i64 = legal;
+                if (n > 63) { n = 63; }
+                reduction = REDUCTION[d][n];
+                # a principal variation node is where being wrong is expensive
+                if (is_pv)                 { reduction = reduction - 1; }
+                if (reduction < 0)         { reduction = 0; }
+                # never reduce straight into quiescence: leave a ply to look
+                if (reduction > depth - 2) { reduction = depth - 2; }
             }
             score = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
             if (score > alpha && reduction > 0) {
@@ -458,6 +528,7 @@ fun budget_ms(p: *Position, limits: *Limits) i64 {
 
 # search until the limits say stop; returns the best move and sets s.best
 pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
+    init_tables();
     val start: i64 = clock.now_ms();
     s.nodes         = 0;
     s.stop          = 0;

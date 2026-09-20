@@ -12,7 +12,9 @@ import subprocess
 import sys
 import time
 
-TIMEOUT = 10.0
+# generous, because a loaded machine must not fail a protocol claim;
+# the latency claims below time themselves rather than relying on this
+TIMEOUT = 40.0
 
 
 class Engine(object):
@@ -79,7 +81,7 @@ def main():
         engine.send("isready")
         failures += check("survives malformed input", engine.wait_for("readyok") == "readyok")
 
-        # a mate is reported as a machete score, not a centipawn score
+        # a mate is reported as a mate score, not a centipawn score
         engine.send("position fen 8/8/5K1k/8/R7/8/8/8 w - - 7 84")
         engine.send("go depth 3")
         seen_mate = False
@@ -92,7 +94,7 @@ def main():
                 failures += check("finds the mate from a fen position",
                                   line.split()[1] == "a4h4", line.strip())
                 break
-        failures += check("reports a machete score", seen_mate)
+        failures += check("reports a mate score", seen_mate)
 
         engine.send("quit")
         failures += check("exits cleanly on quit", engine.p.wait(timeout=5) == 0)
