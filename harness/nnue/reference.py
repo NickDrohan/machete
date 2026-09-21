@@ -51,7 +51,7 @@ RECORD = np.dtype([
     ("squares", "u1", 32),
     ("score", "i2"),        # centipawns, from the side to move
     ("result", "u1"),       # 0 side to move lost, 1 drew, 2 won
-    ("pad", "u1"),
+    ("engine", "u1"),       # which teacher scored it; their centipawn scales differ
 ])
 
 
@@ -79,6 +79,26 @@ def feature_index(perspective, colour, kind, square):
         colour = colour ^ 1
         square = square ^ 56
     return (colour * 6 + kind) * 64 + square
+
+
+def feature_indices(rows):
+    """Both perspectives for a batch of records, padded to 32 features each.
+
+    The stored piece code is already colour * 6 + kind, so white's view is just
+    code * 64 + square. Black's view swaps the colour and flips the square.
+    """
+    pieces = rows["pieces"].astype(np.int64)
+    squares = rows["squares"].astype(np.int64)
+    counts = rows["count"].astype(np.int64)
+    live = np.arange(32)[None, :] < counts[:, None]
+
+    white = pieces * 64 + squares
+    black = ((pieces + 6) % 12) * 64 + (squares ^ 56)
+
+    black_to_move = (rows["stm"] == 1)[:, None]
+    us = np.where(black_to_move, black, white)
+    them = np.where(black_to_move, white, black)
+    return np.where(live, us, INPUTS), np.where(live, them, INPUTS)
 
 
 def save(path, feature_weights, feature_bias, output_weights, output_bias):

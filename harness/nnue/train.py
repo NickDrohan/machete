@@ -29,7 +29,7 @@ import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import reference
-from reference import RECORD
+from reference import RECORD, feature_indices
 
 INPUTS = reference.INPUTS
 HIDDEN = reference.HIDDEN
@@ -63,26 +63,6 @@ class Net(nn.Module):
             self.feature_bias.clamp_(-CLIP, CLIP)
             self.out.weight.clamp_(-CLIP, CLIP)
             self.features.weight[PAD].zero_()
-
-
-def feature_indices(rows):
-    """Both perspectives for a batch of records, padded to 32 features each.
-
-    The stored piece code is already colour * 6 + kind, so white's view is just
-    code * 64 + square. Black's view swaps the colour and flips the square.
-    """
-    pieces = rows["pieces"].astype(np.int64)
-    squares = rows["squares"].astype(np.int64)
-    counts = rows["count"].astype(np.int64)
-    live = np.arange(32)[None, :] < counts[:, None]
-
-    white = pieces * 64 + squares
-    black = ((pieces + 6) % 12) * 64 + (squares ^ 56)
-
-    black_to_move = (rows["stm"] == 1)[:, None]
-    us = np.where(black_to_move, black, white)
-    them = np.where(black_to_move, white, black)
-    return np.where(live, us, PAD), np.where(live, them, PAD)
 
 
 def targets(rows):
