@@ -43,10 +43,14 @@ val QB:     i64 = 64;    # an output weight of 1.0
 val SCALE:  i64 = 400;   # a network output of 1.0, in centipawns
 val HEADER: i64 = 32;
 
-# 768 * 256; Mach wants a literal here
-pub var FEATURE_WEIGHTS: [196608]i16;
-pub var FEATURE_BIAS:    [256]i16;
-pub var OUTPUT_WEIGHTS:  [512]i16;
+# aligned because output() and the accumulator read these 128 bits at a time.
+# The alignment happens to hold without saying so; saying so keeps it true.
+#[align(16)]
+pub var FEATURE_WEIGHTS: [INPUTS * HIDDEN]i16;
+#[align(16)]
+pub var FEATURE_BIAS:    [HIDDEN]i16;
+#[align(16)]
+pub var OUTPUT_WEIGHTS:  [2 * HIDDEN]i16;
 pub var OUTPUT_BIAS:     i32 = 0;
 
 
@@ -67,17 +71,18 @@ val CHANGES: i64 = 4;
 # an evaluation. In a real search 64% of positions reached by make() are never
 # evaluated - they are illegal, or late move pruning throws them away - and
 # patching 512 int16 lanes for those was most of what the network cost.
+#[align(16)]
 pub rec Acc {
     # 256 hidden values, plus eight lanes of slack. output() reads a second,
     # one-element-offset vector to reach the odd-numbered lanes, so the last
     # read of each half runs eight lanes past the end. The slack makes that
     # read land in memory this record owns; its contents are masked away.
-    v:      [2][264]i16;
+    v:      [2][HIDDEN + 8]i16;
     ready:  i64;
     count:  i64;
-    piece:  [4]u8;
-    square: [4]i64;
-    plus:   [4]i64;
+    piece:  [CHANGES]u8;
+    square: [CHANGES]i64;
+    plus:   [CHANGES]i64;
 }
 
 # set when a move reports more changes than CHANGES allows, which the ceiling
@@ -90,7 +95,11 @@ pub var OVERFLOW: i64 = 0;
 # these are globals because a per-thread stack is 96 KB and helper threads
 # keep everything large off their own stacks.
 val SLOTS:   i64 = 160;
-var STACKS: [33][160]Acc;
+# one stack per search thread, plus the main thread. smp.MAX_THREADS is 32;
+# this file cannot import smp without a cycle, so the number is repeated here
+# and the test below checks they still agree.
+pub val STACK_COUNT: i64 = 33;
+var STACKS: [STACK_COUNT][SLOTS]Acc;
 
 # the accumulator stack belonging to one thread; 0 is the main thread
 pub fun stack(id: i64) *Acc {

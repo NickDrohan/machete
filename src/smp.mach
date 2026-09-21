@@ -24,6 +24,7 @@ use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
 
+use nn: machete.nnue;
 use machete.clock;
 use mv: machete.move;
 use machete.move.Move;
@@ -133,6 +134,15 @@ pub fun think(s: *search.Search, p: *Position, limits: *search.Limits, threads: 
     search.clear_global_stop();
     search.POOL_NODES = nil;
     ret best;
+}
+
+test "smp: every thread has an accumulator stack of its own" {
+    # nnue.mach sizes its stack array by a copy of this number, because it
+    # cannot import this module without a cycle. If they ever drift, a helper
+    # thread writes into another thread's accumulator and the only symptom is
+    # a search that evaluates slightly wrong positions.
+    if (nn.STACK_COUNT < MAX_THREADS + 1) { ret 1; }
+    ret 0;
 }
 
 test "smp: a parallel search returns the same mate as a single thread" {

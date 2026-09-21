@@ -324,7 +324,7 @@ committed, so the gate covers the code that writes the file as well as the code 
 
 ### 128 bits at a time
 
-A network cost the search 3.0x its speed to begin with. Getting that to 1.13x took three
+A network cost the search 3.0x its speed to begin with. Getting that to 1.05x took three
 changes, and the order they are described in is not the order they were tried, because the first
 guess about where the time went was wrong.
 
@@ -367,11 +367,18 @@ masking. Reinterpreted as `i32x4`, the low half of each lane holds one product; 
 offset by one element puts the products in between into that same position, and a sum does not
 care what order it is taken in.
 
-    no network   676,000 nps
-    network      599,000 nps
+    no network   801,000 nps
+    network      765,000 nps
 
-Both medians of three runs. A single reading had the network *ahead* of the baseline, which is
-not possible and was simply the top of the noise - one measurement of a fast thing is a rumour.
+Medians of five runs on an idle machine. Both of those numbers are about 20% higher than the
+first set recorded here, because that set was taken while a stopped harness run was still alive
+and holding four opponent engines at full tilt. Nothing was wrong with the engine; the machine
+was lying. Check what the box is doing before believing a node rate.
+
+Run to run this benchmark varies by about 15%, so it resolves a 1.26x change and cannot resolve
+a 1.05x one. `#[align(16)]` on the weights and the accumulator measured inside that noise in
+both directions; it is kept because it states an assumption the SIMD loads were already making,
+not because it was shown to be faster.
 
 ### Where the training data comes from
 
