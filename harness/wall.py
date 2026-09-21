@@ -1,11 +1,91 @@
-"""The live wall for ladder.py: every game in progress, on one page.
+"""Every game a harness is playing, live, on one page.
 
-Kept apart from the ladder itself so the measurement code stays readable; the
-ladder imports serve() and hands it the shared Live object.
+Any harness that plays games serves one of these, on by default rather than
+behind a flag. A match that takes an hour and shows nothing is a black box,
+and the first thing anyone asks when a number looks wrong is what the games
+actually looked like.
+
+A harness builds a Live, hands it to serve() on a daemon thread, and calls
+set_board() as moves are played. Nothing here knows what the harness is
+measuring, so the same wall serves a rating ladder, an A/B match and a
+gold-set run.
 """
 
 import json
+import socket
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import chess
+
+GLYPHS = {
+    "K": "♔", "Q": "♕", "R": "♖", "B": "♗", "N": "♘", "P": "♙",
+    "k": "♚", "q": "♛", "r": "♜", "b": "♝", "n": "♞", "p": "♟",
+}
+
+
+class Live(object):
+    """What the page reads: one slot per worker, plus finished pairings."""
+
+    def __init__(self, workers):
+        self.lock = threading.Lock()
+        self.boards = [{"opponent": "", "white": "", "black": "", "squares": [""] * 64,
+                        "lastMove": None, "plies": 0, "result": None} for _ in range(workers)]
+        self.finished = []
+        self.current = ""
+        self.progress = ""
+
+    def set_board(self, slot, board, white_name, black_name, result=None):
+        """Show a position. Both sides are named explicitly: a match between two
+        of our own networks has no "us" and no "opponent"."""
+        squares = []
+        for rank in range(7, -1, -1):
+            for file in range(8):
+                piece = board.piece_at(chess.square(file, rank))
+                squares.append(GLYPHS[piece.symbol()] if piece else "")
+        last = board.move_stack[-1] if board.move_stack else None
+        with self.lock:
+            self.boards[slot % len(self.boards)] = {
+                "opponent": "{} vs {}".format(white_name, black_name),
+                "white": white_name,
+                "black": black_name,
+                "squares": squares,
+                "lastMove": [last.from_square, last.to_square] if last else None,
+                "plies": board.ply(),
+                "result": result,
+            }
+
+    def say(self, current, progress=""):
+        with self.lock:
+            self.current = current
+            self.progress = progress
+
+    def snapshot(self):
+        with self.lock:
+            return {"boards": list(self.boards), "finished": list(self.finished),
+                    "current": self.current, "progress": self.progress}
+
+
+def free_port(preferred):
+    """The preferred port, or any free one. A dead server's socket can linger."""
+    for candidate in (preferred, 0):
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", candidate))
+            port = probe.getsockname()[1]
+            probe.close()
+            return port
+        except OSError:
+            probe.close()
+    return preferred
+
+
+def start(live, port, title):
+    """Serve the wall on a daemon thread and print where to watch it."""
+    chosen = free_port(port)
+    threading.Thread(target=serve, args=(live, chosen), daemon=True).start()
+    print("watch {} at http://127.0.0.1:{}".format(title, chosen))
+    return chosen
 
 WALL = """<!doctype html>
 <html lang="en">

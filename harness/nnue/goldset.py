@@ -38,22 +38,34 @@ import time
 import chess
 import chess.engine
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
 import panel
+import wall
 
 
-def play(white, black, board, limit, max_plies):
+def play(white, black, board, limit, max_plies, report=None):
     """One game from a given position. Returns the result, white's point of view."""
     board = board.copy()
+    if report:
+        report(board, None)
     while not board.is_game_over(claim_draw=True):
         if board.ply() >= max_plies:
+            if report:
+                report(board, "1/2-1/2")
             return "1/2-1/2"
         engine = white if board.turn == chess.WHITE else black
         result = engine.play(board, limit)
         if result.move is None or result.move not in board.legal_moves:
             raise RuntimeError("illegal move {}".format(result.move))
         board.push(result.move)
-    return board.result(claim_draw=True)
+        if report:
+            report(board, None)
+    outcome = board.result(claim_draw=True)
+    if report:
+        report(board, outcome)
+    return outcome
 
 
 def schedule(names, games):
@@ -93,7 +105,7 @@ class Work(object):
             self.results[index][key] += 1
 
 
-def worker(work, boards, args, failures):
+def worker(work, boards, args, failures, live=None, slot=0):
     engines = {}
     try:
         while True:
@@ -104,10 +116,14 @@ def worker(work, boards, args, failures):
             for name in (white_name, black_name):
                 if name not in engines:
                     engines[name] = panel.open_engine(name, args.hash)
+            report = None
+            if live is not None:
+                def report(board, result, _s=slot, _w=white_name, _b=black_name):
+                    live.set_board(_s, board, _w, _b, result)
             try:
                 outcome = play(engines[white_name], engines[black_name],
                                boards[index], chess.engine.Limit(time=args.movetime / 1000.0),
-                               args.max_plies)
+                               args.max_plies, report)
             except Exception as problem:
                 failures.append("{}: {}".format(type(problem).__name__, problem))
                 return
@@ -136,6 +152,8 @@ def main():
     parser.add_argument("--max-plies", type=int, default=250)
     parser.add_argument("--hash", type=int, default=64)
     parser.add_argument("--limit", type=int, default=0, help="cap positions, 0 for all")
+    parser.add_argument("--watch", type=int, default=8762,
+                        help="port for the live board wall; 0 turns it off")
     args = parser.parse_args()
 
     with open(args.contested) as handle:
@@ -157,9 +175,15 @@ def main():
     sys.stdout.flush()
 
     failures = []
+    live = None
+    if args.watch:
+        live = wall.Live(args.concurrency)
+        live.say("settling {} contested positions".format(len(entries)),
+                 "{} games each at {} ms".format(args.games, args.movetime))
+        wall.start(live, args.watch, "the gold set")
     started = time.time()
-    threads = [threading.Thread(target=worker, args=(work, boards, args, failures))
-               for _ in range(args.concurrency)]
+    threads = [threading.Thread(target=worker, args=(work, boards, args, failures, live, slot))
+               for slot in range(args.concurrency)]
     for thread in threads:
         thread.start()
 

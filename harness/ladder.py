@@ -27,8 +27,8 @@ import chess
 import chess.engine
 import chess.pgn
 
-from ladder_view import serve
-from watch import GLYPHS
+import wall
+from wall import Live
 
 DEFAULT_ARENA = r"~\Desktop\Games\Chess\arena_3.5.1"
 
@@ -46,41 +46,6 @@ OPPONENTS = [
     ("Engines/Caissa/caissa-1.23-x64-sse2.exe", "Caissa 1.23", 3450),
     ("Engines/berserk/berserk-13-ssse3.exe", "Berserk 13", 3500),
 ]
-
-
-class Live(object):
-    """What the watch page reads: one slot per worker, plus finished pairings."""
-
-    def __init__(self, workers):
-        self.lock = threading.Lock()
-        self.boards = [{"opponent": "", "white": "", "black": "", "squares": [""] * 64,
-                        "lastMove": None, "plies": 0, "result": None} for _ in range(workers)]
-        self.finished = []
-        self.current = ""
-        self.progress = ""
-
-    def set_board(self, slot, board, opponent, machete_white, result=None):
-        squares = []
-        for rank in range(7, -1, -1):
-            for file in range(8):
-                piece = board.piece_at(chess.square(file, rank))
-                squares.append(GLYPHS[piece.symbol()] if piece else "")
-        last = board.move_stack[-1] if board.move_stack else None
-        with self.lock:
-            self.boards[slot] = {
-                "opponent": opponent,
-                "white": "machete" if machete_white else opponent,
-                "black": opponent if machete_white else "machete",
-                "squares": squares,
-                "lastMove": [last.from_square, last.to_square] if last else None,
-                "plies": board.ply(),
-                "result": result,
-            }
-
-    def snapshot(self):
-        with self.lock:
-            return {"boards": list(self.boards), "finished": list(self.finished),
-                    "current": self.current, "progress": self.progress}
 
 
 LIVE = None
@@ -248,7 +213,9 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                 report = None
                 if LIVE is not None:
                     def report(board, result, _s=worker_id, _w=machete_white):
-                        LIVE.set_board(_s, board, opponent_name, _w, result)
+                        LIVE.set_board(_s, board,
+                                       "machete" if _w else opponent_name,
+                                       opponent_name if _w else "machete", result)
                 try:
                     outcome, final_board = play(white, black, book, movetime, max_plies, report)
                 except Exception as problem:
@@ -290,8 +257,8 @@ def main():
     parser.add_argument("--pgn", default="", help="append every game to this file")
     parser.add_argument("--option", action="append", default=[],
                         help="UCI option for machete as Name=Value; repeatable")
-    parser.add_argument("--watch", type=int, default=0,
-                        help="serve a live wall of every game in progress on this port")
+    parser.add_argument("--watch", type=int, default=8760,
+                        help="port for the live wall; 0 turns it off")
     args = parser.parse_args()
 
     machete_path = os.path.abspath(args.engine)
@@ -300,8 +267,7 @@ def main():
     global LIVE
     if args.watch:
         LIVE = Live(args.concurrency)
-        threading.Thread(target=serve, args=(LIVE, args.watch), daemon=True).start()
-        print("watch the games at http://127.0.0.1:{}".format(args.watch))
+        wall.start(LIVE, args.watch, "the ladder")
 
     print("machete rating ladder: {} games each at {} ms, {} at a time".format(
         args.games, args.movetime, args.concurrency))
@@ -316,9 +282,8 @@ def main():
             print("{:<16} (not found)".format(name))
             continue
         if LIVE is not None:
-            with LIVE.lock:
-                LIVE.current = "playing {} ({} Elo)".format(name, rating)
-                LIVE.progress = "{} games at {} ms a move".format(args.games, args.movetime)
+            LIVE.say("playing {} ({} Elo)".format(name, rating),
+                     "{} games at {} ms a move".format(args.games, args.movetime))
         tally, errors = run_pairing(machete_path, path, args.games, args.movetime,
                                     args.max_plies, args.concurrency, args.seed, name,
                                     args.pgn or None, args.option)
@@ -356,9 +321,8 @@ def main():
         print("\nmachete is about {:.0f} Elo (+/- {:.0f}) on the CCRL scale at {} ms a move".format(
             pooled, pooled_margin, args.movetime))
         if LIVE is not None:
-            with LIVE.lock:
-                LIVE.current = "machete is about {:.0f} Elo (+/- {:.0f})".format(pooled, pooled_margin)
-                LIVE.progress = "on the CCRL scale at {} ms a move".format(args.movetime)
+            LIVE.say("machete is about {:.0f} Elo (+/- {:.0f})".format(pooled, pooled_margin),
+                     "on the CCRL scale at {} ms a move".format(args.movetime))
             print("the wall stays up until you stop this")
             try:
                 while True:

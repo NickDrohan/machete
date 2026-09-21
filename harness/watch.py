@@ -37,10 +37,7 @@ import chess.pgn
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MACHETE = os.path.join(HERE, "..", "out", "windows-x86_64", "release", "bin", "machete.exe")
 
-GLYPHS = {
-    "K": "\u2654", "Q": "\u2655", "R": "\u2656", "B": "\u2657", "N": "\u2658", "P": "\u2659",
-    "k": "\u265a", "q": "\u265b", "r": "\u265c", "b": "\u265d", "n": "\u265e", "p": "\u265f",
-}
+from wall import GLYPHS
 
 
 def find_stockfish():

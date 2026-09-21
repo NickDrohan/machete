@@ -35,6 +35,8 @@ import threading
 import chess
 import chess.engine
 
+import wall
+
 
 def random_opening(rng, plies):
     board = chess.Board()
@@ -46,20 +48,29 @@ def random_opening(rng, plies):
     return board.move_stack[:]
 
 
-def play(white, black, opening, limit, max_plies):
+def play(white, black, opening, limit, max_plies, report=None):
     """Play one game; returns '1-0', '0-1', '1/2-1/2'."""
     board = chess.Board()
     for move in opening:
         board.push(move)
+    if report:
+        report(board, None)
     while not board.is_game_over(claim_draw=True):
         if board.ply() >= max_plies:
+            if report:
+                report(board, "1/2-1/2")
             return "1/2-1/2"
         engine = white if board.turn == chess.WHITE else black
         result = engine.play(board, limit)
         if result.move is None or result.move not in board.legal_moves:
             raise RuntimeError("illegal move {} in {}".format(result.move, board.fen()))
         board.push(result.move)
-    return board.result(claim_draw=True)
+        if report:
+            report(board, None)
+    outcome = board.result(claim_draw=True)
+    if report:
+        report(board, outcome)
+    return outcome
 
 
 def elo_to_score(elo):
@@ -169,7 +180,7 @@ def open_engine(path, options):
     return engine
 
 
-def worker(args, paths, tally, pairs, failures):
+def worker(args, paths, tally, pairs, failures, live=None, slot=0):
     """Play whole pairs of games until the tally says to stop."""
     try:
         a = open_engine(paths[0], args.option_a)
@@ -190,8 +201,15 @@ def worker(args, paths, tally, pairs, failures):
                                      args.opening_plies)
             for a_is_white in (True, False):
                 white, black = (a, b) if a_is_white else (b, a)
+                report = None
+                if live is not None:
+                    def report(board, result, _s=slot, _w=a_is_white):
+                        live.set_board(_s, board,
+                                       args.label_a if _w else args.label_b,
+                                       args.label_b if _w else args.label_a, result)
                 try:
-                    outcome = play(white, black, opening, limit_from(args), args.max_plies)
+                    outcome = play(white, black, opening, limit_from(args), args.max_plies,
+                                   report)
                 except Exception as problem:
                     failures.append(str(problem))
                     return
@@ -218,6 +236,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=1,
                         help="games in flight at once; each one is a pair of engine processes")
+    parser.add_argument("--watch", type=int, default=8761,
+                        help="port for the live board wall; 0 turns it off")
     parser.add_argument("--option-a", action="append", default=[],
                         help="UCI option for engine A as Name=Value; repeatable")
     parser.add_argument("--option-b", action="append", default=[],
@@ -241,9 +261,26 @@ def main():
     tally = Tally(args, lower, upper)
     pairs = {"next": 0, "lock": threading.Lock()}
     failures = []
+    # name each side by its network file, which is usually the only difference
+    def side_label(options, fallback):
+        for setting in options:
+            if setting.startswith("EvalFile="):
+                return os.path.splitext(os.path.basename(setting[9:]))[0]
+        return fallback
+    args.label_a = side_label(args.option_a, "A")
+    args.label_b = side_label(args.option_b, "B")
+
+    live = None
+    if args.watch:
+        live = wall.Live(max(1, args.concurrency))
+        live.say("{} vs {}".format(args.label_a, args.label_b), "{} games at {}".format(
+            args.games, "depth {}".format(args.depth) if args.depth
+            else "{} ms a move".format(args.movetime)))
+        wall.start(live, args.watch, "the match")
     threads = [threading.Thread(target=worker,
-                                args=(args, (path_a, path_b), tally, pairs, failures))
-               for _ in range(max(1, args.concurrency))]
+                                args=(args, (path_a, path_b), tally, pairs, failures,
+                                      live, slot))
+               for slot in range(max(1, args.concurrency))]
     for thread in threads:
         thread.start()
     for thread in threads:
