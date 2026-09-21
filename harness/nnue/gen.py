@@ -235,7 +235,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("out")
     parser.add_argument("--engines",
-                        default="Stockfish,Berserk,Alexandria,Obsidian,Caissa,Seer",
+                        default="Stockfish,Berserk,Alexandria,Obsidian,Caissa",
                         help="panel members to rotate across workers")
     parser.add_argument("--book", default="data/book.epd",
                         help="opening positions; 40% of games start from one")

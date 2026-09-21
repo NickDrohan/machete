@@ -8,6 +8,13 @@ them is obviously the one to believe.
 Engines are opened in their own directory. Several read a config file from the
 working directory and, when it is missing, answer with blank lines rather than
 saying so, which the UCI layer then turns into an assertion on every line.
+
+Every path here names a build this machine can actually run. An engine shipped
+as several binaries will happily include an avx512 one, and on a Zen+ chip that
+dies with an illegal instruction the moment it is asked to think - which looks
+like a flaky engine rather than the wrong file. Seer was dropped for being the
+weakest evaluator the gold set measured (rmse 0.095 against 0.064); its avx2
+build runs fine if it is ever wanted back.
 """
 
 import os
@@ -21,7 +28,6 @@ PANEL = {
     "Alexandria":  r"Alexandria 8.1.12\Alexandria-8.1.12-avx2.exe",
     "Obsidian":    r"Obsidian160-avx2.exe",
     "Caissa":      r"Caissa\caissa-1.23-x64-sse2.exe",
-    "Seer":        r"Seer\seer_v2.8_x64_avx2_popcnt.exe",
     "PlentyChess": r"Plenty\PlentyChess-7.0.0-windows-ssse3.exe",
     "Dragon":      r"Dragon\dragon_05e2a7\Windows\dragon-64bit-avx2.exe",
     "Reckless":    r"Reckless 0.9.0 dev-2a847427\reckless-windows-avx2.exe",

@@ -41,7 +41,6 @@ OPPONENTS = [
     ("Engines/Spike/Spike1.4.exe", "Spike 1.4", 2950),
     ("Engines/Rybka/Rybkav2.3.2a.mp.x64.exe", "Rybka 2.3.2a", 3050),
     ("Engines/Koi/Koivisto_9.0-windows-sse2-pgo.exe", "Koivisto 9.0", 3300),
-    ("Engines/Seer/seer_v2.8_x64_ssse3_nopopcnt.exe", "Seer 2.8", 3350),
     ("Engines/Plenty/PlentyChess-7.0.0-windows-ssse3.exe", "PlentyChess 7", 3400),
     ("Engines/Caissa/caissa-1.23-x64-sse2.exe", "Caissa 1.23", 3450),
     ("Engines/berserk/berserk-13-ssse3.exe", "Berserk 13", 3500),

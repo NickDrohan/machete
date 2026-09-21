@@ -107,7 +107,7 @@ def main():
     parser.add_argument("--controls", type=float, default=0.2,
                         help="extra fraction that are unanimous, as a baseline")
     parser.add_argument("--nodes", type=int, default=300000)
-    parser.add_argument("--engines", default="Stockfish,Berserk,Alexandria,Obsidian,Caissa,Seer")
+    parser.add_argument("--engines", default="Stockfish,Berserk,Alexandria,Obsidian,Caissa")
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--scan", type=int, default=3000,
                         help="positions to examine while looking for split ones")
