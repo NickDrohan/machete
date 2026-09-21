@@ -1,4 +1,4 @@
-"""Every game a harness is playing, live, on one page.
+"""Making games observable: live on a page while they run, and kept afterwards.
 
 Any harness that plays games serves one of these, on by default rather than
 behind a flag. A match that takes an hour and shows nothing is a black box,
@@ -9,6 +9,12 @@ A harness builds a Live, hands it to serve() on a daemon thread, and calls
 set_board() as moves are played. Nothing here knows what the harness is
 measuring, so the same wall serves a rating ladder, an A/B match and a
 gold-set run.
+
+save_game() is the other half. Games are expensive - the gold set cost seven
+hours of six engines - and a finished match that kept only its win count has
+thrown away everything except one number. The positions are worth keeping even
+when there is no immediate use for them: they are where our engine actually
+goes, which is not the same distribution a teacher's self-play visits.
 """
 
 import json
@@ -17,6 +23,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import chess
+import chess.pgn
 
 GLYPHS = {
     "K": "♔", "Q": "♕", "R": "♖", "B": "♗", "N": "♘", "P": "♙",
@@ -64,6 +71,23 @@ class Live(object):
         with self.lock:
             return {"boards": list(self.boards), "finished": list(self.finished),
                     "current": self.current, "progress": self.progress}
+
+
+PGN_LOCK = threading.Lock()
+
+
+def save_game(path, board, white_name, black_name, event, outcome):
+    """Append one finished game. Safe to call from several workers at once."""
+    if not path:
+        return
+    game = chess.pgn.Game.from_board(board)
+    game.headers["Event"] = event
+    game.headers["White"] = white_name
+    game.headers["Black"] = black_name
+    game.headers["Result"] = outcome
+    with PGN_LOCK:
+        with open(path, "a") as handle:
+            handle.write(str(game) + chr(10) + chr(10))
 
 
 def free_port(preferred):

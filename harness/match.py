@@ -59,7 +59,7 @@ def play(white, black, opening, limit, max_plies, report=None):
         if board.ply() >= max_plies:
             if report:
                 report(board, "1/2-1/2")
-            return "1/2-1/2"
+            return "1/2-1/2", board
         engine = white if board.turn == chess.WHITE else black
         result = engine.play(board, limit)
         if result.move is None or result.move not in board.legal_moves:
@@ -70,7 +70,7 @@ def play(white, black, opening, limit, max_plies, report=None):
     outcome = board.result(claim_draw=True)
     if report:
         report(board, outcome)
-    return outcome
+    return outcome, board
 
 
 def elo_to_score(elo):
@@ -208,11 +208,15 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                                        args.label_a if _w else args.label_b,
                                        args.label_b if _w else args.label_a, result)
                 try:
-                    outcome = play(white, black, opening, limit_from(args), args.max_plies,
-                                   report)
+                    outcome, final = play(white, black, opening, limit_from(args),
+                                          args.max_plies, report)
                 except Exception as problem:
                     failures.append(str(problem))
                     return
+                wall.save_game(args.pgn, final,
+                               args.label_a if a_is_white else args.label_b,
+                               args.label_b if a_is_white else args.label_a,
+                               "{} vs {}".format(args.label_a, args.label_b), outcome)
                 if not tally.record(outcome, a_is_white):
                     return
     finally:
@@ -238,6 +242,8 @@ def main():
                         help="games in flight at once; each one is a pair of engine processes")
     parser.add_argument("--watch", type=int, default=8761,
                         help="port for the live board wall; 0 turns it off")
+    parser.add_argument("--pgn", default="data/games_match.pgn",
+                        help="append every game here; empty string turns it off")
     parser.add_argument("--option-a", action="append", default=[],
                         help="UCI option for engine A as Name=Value; repeatable")
     parser.add_argument("--option-b", action="append", default=[],

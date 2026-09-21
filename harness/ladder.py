@@ -112,21 +112,6 @@ def opening(rng, plies):
     return board.move_stack[:]
 
 
-PGN_LOCK = threading.Lock()
-
-
-def save_game(path, board, white_name, black_name, opponent, outcome):
-    """Append one finished game, so blunders.py can be pointed at the losses."""
-    game = chess.pgn.Game.from_board(board)
-    game.headers["Event"] = "machete ladder vs {}".format(opponent)
-    game.headers["White"] = white_name
-    game.headers["Black"] = black_name
-    game.headers["Result"] = outcome
-    with PGN_LOCK:
-        with open(path, "a") as handle:
-            handle.write(str(game) + chr(10) + chr(10))
-
-
 def play(white, black, moves, movetime, max_plies, report=None):
     board = chess.Board()
     for move in moves:
@@ -223,9 +208,10 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                     return
                 tally.add(outcome, machete_white)
                 if pgn_path:
-                    save_game(pgn_path, final_board, "machete" if machete_white else opponent_name,
-                              opponent_name if machete_white else "machete",
-                              opponent_name, outcome)
+                    wall.save_game(pgn_path, final_board,
+                                   "machete" if machete_white else opponent_name,
+                                   opponent_name if machete_white else "machete",
+                                   "machete ladder vs {}".format(opponent_name), outcome)
         finally:
             for engine in (machete, opponent):
                 try:
@@ -254,7 +240,8 @@ def main():
                         help="skip opponents rated above this")
     parser.add_argument("--stop-below", type=float, default=0.05,
                         help="stop climbing once the score drops under this")
-    parser.add_argument("--pgn", default="", help="append every game to this file")
+    parser.add_argument("--pgn", default="data/games_ladder.pgn",
+                        help="append every game here; empty string turns it off")
     parser.add_argument("--option", action="append", default=[],
                         help="UCI option for machete as Name=Value; repeatable")
     parser.add_argument("--watch", type=int, default=8760,

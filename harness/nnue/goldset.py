@@ -54,7 +54,7 @@ def play(white, black, board, limit, max_plies, report=None):
         if board.ply() >= max_plies:
             if report:
                 report(board, "1/2-1/2")
-            return "1/2-1/2"
+            return "1/2-1/2", board
         engine = white if board.turn == chess.WHITE else black
         result = engine.play(board, limit)
         if result.move is None or result.move not in board.legal_moves:
@@ -65,7 +65,7 @@ def play(white, black, board, limit, max_plies, report=None):
     outcome = board.result(claim_draw=True)
     if report:
         report(board, outcome)
-    return outcome
+    return outcome, board
 
 
 def schedule(names, games):
@@ -121,12 +121,14 @@ def worker(work, boards, args, failures, live=None, slot=0):
                 def report(board, result, _s=slot, _w=white_name, _b=black_name):
                     live.set_board(_s, board, _w, _b, result)
             try:
-                outcome = play(engines[white_name], engines[black_name],
-                               boards[index], chess.engine.Limit(time=args.movetime / 1000.0),
-                               args.max_plies, report)
+                outcome, final = play(engines[white_name], engines[black_name],
+                                      boards[index], chess.engine.Limit(time=args.movetime / 1000.0),
+                                      args.max_plies, report)
             except Exception as problem:
                 failures.append("{}: {}".format(type(problem).__name__, problem))
                 return
+            wall.save_game(args.pgn, final, white_name, black_name,
+                           "gold set position {}".format(index), outcome)
             work.record(index, outcome)
     finally:
         for engine in engines.values():
@@ -154,6 +156,8 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="cap positions, 0 for all")
     parser.add_argument("--watch", type=int, default=8762,
                         help="port for the live board wall; 0 turns it off")
+    parser.add_argument("--pgn", default="data/games_goldset.pgn",
+                        help="append every game here; empty string turns it off")
     args = parser.parse_args()
 
     with open(args.contested) as handle:
