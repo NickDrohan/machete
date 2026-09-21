@@ -136,7 +136,14 @@ def main():
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--validation", type=int, default=200000)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--scale", type=int, default=0,
+                        help="centipawn scale for the target; 0 keeps the default")
     args = parser.parse_args()
+
+    if args.scale:
+        reference.set_scale(args.scale)
+        globals()["SCALE"] = args.scale
+        print("target scale {}".format(args.scale))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data = np.memmap(args.data, dtype=RECORD, mode="r")

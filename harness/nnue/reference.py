@@ -35,7 +35,7 @@ INPUTS = 768
 HIDDEN = 256
 QA = 255           # hidden-layer scale: a clipped-relu output of 1.0 is QA
 QB = 64            # output-weight scale
-SCALE = 400        # network output of 1.0 is SCALE centipawns
+SCALE = 400        # network output of 1.0 is SCALE centipawns; see set_scale
 HEADER = 32
 
 WHITE, BLACK = 0, 1
@@ -53,6 +53,19 @@ RECORD = np.dtype([
     ("result", "u1"),       # 0 side to move lost, 1 drew, 2 won
     ("pad", "u1"),
 ])
+
+
+def set_scale(value):
+    """Change the centipawn scale the next save() will record.
+
+    The scale decides how a teacher's centipawns become a training target, and
+    so what the network is pushed hardest to get right: a small scale makes the
+    sigmoid steep and concentrates capacity near equality, a large one flattens
+    it and spends capacity on positions already decided. Fitting it against
+    measured outcomes gave 150 for Stockfish, not the 400 used here originally.
+    """
+    global SCALE
+    SCALE = int(value)
 
 
 def feature_index(perspective, colour, kind, square):

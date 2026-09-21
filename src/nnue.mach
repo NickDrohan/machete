@@ -40,8 +40,13 @@ pub val HIDDEN: i64 = 256;
 
 val QA:     i64 = 255;   # a clipped-relu output of 1.0
 val QB:     i64 = 64;    # an output weight of 1.0
-val SCALE:  i64 = 400;   # a network output of 1.0, in centipawns
 val HEADER: i64 = 32;
+
+# how many centipawns a network output of 1.0 is worth. Unlike QA and QB this
+# does not change the arithmetic, only the units the answer comes back in, so
+# it is read from the file rather than fixed here: it is the one constant a
+# retrained network is likely to want to move, and nothing else depends on it.
+var SCALE: i64 = 400;
 
 # aligned because output() and the accumulator read these 128 bits at a time.
 # The alignment happens to hold without saying so; saying so keeps it true.
@@ -313,7 +318,9 @@ fun read_body(f: fs.File) bool {
     if (u32_at(?head[0], 12) != HIDDEN) { ret false; }
     if (u32_at(?head[0], 16) != QA)     { ret false; }
     if (u32_at(?head[0], 20) != QB)     { ret false; }
-    if (u32_at(?head[0], 24) != SCALE)  { ret false; }
+    val scale: i64 = u32_at(?head[0], 24);
+    if (scale < 1 || scale > 4000)      { ret false; }
+    SCALE = scale;
 
     if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2)) { ret false; }
     if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))             { ret false; }
