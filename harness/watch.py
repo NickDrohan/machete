@@ -9,8 +9,9 @@
 
 `--option` and `--opponent-option` pass UCI options to one side or the other,
 which is what makes an engine-against-itself comparison watchable. A side given
-an EvalFile is labelled "(net)" and a side without one "(classical)", so the
-board says which evaluation is playing rather than showing two identical names.
+an EvalFile is labelled with that file's name and a side without one
+"(classical)", so the board says which evaluation is playing rather than
+showing two identical names.
 
 Runs the game in one thread and serves a page from another, so the board
 updates as the moves are played. Everything is local: no CDN, no network, one
@@ -375,9 +376,14 @@ def main():
     machete_name = "machete" + (" x{}".format(args.threads) if args.threads > 1 else "")
     # when both sides are machete, say which evaluation each one is using
     if args.opponent and "machete" in os.path.basename(opponent_path).lower():
-        loaded = lambda options: any(s.startswith("EvalFile=") for s in options)
-        machete_name += " (net)" if loaded(args.option) else " (classical)"
-        opponent_name = "machete " + ("(net)" if loaded(args.opponent_option) else "(classical)")
+        def label(options):
+            for setting in options:
+                if setting.startswith("EvalFile="):
+                    # the file name is the only thing distinguishing two nets
+                    return " (" + os.path.splitext(os.path.basename(setting[9:]))[0] + ")"
+            return " (classical)"
+        machete_name += label(args.option)
+        opponent_name = "machete" + label(args.opponent_option)
     game = Game(machete_name, opponent_name)
     game.machete_name = machete_name
     game.opponent_name = opponent_name
