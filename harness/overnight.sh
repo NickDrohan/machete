@@ -16,12 +16,23 @@ log="$here/data/overnight.log"
 
 say() { printf '\n=== %s  %s ===\n' "$(date '+%H:%M')" "$1" | tee -a "$log"; }
 
-say "waiting for running matches to clear"
+# How many engine processes are up. Matches an A/B run's renamed binaries too,
+# not only machete.exe.
+engines() { tasklist 2>/dev/null | grep -ci "machete\|cont\.exe" || true; }
+
+# Whatever is already up when this starts is the baseline, and we wait for the
+# count to come back to it rather than to zero.
+#
+# There is at least one engine on this machine that cannot be killed - taskkill
+# and Stop-Process both answer "access is denied" on a process this user owns -
+# and it sits at 0% CPU holding no ports. An earlier version of this line
+# hardcoded a threshold of 1 for it, which would have been wrong the moment it
+# was cleared or a second one appeared. A baseline is right either way and
+# needs no comment explaining which number is magic.
+baseline=$(engines)
+say "waiting for running matches to clear (${baseline} engine process(es) already up)"
 for _ in $(seq 1 240); do
-    # matches an A/B run's renamed binaries too, not only machete.exe
-    running=$(tasklist 2>/dev/null | grep -ci "machete" || echo 0)
-    # 1 is the known unkillable zombie; anything above it is a live match
-    if [[ "${running:-0}" -le 1 ]]; then break; fi
+    if [[ "$(engines)" -le "${baseline:-0}" ]]; then break; fi
     sleep 30
 done
 say "machine is quiet, starting"
