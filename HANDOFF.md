@@ -94,7 +94,22 @@ the binary.
 ```bash
 bash check.sh                      # 18 gates
 bash ../../scripts/check.sh        # every product's gates
+
+mach build . --profile release     # build
+mach run   . --profile release -- bench    # run the built artifact
+mach check .                       # type-check without building
 ```
+
+`mach run` resolves the built artifact from the manifest, so there is no reason
+to type `out/<target>/<profile>/bin/machete.exe` by hand - which most of this
+repo's history did, in four places independently. The harness still needs a
+real path, because python-chess spawns the engine itself and an A/B match
+points at two renamed copies that no manifest describes; `harness/engine.py`
+owns that path now, with `MACHETE_BIN` to override it.
+
+Note that `mach run` does **not** rebuild. A failed build leaves the previous
+binary in place, so `mach build` and `mach run` are two steps and the build's
+exit code is the one that matters.
 
 The harness needs Python 3.7 with python-chess for the game-playing scripts
 and 3.13 with PyTorch for the trainer. `MACHETE_ARENA` points at the folder

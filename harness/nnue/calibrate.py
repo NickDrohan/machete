@@ -30,6 +30,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import engine as engines
+
 
 def probability(cp, scale):
     return 1.0 / (1.0 + math.exp(-cp / scale))
@@ -78,7 +81,7 @@ def measure(name, scores, outcomes):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("goldset")
-    parser.add_argument("--engine", default="out/windows-x86_64/release/bin/machete.exe")
+    parser.add_argument("--engine", default=engines.MACHETE)
     parser.add_argument("--net", default="net/machete.nnue")
     parser.add_argument("--out", default="")
     args = parser.parse_args()

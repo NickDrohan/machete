@@ -33,6 +33,8 @@ import chess.pgn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
+import engine as engines
 import panel
 
 VALUES = {chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
@@ -93,7 +95,7 @@ def our_eval(engine, net, fen):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("pgn")
-    parser.add_argument("--engine", default="out/windows-x86_64/release/bin/machete.exe")
+    parser.add_argument("--engine", default=engines.MACHETE)
     parser.add_argument("--net", default="net/machete.nnue")
     parser.add_argument("--judge", default="Koivisto")
     parser.add_argument("--nodes", type=int, default=400000)
