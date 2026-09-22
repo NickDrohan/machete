@@ -282,14 +282,24 @@ def main():
     tally = Tally(args, lower, upper)
     pairs = {"next": 0, "lock": threading.Lock()}
     failures = []
-    # name each side by its network file, which is usually the only difference
-    def side_label(options, engine_path):
+    # Name each side by whatever actually differs. Usually that is the network,
+    # but an A/B of two builds carries the same network on both sides, and two
+    # boards both labelled "machete" tell the watcher nothing.
+    def net_label(options):
         for setting in options:
             if setting.startswith("EvalFile="):
                 return os.path.splitext(os.path.basename(setting[9:]))[0]
-        return os.path.splitext(os.path.basename(engine_path))[0]
-    args.label_a = side_label(args.option_a, path_a)
-    args.label_b = side_label(args.option_b, path_b)
+        return ""
+    def binary_label(path):
+        return os.path.splitext(os.path.basename(path))[0]
+    nets = (net_label(args.option_a), net_label(args.option_b))
+    if nets[0] and nets[1] and nets[0] != nets[1]:
+        args.label_a, args.label_b = nets
+    else:
+        args.label_a, args.label_b = binary_label(path_a), binary_label(path_b)
+        if args.label_a == args.label_b:
+            args.label_a += " (A)"
+            args.label_b += " (B)"
 
     live = None
     if args.watch:
