@@ -77,6 +77,18 @@ H0 the feature comes out and `fixtures/bench.expected` goes back to 158,026.
 The ablation is one line: `cont_slot` returning -1 disables both the read and
 the update.
 
+**Won endgames are not converted, and there is no endgame knowledge at all.**
+Over 1,884 self-play games, 80 ended drawn with one side a rook or more ahead.
+Reproduced: KQ v K mates in 15 plies, but **KQ v KN and KBB v K both draw by
+the fifty-move rule**. It is not a search bug - from KQ v K at depth 18 it
+finds mate in 9 - it is that nothing in the evaluation rewards driving a king
+toward a corner, so a win needing a plan rather than a capture has no gradient
+to follow. `eval.mach` has no corner, edge or king-proximity term and no
+mate-distance pruning, and with a network loaded the classical evaluation is
+not consulted anyway. The harness half of the fix (endgame data, which the
+generator's adjudication currently excludes by construction) is being handled
+on the Python side. Roughly 4.2% of games are at stake.
+
 **Not built yet:** singular extensions, staged move generation.
 
 **Architecture, untested:** `HIDDEN = 256` has never been varied, so it is

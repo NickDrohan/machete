@@ -203,6 +203,63 @@ Inherited. Never varied.
 
 ---
 
+## The endgame
+
+### measured - won endgames are not reliably converted
+Found by watching a game, not by a gate. Over 1,884 games of the current
+self-play SPRT, **80 ended in a draw with one side a rook or more ahead** -
+59 by the fifty-move rule, 21 by repetition. A further 33 were cut by our own
+300-ply cap, which is a harness artifact and counted separately.
+
+Reproduced directly, engine against itself at 500 ms a move:
+
+| forced win | result |
+|---|---|
+| KQ v K | mated in 15 plies |
+| KR v K | mated in 59 plies (optimal is 31) |
+| KQ v KN | **drawn, fifty-move** |
+| KBB v K | **drawn, fifty-move** |
+
+The pattern is that it converts when mate is inside the search horizon and
+fails when the win needs a plan with no material change - driving a king to a
+corner, or winning the knight before mating.
+
+**It is not a search bug.** From KQ v K at depth 18 it finds mate in 9. **It is
+not corpus coverage** either: 701,505 positions have four pieces or fewer and a
+queen-or-more edge. It is the absence of any evaluation gradient inside a won
+position, from two causes that compound:
+
+1. **The training target saturates.** With scale 150 the target is
+   `sigmoid(score/150)`: +700 gives 0.9907, +1500 gives 0.99995, a clamped mate
+   gives 1.0. The MSE gradient between "a queen up and shuffling" and "mate in
+   three" is about 0.00009, so the network is never asked to tell them apart.
+   Measured: it evaluates KQ v K at **+551** and KR v K at **+373**, and those
+   barely move between depth 4 and depth 14.
+2. **There is no classical fallback.** `eval.mach` is material, piece-square
+   and pawn terms - no corner or edge-driving term, no mate-distance pruning -
+   and with a network loaded the classical evaluation is not consulted anyway.
+
+Worth roughly 4.2% of games at stake, so on the order of 15 Elo in a balanced
+field and more against weaker opponents, where winning endgames arrive often.
+
+Two independent fixes, one per side of the handoff:
+
+* **Data (harness).** `gen.py` adjudicates at +/-1500, so a game *stops* once it
+  is decisively won. Conversion technique is therefore absent from the corpus
+  by construction - the positions exist, but the sequences where a king is
+  driven to the edge do not. Generating from won endgame positions with
+  adjudication off would put them there.
+* **Evaluation (Mach).** The classical answer: a corner and edge-driving term
+  plus king proximity, active when the material is a known win, and
+  mate-distance pruning in the search.
+
+### open - whether a less saturated target costs middlegame Elo
+Scale 400 to 150 measured +68 +/- 35 on the old 12M corpus. If the endgame
+failure above is the cost of that gain, the tradeoff has never been measured as
+a tradeoff - only the middlegame half of it was.
+
+---
+
 ## The search
 
 ### open - continuation history, now much better bounded but still unresolved
