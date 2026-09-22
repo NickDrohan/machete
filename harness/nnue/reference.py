@@ -199,12 +199,34 @@ def random_net(seed):
     return feature_weights, feature_bias, output_weights, output_bias
 
 
+def extreme_net(sign):
+    """The arithmetic worst case, for a gate rather than for play.
+
+    Every activation clipped to QA, every output weight at the quantization
+    limit, the bias near the int32 extreme. The dot product then reaches
+    512 * QA * 127 = 16,581,120, and multiplying that by SCALE exceeds int32 by
+    16%. The engine survives it only because the sum is widened to 64 bits
+    before the multiply, and nothing else in the suite would notice if that
+    widening were removed.
+
+    Feature weights of 8 are chosen so a full 32-piece board sums to 256 and
+    clips to 255: the maximum an activation can contribute.
+    """
+    feature_weights = np.full((INPUTS, HIDDEN), 8, dtype=np.int16)
+    feature_bias = np.zeros(HIDDEN, dtype=np.int16)
+    output_weights = np.full(2 * HIDDEN, sign * 127, dtype=np.int16)
+    return feature_weights, feature_bias, output_weights, sign * 2000000000
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
     make = sub.add_parser("random")
     make.add_argument("out")
     make.add_argument("--seed", type=int, default=1)
+    worst = sub.add_parser("extreme")
+    worst.add_argument("out")
+    worst.add_argument("--sign", type=int, default=1)
     one = sub.add_parser("eval")
     one.add_argument("net")
     one.add_argument("fen")
@@ -215,6 +237,9 @@ def main():
     if args.command == "random":
         save(args.out, *random_net(args.seed))
         print("wrote {} ({}x{}, seed {})".format(args.out, INPUTS, HIDDEN, args.seed))
+    elif args.command == "extreme":
+        save(args.out, *extreme_net(1 if args.sign >= 0 else -1))
+        print("wrote {} (arithmetic worst case, sign {})".format(args.out, args.sign))
     elif args.command == "eval":
         print(evaluate_fen(load(args.net), args.fen))
     elif args.command == "dump":

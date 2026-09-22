@@ -64,6 +64,17 @@ if [[ -n "$python" ]]; then
         "$python" "$here/harness/nnue/agree.py" "$release" "$work/random.nnue" --positions 150
 fi
 
+# The output reconstruction multiplies a dot product by the centipawn scale,
+# and at the quantization limits that product exceeds int32 by 16%: it is safe
+# only because the sum is widened to 64 bits first. Nothing else here would
+# notice if that widening were removed, so this gate exists to notice.
+if [[ -n "$python" ]]; then
+    for sign in 1 -1; do
+        "$python" "$here/harness/nnue/reference.py" extreme "$work/extreme.nnue" --sign $sign >/dev/null
+        gate "worst-case output arithmetic does not overflow (sign $sign)" 0 \n            "$python" "$here/harness/nnue/agree.py" "$release" "$work/extreme.nnue" --positions 12
+    done
+fi
+
 # Parallel search: it must find the same move as one thread, and it must
 # actually use the cores it was given.
 gate "8 threads finds the mate in one" 0 bash -c '
