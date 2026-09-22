@@ -27,10 +27,11 @@ import chess
 import chess.engine
 import chess.pgn
 
+import arena
 import wall
 from wall import Live
 
-DEFAULT_ARENA = r"~\Desktop\Games\Chess\arena_3.5.1"
+DEFAULT_ARENA = arena.ROOT
 
 # (folder-relative path, name, approximate CCRL 40/15 rating)
 OPPONENTS = [

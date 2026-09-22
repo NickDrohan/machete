@@ -31,6 +31,13 @@ the move, so the king's start and transit squares are tested during generation.
 the Zobrist key. The key is maintained incrementally and tested against a from-scratch recompute.
 Nothing allocates: the position, its 1024-ply history and each move list are fixed arrays.
 
+## Working on this
+
+[HANDOFF.md](HANDOFF.md) is the entry point for the Mach side: which files are
+the engine and which are the harness, the house rules and where they came
+from, and what is genuinely open. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the
+evidence behind it.
+
 ## What the numbers rest on
 
 `check.sh` proves the code does what it says. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the other

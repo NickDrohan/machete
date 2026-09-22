@@ -18,8 +18,12 @@ build runs fine if it is ever wanted back.
 """
 
 import os
+import sys
 
-ARENA = r"~\Desktop\Games\Chess\arena_3.5.1\Engines"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import arena
+
+ARENA = arena.ENGINES
 
 # name -> path relative to the Arena engine folder
 PANEL = {

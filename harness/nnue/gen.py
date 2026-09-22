@@ -50,9 +50,7 @@ OPENING_BALANCE = 150   # a game starting further from equal than this is skippe
 ADJUDICATE_AT = 1500    # once one side is this far ahead for a while, stop
 ADJUDICATE_PLIES = 6
 
-DEFAULT_ENGINE = os.path.join(
-    r"~\Desktop\Games\Chess\arena_3.5.1",
-    "Engines", "Stockfish", "stockfish", "stockfish-windows-x86-64-avx2.exe")
+DEFAULT_ENGINE = panel.path_of("Stockfish")
 
 
 def encode(board, score, result, engine_id=0):

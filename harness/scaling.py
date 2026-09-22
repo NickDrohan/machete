@@ -28,8 +28,10 @@ import subprocess
 import sys
 import time
 
+import arena
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-ARENA = r"~\Desktop\Games\Chess\arena_3.5.1\Engines"
+ARENA = arena.ENGINES
 
 # opponents near or above our level: below it, scores saturate and say nothing
 OPPONENTS = [
