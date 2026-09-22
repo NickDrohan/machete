@@ -153,11 +153,28 @@ Inherited. Never varied.
 
 ## The search
 
-### in progress - continuation history
-Measured +4 +/- 34, which resolves nothing. Under SPRT now against bounds
-[0, 10]. The ablation is exact - `cont_slot` returning -1 disables both the
-read and the update - and the two binaries differ in bench node count
-(165,161 with, 158,026 without), so the A/B is real.
+### open - continuation history, now much better bounded but still unresolved
+400 games gave +4 +/- 34. An SPRT against bounds [0, 10] ran to 1,060 games
+and did **not** resolve: the LLR reached -2.16 against a -2.94 bound and then
+walked back to -1.59, which is what a true value *inside* the bounds looks
+like. The same simulation that validated the test says a true +5 needs a
+median 4,212 games and still splits 52/46.
+
+It was stopped for the machine, not for what it said, and the distinction
+matters: stopping because a number looks good is what invalidates an interval.
+The fixed-sample estimate over those 1,060 games is **-5.6 +/- 21** - the point
+estimate has crossed zero and the bar has halved. Against that, the feature
+searches 4.5% more nodes to reach depth 8 (165,161 against 158,026), so it is
+paying for something not yet visible.
+
+Owed: finish the SPRT overnight on an idle machine. If it lands on H0 the
+feature comes out, and `fixtures/bench.expected` goes back to 158,026.
+
+The ablation is exact - `cont_slot` returning -1 disables both the read and
+the update - and the two binaries differ in bench node count, so the A/B is
+real. Recovering the tally afterwards needed solving the LLR trajectory for
+w/d/l, because both sides carried the same network and the PGN labelled them
+identically; that is now fixed at the source.
 
 Its commit also left `fixtures/bench.expected` holding the old count, so the
 gate that exists to notice an accidental search change was red and silent from
