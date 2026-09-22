@@ -252,7 +252,7 @@ def main():
 
     global LIVE
     if args.watch:
-        LIVE = Live(args.concurrency)
+        LIVE = Live(args.concurrency, title="machete rating ladder")
         wall.start(LIVE, args.watch, "the ladder")
 
     print("machete rating ladder: {} games each at {} ms, {} at a time".format(
@@ -282,9 +282,8 @@ def main():
         estimates.append((implied, margin, tally.games(), name))
         if LIVE is not None:
             with LIVE.lock:
-                LIVE.finished.append({"name": name, "rating": rating, "w": tally.wins,
-                                      "d": tally.draws, "l": tally.losses,
-                                      "score": score, "implied": implied})
+                LIVE.finished.append([name, rating, tally.wins, tally.draws, tally.losses,
+                                      "{:.3f}".format(score), "{:.0f}".format(implied)])
         margin_text = "+/- {:.0f}".format(margin) if margin != float("inf") else "one-sided"
         print("{:<16} {:>4} {:>4} {:>4} {:>7.3f} {:>10.0f} {}".format(
             name, tally.wins, tally.draws, tally.losses, score, implied, margin_text))

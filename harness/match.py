@@ -293,7 +293,8 @@ def main():
 
     live = None
     if args.watch:
-        live = wall.Live(max(1, args.concurrency))
+        live = wall.Live(max(1, args.concurrency),
+                         title="{} vs {}".format(args.label_a, args.label_b))
         live.say("{} vs {}".format(args.label_a, args.label_b), "{} games at {}".format(
             args.games, "depth {}".format(args.depth) if args.depth
             else "{} ms a move".format(args.movetime)))

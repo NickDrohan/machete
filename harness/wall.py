@@ -34,8 +34,10 @@ GLYPHS = {
 class Live(object):
     """What the page reads: one slot per worker, plus finished pairings."""
 
-    def __init__(self, workers):
+    def __init__(self, workers, title="machete", columns=("opponent", "rating", "W", "D", "L", "score", "implied")):
         self.lock = threading.Lock()
+        self.title = title
+        self.columns = list(columns)
         self.boards = [{"opponent": "", "white": "", "black": "", "squares": [""] * 64,
                         "lastMove": None, "plies": 0, "result": None} for _ in range(workers)]
         self.finished = []
@@ -70,6 +72,7 @@ class Live(object):
     def snapshot(self):
         with self.lock:
             return {"boards": list(self.boards), "finished": list(self.finished),
+                    "title": self.title, "columns": self.columns,
                     "current": self.current, "progress": self.progress}
 
 
@@ -115,7 +118,7 @@ WALL = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>machete ladder</title>
+<title>machete</title>
 <style>
   :root { --bg:#12141a; --panel:#1b1e26; --line:#2c313d; --text:#e6e9f0; --dim:#8a93a6;
           --light:#b9a789; --dark:#6d5e48; --mark:#c8a33266; }
@@ -144,12 +147,11 @@ WALL = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>machete rating ladder</h1>
+<h1 id="title">machete</h1>
 <div class="sub" id="sub">starting...</div>
 <div class="wall" id="wall"></div>
 <table>
-  <thead><tr><th class="name">opponent</th><th>rating</th><th>W</th><th>D</th><th>L</th>
-  <th>score</th><th>implied</th></tr></thead>
+  <thead id="head"></thead>
   <tbody id="rows"></tbody>
 </table>
 <script>
@@ -200,10 +202,14 @@ async function tick() {
       + (game.result ? ' &middot; ' + game.result : '');
   });
 
+  document.title = state.title;
+  document.getElementById('title').textContent = state.title;
+  document.getElementById('head').innerHTML = '<tr>' + state.columns.map((c, i) =>
+    '<th' + (i === 0 ? ' class="name"' : '') + '>' + c + '</th>').join('') + '</tr>';
   document.getElementById('rows').innerHTML = state.finished.map(row =>
-    '<tr><td class="name">' + row.name + '</td><td>' + row.rating + '</td><td>' + row.w
-    + '</td><td>' + row.d + '</td><td>' + row.l + '</td><td>' + row.score.toFixed(3)
-    + '</td><td class="implied">' + Math.round(row.implied) + '</td></tr>').join('');
+    '<tr>' + row.map((cell, i) =>
+      '<td' + (i === 0 ? ' class="name"' : (i === row.length - 1 ? ' class="implied"' : ''))
+      + '>' + cell + '</td>').join('') + '</tr>').join('');
 }
 tick();
 setInterval(tick, 500);

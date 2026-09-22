@@ -71,7 +71,8 @@ fi
 if [[ -n "$python" ]]; then
     for sign in 1 -1; do
         "$python" "$here/harness/nnue/reference.py" extreme "$work/extreme.nnue" --sign $sign >/dev/null
-        gate "worst-case output arithmetic does not overflow (sign $sign)" 0 \n            "$python" "$here/harness/nnue/agree.py" "$release" "$work/extreme.nnue" --positions 12
+        gate "worst-case output arithmetic does not overflow (sign $sign)" 0 \
+            "$python" "$here/harness/nnue/agree.py" "$release" "$work/extreme.nnue" --positions 12
     done
 fi
 
