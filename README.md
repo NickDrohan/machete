@@ -414,6 +414,40 @@ Three things in it were measured rather than assumed:
   a threefold repetition on every ply. It profiled at a seventh of the entire run - more than the
   position encoding and board copying together. Dropping it took a position from 15 ms to 10 ms.
 
+### Which positions are worth keeping
+
+The obvious optimisation is to train on the *good* positions rather than all of them, and the
+obvious way to pick them is held-out loss. Both are wrong, measured on the board rather than
+argued.
+
+`harness/nnue/subset.py` cuts the 42.2M corpus into seven equal 8,000,000-position slices along
+the axes worth suspecting, `harness/tournament.py` trains one network on each and plays them
+all-play-all. 4,200 games:
+
+| network | Elo | trained on |
+|---|---|---|
+| control | +245 +/- 27 | *the same file as uniform, entered twice* |
+| spread | +244 +/- 27 | 1.6M from each of five teachers |
+| uniform | +234 +/- 27 | random 8M of all 42.2M |
+| solo | +210 +/- 28 | Stockfish only |
+| decided | -86 +/- 34 | score at least 400 from equal |
+| opening | -136 +/- 35 | 25 pieces or more |
+| endgame | -342 +/- 35 | 12 pieces or fewer |
+| balanced | -368 +/- 35 | score within 150 of equal |
+
+`control` is the same network file as `uniform` entered a second time, so its true difference is
+exactly zero. They finished 11 Elo apart and scored 0.493 against each other over 150 games.
+That is the tournament measuring its own error in the same run as the result it qualifies, which
+is what makes the rest of the table worth reading.
+
+**No slice beat sampling the whole corpus.** And `balanced`, which has the best validation loss
+in the field by a factor of 2.4, produces the weakest engine by 602 Elo - near-equal positions
+are trivial to predict on a held-out slice of near-equal positions, so every subset scores well
+on itself and the metric is circular. The ordering shows the mechanism: `decided` finishes 282
+Elo above `balanced`, so knowing which positions are won matters far more than discriminating
+finely near zero. A network that only ever saw a score within 150 of equal cannot tell +200 from
++800, and has nothing to steer toward.
+
 ## Deliberately not built
 
 No opening book, endgame tablebases or pondering. Gated on windows-x86_64 only.

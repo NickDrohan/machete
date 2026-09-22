@@ -129,17 +129,54 @@ stops being true.
 
 ## The data
 
-### open - which positions are worth training on
-The question the subset tournament exists to answer. Held-out loss cannot
-answer it: `balanced` reports a validation loss of 0.00723 against `uniform`'s
-0.01717, not because it is a better corpus but because near-zero positions are
-trivial to predict on their own held-out slice. Every subset scores well on
-itself. Only games escape the circle.
+### measured - breadth beats every slice we know how to cut
+Seven networks, one per cut, 8,000,000 positions each, trained identically,
+4,200 games all-play-all at 200 ms:
+
+| network | score | Elo | trained on |
+|---|---|---|---|
+| control | 0.754 | +245 +/- 27 | *the same file as uniform* |
+| spread | 0.752 | +244 +/- 27 | 1.6M from each of 5 teachers |
+| uniform | 0.743 | +234 +/- 27 | random 8M of all 42.2M |
+| solo | 0.717 | +210 +/- 28 | Stockfish only |
+| decided | 0.396 | -86 +/- 34 | \|score\| >= 400 |
+| opening | 0.345 | -136 +/- 35 | >= 25 pieces |
+| endgame | 0.157 | -342 +/- 35 | <= 12 pieces |
+| balanced | 0.137 | -368 +/- 35 | \|score\| <= 150 |
+
+**The control validates the instrument.** `uniform` and `control` are
+byte-identical networks entered twice. Head to head they scored 0.493 over 150
+games and their fitted ratings differ by 11 Elo, so the noise floor is about
+11 and the 600-Elo spread below it is not an artifact.
+
+**Held-out loss is anti-correlated with strength.** `balanced` has the best
+validation loss in the field - 0.00723 against `uniform`'s 0.01717, 2.4x
+better - and finishes 602 Elo behind it. Near-zero positions are trivial to
+predict on their own slice. This is the circularity demonstrated rather than
+argued, and it is the reason this tournament exists.
+
+**A corpus of only close positions is the worst of all**, below even the
+endgame-only cut that has never seen an opening. The mechanism is visible in
+the ordering: `decided` at -86 is 282 Elo above `balanced`, so knowing which
+positions are won matters far more than fine discrimination near zero. A
+network that only ever saw |score| <= 150 cannot tell +200 from +800 and has
+nothing to steer toward.
+
+No slice beat uniform sampling. If a subset exists that would make a
+world-class engine, it is not selectable by score band or by game phase - the
+two most natural axes, both now closed.
 
 ### open - that five teachers and book openings each helped
 Both were changed together, along with the corpus growth, in the +157 +/- 38
-bundle. Neither has been isolated. The tournament's `solo` and `spread` cuts
-separate the teacher half of it.
+bundle. The tournament separated the teacher half: pooling the three diverse
+networks against `solo` gives **+37 +/- 32 over 450 games**, with all three
+head-to-heads pointing the same way (+21, +44, +47). It excludes zero, but
+`uniform` and `control` are the same network so those samples are correlated -
+directionally supported, not established. `spread` and `uniform` finish inside
+the noise floor of each other, so five teachers helps against one while
+*equalising their shares* adds nothing.
+
+Book openings remain unisolated.
 
 ### open - that 1500 nodes per label is enough teacher depth
 Never swept. The external-corpus result (-159 Elo against a deeper but less
