@@ -108,11 +108,22 @@ Measured +68 +/- 35 on the **old 12M** corpus and carried forward to the 42M
 one without re-testing. The corpus has since changed twice. **If wrong:** a
 mis-scaled target costs Elo on every network trained since.
 
-### open - that typical quantization headroom is safe
-The extremes are now gated in both signs. The typical case reports "worst
-accumulator N of 32767" - 2,126 to 7,143 across recent runs - but nothing
-fails if that number approaches the limit. **If wrong:** a future wider or
-longer-trained network silently saturates. A gate on this is cheap and owed.
+### measured - quantization headroom is enforced when we train a network
+This entry was first written claiming nothing fails as the accumulator
+approaches the limit. That was wrong. `train.py`'s `export()` refuses to write
+at all: it checks every array against int16 and bounds the accumulator by the
+bias plus the 32 largest weights in any hidden unit, 32 being the most pieces
+a position can have. Perturbed to confirm the refusal fires rather than being
+decorative - a hidden unit whose 32 largest weights reach 24,498 is written,
+36,755 is refused, and a single weight past int16 is refused separately.
+Recent real networks land between 2,126 and 7,143, roughly a quarter of the
+budget.
+
+### open - that a network we did not train would be caught
+The bound above lives in the trainer. `nn.load` accepts any file of the right
+shape, so a network converted from elsewhere, or hand-built, would saturate
+silently. Low risk while we only ever load our own, and worth a gate if that
+stops being true.
 
 ---
 
