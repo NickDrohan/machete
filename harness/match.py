@@ -133,13 +133,46 @@ def elo_difference(score, games):
 class Tally(object):
     """The running score, and the sequential test's verdict once it has one."""
 
-    def __init__(self, args, lower, upper):
+    def __init__(self, args, lower, upper, live=None):
         self.lock = threading.Lock()
         self.wins = self.draws = self.losses = 0
         self.verdict = None
         self.args = args
         self.lower = lower
         self.upper = upper
+        self.live = live
+
+    def publish(self, played, llr):
+        """Put the running score on the wall, from A's side and from B's.
+
+        A match that shows eleven boards and an empty table makes the watcher
+        wait until the process exits to learn anything. Both rows are shown
+        because "who is winning" is the question, and reading it off one row's
+        losses column is work the page can do instead.
+        """
+        if self.live is None:
+            return
+        rows = []
+        for name, w, d, l in ((self.args.label_a, self.wins, self.draws, self.losses),
+                              (self.args.label_b, self.losses, self.draws, self.wins)):
+            score = (w + 0.5 * d) / played
+            elo, margin = elo_difference(score, played)
+            if elo == float("inf"):
+                shown = "won every game"
+            elif elo == float("-inf"):
+                shown = "lost every game"
+            else:
+                shown = "{:+.0f} +/- {:.0f}".format(elo, margin)
+            rows.append([name, played, w, d, l, "{:.3f}".format(score), shown])
+        progress = "{} of {} games".format(played, self.args.games)
+        if self.args.sprt:
+            progress += "   LLR {:+.2f}  (H0 {:+.2f} .. H1 {:+.2f})".format(
+                llr, self.lower, self.upper)
+        if self.verdict:
+            progress += "   " + self.verdict
+        with self.live.lock:
+            self.live.finished = rows
+        self.live.say("{} vs {}".format(self.args.label_a, self.args.label_b), progress)
 
     def record(self, outcome, a_is_white):
         """Add one game and re-run the sequential test. True means keep going."""
@@ -151,6 +184,7 @@ class Tally(object):
             else:
                 self.losses += 1
             played = self.wins + self.draws + self.losses
+            llr = 0.0
             if self.args.sprt:
                 llr = log_likelihood_ratio(self.wins, self.draws, self.losses,
                                            self.args.sprt[0], self.args.sprt[1])
@@ -166,6 +200,7 @@ class Tally(object):
                 elif llr <= self.lower:
                     self.verdict = "accepted H0: the change is worth at most {:.0f} Elo".format(
                         self.args.sprt[0])
+            self.publish(played, llr)
             return self.verdict is None and played < self.args.games
 
 
@@ -279,7 +314,6 @@ def main():
         upper = math.log((1.0 - args.beta) / args.alpha)
         lower = math.log(args.beta / (1.0 - args.alpha))
 
-    tally = Tally(args, lower, upper)
     pairs = {"next": 0, "lock": threading.Lock()}
     failures = []
     # Name each side by whatever actually differs. Usually that is the network,
@@ -304,11 +338,13 @@ def main():
     live = None
     if args.watch:
         live = wall.Live(max(1, args.concurrency),
-                         title="{} vs {}".format(args.label_a, args.label_b))
+                         title="{} vs {}".format(args.label_a, args.label_b),
+                         columns=("side", "games", "W", "D", "L", "score", "Elo"))
         live.say("{} vs {}".format(args.label_a, args.label_b), "{} games at {}".format(
             args.games, "depth {}".format(args.depth) if args.depth
             else "{} ms a move".format(args.movetime)))
         wall.start(live, args.watch, "the match")
+    tally = Tally(args, lower, upper, live)
     threads = [threading.Thread(target=worker,
                                 args=(args, (path_a, path_b), tally, pairs, failures,
                                       live, slot))
