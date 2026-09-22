@@ -36,6 +36,7 @@ import chess
 import chess.engine
 
 import wall
+import adjudicate
 
 
 def random_opening(rng, plies):
@@ -48,11 +49,13 @@ def random_opening(rng, plies):
     return board.move_stack[:]
 
 
-def play(white, black, opening, limit, max_plies, report=None):
+def play(white, black, opening, limit, max_plies, report=None, judge=None):
     """Play one game; returns '1-0', '0-1', '1/2-1/2'."""
     board = chess.Board()
     for move in opening:
         board.push(move)
+    if judge:
+        judge.reset()
     if report:
         report(board, None)
     while not board.is_game_over(claim_draw=True):
@@ -61,7 +64,17 @@ def play(white, black, opening, limit, max_plies, report=None):
                 report(board, "1/2-1/2")
             return "1/2-1/2", board
         engine = white if board.turn == chess.WHITE else black
-        result = engine.play(board, limit)
+        white_to_move = board.turn == chess.WHITE
+        if judge and judge.enabled:
+            result = engine.play(board, limit, info=chess.engine.INFO_SCORE)
+            verdict = judge.observe(board, white_to_move,
+                                    adjudicate.score_of(result.info, white_to_move))
+            if verdict is not None:
+                if report:
+                    report(board, verdict)
+                return verdict, board
+        else:
+            result = engine.play(board, limit)
         if result.move is None or result.move not in board.legal_moves:
             raise RuntimeError("illegal move {} in {}".format(result.move, board.fen()))
         board.push(result.move)
@@ -209,7 +222,8 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                                        args.label_b if _w else args.label_a, result)
                 try:
                     outcome, final = play(white, black, opening, limit_from(args),
-                                          args.max_plies, report)
+                                          args.max_plies, report,
+                                          adjudicate.from_arguments(args))
                 except Exception as problem:
                     failures.append(str(problem))
                     return
@@ -244,6 +258,7 @@ def main():
                         help="port for the live board wall; 0 turns it off")
     parser.add_argument("--pgn", default="data/games_match.pgn",
                         help="append every game here; empty string turns it off")
+    adjudicate.add_arguments(parser)
     parser.add_argument("--option-a", action="append", default=[],
                         help="UCI option for engine A as Name=Value; repeatable")
     parser.add_argument("--option-b", action="append", default=[],
