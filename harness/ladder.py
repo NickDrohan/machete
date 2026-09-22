@@ -28,6 +28,7 @@ import chess.engine
 import chess.pgn
 
 import arena
+import engine as engines
 import wall
 from wall import Live
 
@@ -213,11 +214,8 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                                    opponent_name if machete_white else "machete",
                                    "machete ladder vs {}".format(opponent_name), outcome)
         finally:
-            for engine in (machete, opponent):
-                try:
-                    engine.quit()
-                except Exception:
-                    pass
+            for side in (machete, opponent):
+                engines.shutdown(side)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(concurrency)]
     for thread in threads:

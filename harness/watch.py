@@ -38,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MACHETE = os.path.join(HERE, "..", "out", "windows-x86_64", "release", "bin", "machete.exe")
 
 from wall import GLYPHS
+import engine as engines
 
 
 def find_stockfish():
@@ -398,14 +399,18 @@ def main():
             print("match over: machete {} - {} - {} (W-L-D)".format(
                 game.tally["machete"], game.tally["opponent"], game.tally["draw"]))
         sys.stdout.flush()
-        # keep serving so the final position stays on screen
+        # keep serving so the final position stays on screen. Say so:
+        # a script that has finished its work and does not exit looks
+        # identical to one that has hung.
+        print("still serving the final position - press Ctrl+C to quit")
+        sys.stdout.flush()
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
-        machete.quit()
-        opponent.quit()
+        engines.shutdown(machete)
+        engines.shutdown(opponent)
     return 0
 
 

@@ -43,6 +43,7 @@ import chess.engine
 
 import wall
 import match
+import engine as engines
 
 
 # No rating outside this range is meaningful here, and a network that has not
@@ -207,13 +208,8 @@ def play_block(args, paths, table, i, j, first_pair, pairs, live, slot):
     except Exception as problem:
         return "{} vs {}: {}".format(name_i, name_j, problem)
     finally:
-        for engine in (a, b):
-            if engine is None:
-                continue
-            try:
-                engine.quit()
-            except Exception:
-                pass
+        for side in (a, b):
+            engines.shutdown(side)
     return None
 
 

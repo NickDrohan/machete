@@ -18,6 +18,8 @@ import os
 import sys
 
 import chess
+
+import engine as engines
 import chess.engine
 import chess.pgn
 
@@ -128,7 +130,7 @@ def main():
                     sys.stdout.write("\r{} games, {} moves judged".format(games_read, moves_judged))
                     sys.stdout.flush()
     finally:
-        judge.quit()
+        engines.shutdown(judge)
 
     print("\n")
     print("judged {} moves over {} games".format(moves_judged, games_read))

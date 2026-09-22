@@ -22,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import arena
+import engine as engines
 
 ARENA = arena.ENGINES
 
@@ -56,7 +57,4 @@ def open_engine(name, hash_mb=64):
 
 
 def quiet_quit(engine):
-    try:
-        engine.quit()
-    except Exception:
-        pass
+    return engines.shutdown(engine)

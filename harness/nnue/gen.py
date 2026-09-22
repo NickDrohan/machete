@@ -204,10 +204,7 @@ def worker(index, args, counter):
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            engine.quit()
-        except Exception:
-            pass
+        panel.quiet_quit(engine)
 
 
 def join_shards(out, workers):

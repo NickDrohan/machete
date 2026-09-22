@@ -66,12 +66,27 @@ evaluation advantage can saturate with depth even when the engine as a whole
 gains. **If wrong:** the subset tournament ranks the wrong data. Cheap partial
 check: re-run the top two finishers at 3200 ms.
 
-### open - that results taken on a busy machine are comparable
-An orphaned match once held four cores and put every nps figure 20% low.
-Time-based paired matches should be robust, because load slows both sides
-equally, but this has never been tested directly. **If wrong:** results from
-different sessions cannot be pooled. Cheap check: run one A/B twice, idle and
-under artificial load, and compare.
+### measured - absolute throughput is uninterpretable without the machine state
+The same gate, the same binary, three times in one afternoon:
+
+| machine | 1-thread nps |
+|---|---|
+| 11-game tournament running | 428,950 |
+| tournament finished, ten orphaned harness processes alive | 541,676 |
+| after clearing them | 769,675 |
+
+A 79% spread with no code change. **No nps figure means anything unless what
+else was running is recorded next to it.** Any two speed numbers in this repo
+taken in different sessions should be assumed incomparable.
+
+### open - that *paired* results on a busy machine are still comparable
+The above is about absolute throughput. The separate and still-untested claim
+is that an A/B *Elo* measurement survives load, because a time-based match
+slows both sides equally and a score is a ratio. That is the assumption every
+pooled Elo figure here rests on, and it is the one that actually matters.
+**If wrong:** results from different sessions cannot be pooled at all. Cheap
+check: run one A/B twice, idle and under artificial load, and compare - now
+cheaper than before, since the load can simply be a second copy of the match.
 
 ---
 

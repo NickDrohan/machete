@@ -23,12 +23,17 @@ engines() { tasklist 2>/dev/null | grep -ci "machete\|cont\.exe" || true; }
 # Whatever is already up when this starts is the baseline, and we wait for the
 # count to come back to it rather than to zero.
 #
-# There is at least one engine on this machine that cannot be killed - taskkill
-# and Stop-Process both answer "access is denied" on a process this user owns -
-# and it sits at 0% CPU holding no ports. An earlier version of this line
-# hardcoded a threshold of 1 for it, which would have been wrong the moment it
-# was cleared or a second one appeared. A baseline is right either way and
-# needs no comment explaining which number is magic.
+# This line used to hardcode a threshold of 1, for an engine held open by a
+# harness script someone had run interactively in another terminal. It was not
+# killable from here - taskkill and Stop-Process both answered "access is
+# denied" on a process the same user owned - because a process attached to
+# another console session takes its signals from that console, and Ctrl+Break
+# there ended it immediately.
+#
+# So the threshold was correct on the day and wrong the next morning. Anything
+# a person is running in their own terminal is legitimately background to this
+# script, there can be any number of them, and none of them belongs in a
+# constant here. A baseline needs no comment explaining which number is magic.
 baseline=$(engines)
 say "waiting for running matches to clear (${baseline} engine process(es) already up)"
 for _ in $(seq 1 240); do

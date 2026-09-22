@@ -19,6 +19,8 @@ import sys
 import time
 
 import chess
+
+import engine as engines
 import chess.engine
 import chess.pgn
 import requests
@@ -108,7 +110,7 @@ def main():
             print("{:3d}. {} plays {}".format(board.fullmove_number, who, move.uci()))
             board.push(move)
     finally:
-        engine.quit()
+        engines.shutdown(engine)
 
     game = chess.pgn.Game.from_board(board)
     game.headers["Event"] = "mate vs {}".format(args.model)

@@ -37,6 +37,7 @@ import chess.engine
 
 import wall
 import adjudicate
+import engine as engines
 
 
 def random_opening(rng, plies):
@@ -269,11 +270,8 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                 if not tally.record(outcome, a_is_white):
                     return
     finally:
-        for engine in (a, b):
-            try:
-                engine.quit()
-            except Exception:
-                pass
+        for side in (a, b):
+            engines.shutdown(side)
 
 
 def main():
