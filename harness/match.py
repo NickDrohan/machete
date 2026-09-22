@@ -268,13 +268,13 @@ def main():
     pairs = {"next": 0, "lock": threading.Lock()}
     failures = []
     # name each side by its network file, which is usually the only difference
-    def side_label(options, fallback):
+    def side_label(options, engine_path):
         for setting in options:
             if setting.startswith("EvalFile="):
                 return os.path.splitext(os.path.basename(setting[9:]))[0]
-        return fallback
-    args.label_a = side_label(args.option_a, "A")
-    args.label_b = side_label(args.option_b, "B")
+        return os.path.splitext(os.path.basename(engine_path))[0]
+    args.label_a = side_label(args.option_a, path_a)
+    args.label_b = side_label(args.option_b, path_b)
 
     live = None
     if args.watch:
