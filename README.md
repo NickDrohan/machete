@@ -31,6 +31,14 @@ the move, so the king's start and transit squares are tested during generation.
 the Zobrist key. The key is maintained incrementally and tested against a from-scratch recompute.
 Nothing allocates: the position, its 1024-ply history and each move list are fixed arrays.
 
+## What the numbers rest on
+
+`check.sh` proves the code does what it says. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the other
+half: the claims a gate cannot express, about whether a measurement means what we think it
+means. It lists every assumption an Elo figure here depends on, marks each measured, open or
+retired, and names the test. Two of its entries were found false and two gates were found
+silent while it was being written, which is the argument for keeping it.
+
 ## Correctness
 
 Move generation is the part of an engine where "looks right" is worthless, so nothing here
