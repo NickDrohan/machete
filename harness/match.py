@@ -473,14 +473,15 @@ def main():
     for thread in threads:
         thread.join()
     if failures:
-        print("match failed: {}".format(failures[0]))
+        # stderr, so that check.sh's gate shows why a match failed
+        sys.stderr.write("match failed: {}\n".format(failures[0]))
         return 1
 
     wins, draws, losses = tally.wins, tally.draws, tally.losses
     verdict = tally.verdict
     games = wins + draws + losses
     if games == 0:
-        print("no games were played")
+        sys.stderr.write("no games were played\n")
         return 1
     score = (wins + 0.5 * draws) / games
     print("games {} wins {} draws {} losses {}".format(games, wins, draws, losses))

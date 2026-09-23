@@ -6,7 +6,7 @@
 use std.chrono.time;
 
 pub fun now_ms() i64 {
-    val c: time.Clock = time.monotonic();
+    val c: time.InstantClock = time.instant();
     if (sel c.err) { ret 0; }
     ret c.ok.sec * 1000 + c.ok.nsec / 1000000;
 }

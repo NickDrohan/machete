@@ -30,7 +30,6 @@ use std.simd.reduce.hsum_i32x4;
 use std.simd.select.select_i16x8;
 use std.simd.shuffle.splat_i16x8;
 use std.simd.shuffle.splat_i32x4;
-use std.simd.shuffle.splat_u32x4;
 
 use fs:       std.filesystem;
 use io_error: std.io.error;
@@ -78,11 +77,7 @@ val CHANGES: i64 = 4;
 # patching 512 int16 lanes for those was most of what the network cost.
 #[align(16)]
 pub rec Acc {
-    # 256 hidden values, plus eight lanes of slack. output() reads a second,
-    # one-element-offset vector to reach the odd-numbered lanes, so the last
-    # read of each half runs eight lanes past the end. The slack makes that
-    # read land in memory this record owns; its contents are masked away.
-    v:      [2][HIDDEN + 8]i16;
+    v:      [2][HIDDEN]i16;
     ready:  i64;
     count:  i64;
     piece:  [CHANGES]u8;
@@ -244,31 +239,24 @@ pub fun carry(child: *Acc, parent: *Acc) {
 # was tried and measured slower: SSE2 has no packed 32-bit multiply, and the
 # emulation cost more than it saved.
 #
-# Widening wants a shift, which Mach does not have for vectors yet, so it is
-# done by masking. Reinterpreted as i32x4, the low half of each lane holds one
-# product; a second pass offset by one element puts the products in between
-# into that same position. A sum does not care what order it is taken in, so
-# the two passes can be accumulated together. The low half is sign-extended
-# with the usual xor-and-subtract, since a product can be negative.
+# The eight products are then widened to two i32x4 and summed. The widening
+# literal compiles to a packed unpack as of mach 5.11.0 (mach#3738); before
+# that it went lane by lane through memory, so this was written as a masking
+# trick over two overlapping loads - one of which read an element past the end
+# of the output weights, harmlessly masked away. One load, one clamp and one
+# multiply per eight lanes now, and nothing read out of bounds.
 fun accumulate(values: *i16, weights: *i16, running: i32x4) i32x4 {
-    val mask: u32x4 = splat_u32x4(65535);
-    val flip: u32x4 = splat_u32x4(32768);
-    val bias: i32x4 = splat_i32x4(65536);   # the two xor biases, folded
     val zero: i16x8 = splat_i16x8(0);
     val high: i16x8 = splat_i16x8(QA::i16);
     var acc:  i32x4 = running;
     var i:    i64   = 0;
     for (i < HIDDEN) {
-        var even: i16x8 = load8(values, i);
-        even = select_i16x8(even < zero, zero, even);
-        even = select_i16x8(high < even, high, even);
-        var odd: i16x8 = load8(values, i + 1);
-        odd = select_i16x8(odd < zero, zero, odd);
-        odd = select_i16x8(high < odd, high, odd);
-
-        val pe: u32x4 = (even * load8(weights, i)):~u32x4;
-        val po: u32x4 = (odd * load8(weights, i + 1)):~u32x4;
-        acc = acc + ((((pe & mask) ^ flip):~i32x4) + (((po & mask) ^ flip):~i32x4)) - bias;
+        var clipped: i16x8 = load8(values, i);
+        clipped = select_i16x8(clipped < zero, zero, clipped);
+        clipped = select_i16x8(high < clipped, high, clipped);
+        val product: i16x8 = clipped * load8(weights, i);
+        acc = acc + i32x4{product[0]::i32, product[1]::i32, product[2]::i32, product[3]::i32}
+                  + i32x4{product[4]::i32, product[5]::i32, product[6]::i32, product[7]::i32};
         i = i + 8;
     }
     ret acc;
