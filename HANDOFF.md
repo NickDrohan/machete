@@ -58,8 +58,11 @@ products by masking - see `src/nnue.mach`.
 
 ## What is actually open
 
-Ordered by how much Elo is plausibly sitting in it. Full reasoning and the
-evidence for each is in [ASSUMPTIONS.md](ASSUMPTIONS.md).
+**The prioritised plan is [ROADMAP_3500.md](ROADMAP_3500.md)** - work packages
+with tiers, territories, measurement protocol and acceptance criteria. What
+follows is the short version. Evidence for each item is in
+[ASSUMPTIONS.md](ASSUMPTIONS.md); every measured result is in
+[RESULTS.tsv](RESULTS.tsv).
 
 **The pruning constants have never been tuned against this evaluation.** NMP
 `3 + depth/3`, LMR `0.75 + ln(d)ln(m+1)/2.25`, LMP `6 + depth^2`, RFP
@@ -69,13 +72,11 @@ those margins were chosen against, and a different evaluation wants different
 margins. This is the largest untapped source in the engine and nobody has
 touched it.
 
-**Continuation history may not be earning its place.** `-5.6 +/- 21` over
-1,060 games, and it searches 4.5% *more* nodes to reach depth 8 (165,161
-against 158,026). An SPRT against bounds [0, 10] ran to 1,060 games without
-resolving and was stopped for the machine, not for the number. If it lands on
-H0 the feature comes out and `fixtures/bench.expected` goes back to 158,026.
-The ablation is one line: `cont_slot` returning -1 disables both the read and
-the update.
+**Continuation history should come out.** SPRT-01 accepted H0 over 1,884
+games, -6 +/- 16, and it searches 4.5% *more* nodes to reach depth 8. The
+ablation is one line - `cont_slot` returning -1 disables both the read and the
+update - but do it properly: delete the table and its updates, and return
+`fixtures/bench.expected` to 158,026 in the same commit (ROADMAP S-01).
 
 **Won endgames are not converted, and there is no endgame knowledge at all.**
 Over 1,884 self-play games, 80 ended drawn with one side a rook or more ahead.

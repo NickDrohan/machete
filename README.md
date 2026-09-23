@@ -33,7 +33,8 @@ Nothing allocates: the position, its 1024-ply history and each move list are fix
 
 ## Working on this
 
-[HANDOFF.md](HANDOFF.md) is the entry point for the Mach side: which files are
+[ROADMAP_3500.md](ROADMAP_3500.md) is the plan from here to 3500, written as
+work packages for agents. [HANDOFF.md](HANDOFF.md) is the entry point for the Mach side: which files are
 the engine and which are the harness, the house rules and where they came
 from, and what is genuinely open. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the
 evidence behind it.

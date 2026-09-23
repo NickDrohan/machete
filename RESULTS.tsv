@@ -1,0 +1,16 @@
+date	id	change	test	against	tc	games	result	elo	margin95	verdict	source
+2026-09-20	HIST-01	pruning stack restored	restored stack	previous binary	movetime 40ms	700	-	-21	26	regression at very short tc	commit 2b3d9d8
+2026-09-20	HIST-02	pruning stack restored	restored stack	previous binary	movetime 300ms	400	-	+76	35	kept	commit 2b3d9d8
+2026-09-21	HIST-03	target scale 400 -> 150	scale 150 net	scale 400 net	movetime 300ms	400	-	+68	35	kept	commit 63a9ddb
+2026-09-21	HIST-04	drop game-result term (blend 1.0)	blend 1.0 net	blend 0.7 net	movetime 300ms	400	-	+108	36	kept	commit 539ba55
+2026-09-21	HIST-05	42M six-teacher corpus (bundled: teachers + book + size)	new corpus net	previous net	movetime 300ms	400	-	+157	38	kept - BUNDLED, components not isolated	commit d97aec6
+2026-09-21	HIST-06	external theoden corpus	theoden net	current net	movetime 300ms	400	-	-159	38	rejected	commit befa181
+2026-09-22	HIST-07	corpus rebalance by score band	rebalanced net	current net	movetime 300ms	400	-	+23	34	UNRESOLVED - SPRT-02 queued	commit fd28899
+2026-09-22	HIST-08	blend 0.9 on clean corpus	blend 0.9 net	blend 1.0 net	movetime 300ms	400	-	-10	34	rejected	data/overnight.log
+2026-09-22	HIST-09	blend 0.8 on clean corpus	blend 0.8 net	blend 1.0 net	movetime 300ms	400	-	-43	34	rejected	data/overnight.log
+2026-09-22	SPRT-01	continuation history	cont	nocont	movetime 200ms	1884	500-852-532	-6	16	H0 accepted [0,10] - remove it	commit 4c727c1
+2026-09-22	TOUR-01	data slices, 8M each, all-play-all	8 nets	each other	movetime 200ms	4200	see json	see json	27	no slice beats uniform; balanced -602 vs uniform	commit 000fdba
+2026-09-22	SCALE-01	time-control scaling	machete	Spike+Hermann+Ruffian	200/800/3200ms	540	0.739/0.792/0.814	-	-	gains with time, sign test p=0.016	data/scaling.json
+2026-09-22	LADDER-01	rating ladder	machete	CCRL anchors	movetime 200ms	40/opp	-	2769	122	superseded	data/ladder_v2.txt
+2026-09-22	LADDER-02	rating ladder	machete	CCRL anchors	movetime 1000ms	60/opp	-	2928	78	INVALID ANCHOR: Rybka ran multi-threaded (Max CPUs 2048). Without it 2963 +/- 65, chi2/dof 0.92. Re-run owed (P0-1)	data/ladder2.log
+2026-09-22	FIELD-01	reference field: owner's top-9 round robin	9 engines	each other	owner's conditions (TC to record)	360	73.3% drawn	spread 127	30-55	Stockfish +63, Berserk +47, PlentyChess +39, Obsidian +32, Torch -8, Caissa -8, Lc0 -43, Dragon -59, Koivisto -63 (Bradley-Terry, field mean 0). Koivisto is the floor; machete scored 1-2-57 vs Koivisto in LADDER-02	owner's Arena tournament

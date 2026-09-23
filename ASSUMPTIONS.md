@@ -59,6 +59,19 @@ on the board. Both engines are equally subject to it, so it inflates the draw
 rate - widening error bars - rather than shifting the estimate. Worth
 revisiting if the rate climbs at longer time controls.
 
+### measured - the rating ladder must pin its opponents to one thread
+LADDER-02 reported 2928 +/- 78 with chi2/dof 1.59 - its anchors disagreed with
+each other more than their error bars allow. The outlier was Rybka 2.3.2a,
+implying 2809 against a cluster near 2960, 2.2 standard errors below the rest.
+Its binary is the multi-processor build, which reports `Max CPUs` defaulting
+to 2048, and the ladder never configured an opponent's threads: it played with
+up to all 24 hardware threads against our one.
+
+Without that pairing the other six anchors are consistent (chi2/dof 0.92) and
+pool to **2963 +/- 65**. The exclusion rests on the measured configuration
+defect, not on the result, and the number stays provisional until the ladder
+pins every opponent and is re-run (ROADMAP_3500.md P0-1, P0-8).
+
 ### open - that net-vs-net ranking at 200 ms holds at tournament time controls
 SCALE-01 tested machete against *external* engines. It did not test whether
 one of our networks that beats another at 200 ms still beats it at 3200 ms. An
@@ -262,35 +275,20 @@ a tradeoff - only the middlegame half of it was.
 
 ## The search
 
-### open - continuation history, now much better bounded but still unresolved
-400 games gave +4 +/- 34. An SPRT against bounds [0, 10] ran to 1,060 games
-and did **not** resolve: the LLR reached -2.16 against a -2.94 bound and then
-walked back to -1.59, which is what a true value *inside* the bounds looks
-like. The same simulation that validated the test says a true +5 needs a
-median 4,212 games and still splits 52/46.
+### measured - continuation history does not earn its place
+SPRT-01 against bounds [0, 10] accepted H0 over 1,884 games: 500-852-532,
+**-6 +/- 16**. It also searches 4.5% more nodes to reach depth 8 (165,161
+against 158,026). Removing it is ROADMAP_3500.md S-01; `fixtures/bench.expected`
+returns to 158,026 in the same commit.
 
-It was stopped for the machine, not for what it said, and the distinction
-matters: stopping because a number looks good is what invalidates an interval.
-The fixed-sample estimate over those 1,060 games is **-5.6 +/- 21** - the point
-estimate has crossed zero and the bar has halved. Against that, the feature
-searches 4.5% more nodes to reach depth 8 (165,161 against 158,026), so it is
-paying for something not yet visible.
-
-Owed: finish the SPRT overnight on an idle machine. If it lands on H0 the
-feature comes out, and `fixtures/bench.expected` goes back to 158,026.
-
-The ablation is exact - `cont_slot` returning -1 disables both the read and
-the update - and the two binaries differ in bench node count, so the A/B is
-real. Recovering the tally afterwards needed solving the LLR trajectory for
-w/d/l, because both sides carried the same network and the PGN labelled them
-identically; that is now fixed at the source.
-
-Its commit also left `fixtures/bench.expected` holding the old count, so the
-gate that exists to notice an accidental search change was red and silent from
-that commit until it was found.
+A first SPRT had been stopped at 1,060 games for the machine rather than for
+its data, at -5.6 +/- 21 with the LLR walking back from -2.16 - the signature
+of a true value inside the bounds. The second, run to a verdict, is the one
+that counts. Its predecessor's commit had also left the bench fixture stale,
+so the gate meant to notice a search change was silent until it was found.
 
 ### open - the corpus rebalance
-Measured +23 +/- 34. SPRT owed.
+Measured +23 +/- 34. SPRT-02 is queued in `harness/longqueue.sh`.
 
 ### open - every pruning constant
 NMP 3 + depth/3, LMR 0.75 + ln(d)ln(m+1)/2.25, LMP 6 + depth^2, RFP 85*depth,
