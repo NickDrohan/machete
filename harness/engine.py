@@ -60,10 +60,12 @@ THREAD_OPTIONS = ("Threads", "Max CPUs", "Cores", "CPUs")
 
 
 def pin(engine, hash_mb=128):
-    """One search thread and a fixed hash, whatever the engine calls them.
+    """One search thread, a fixed hash and no opening book of its own.
 
     A rating is only a rating of the engine if its resources are fixed, not
-    whatever its defaults happen to be. Returns the thread option that was set,
+    whatever its defaults happen to be. AnMon, SOS, Hermann and Spike ship with
+    OwnBook on, so until this turned it off they played their openings from a
+    book - instantly - while machete and Rybka searched theirs. Returns the thread option that was set,
     or None when the engine has none - which the caller must report, since that
     engine is then single-threaded only by assumption. The hash is clamped to
     the range the engine declares.
@@ -74,6 +76,8 @@ def pin(engine, hash_mb=128):
             engine.configure({name: 1})
             chosen = name
             break
+    if "OwnBook" in engine.options:
+        engine.configure({"OwnBook": False})
     if "Hash" in engine.options:
         option = engine.options["Hash"]
         size = hash_mb

@@ -70,6 +70,9 @@ def open_engine(name, hash_mb=64):
         engine.configure({"Threads": 1, "Hash": hash_mb})
     except Exception:
         pass  # an engine without these options is still usable
+    # Dragon ships with OwnBook on; a teacher answering from a book gives no score
+    if "OwnBook" in engine.options:
+        engine.configure({"OwnBook": False})
     return engine
 
 

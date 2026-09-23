@@ -181,6 +181,10 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                 opponent_path, timeout=20, cwd=os.path.dirname(opponent_path))
             engines.pin(machete)
             engines.pin(opponent)
+            if LIVE is not None:
+                LIVE.say("{} and machete are choosing their openings".format(opponent_name),
+                         "each ranks its own first moves and replies, {:g} s a candidate; "
+                         "a few minutes, once per opponent".format(seconds))
             lines[True] = self_book_module.openings(machete, "machete", opponent, opponent_name,
                                                     first, replies, seconds, margin, cache)
             lines[False] = self_book_module.openings(opponent, opponent_name, machete, "machete",
