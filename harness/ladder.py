@@ -104,37 +104,14 @@ def combine(usable):
     return pooled, margin, max(1.0, consistency)
 
 
-def play(white, black, moves, movetime, max_plies, report=None):
-    board = chess.Board()
-    for move in moves:
-        board.push(move)
-    limit = chess.engine.Limit(time=movetime / 1000.0)
-    if report:
-        report(board, None)
-    while not board.is_game_over(claim_draw=True):
-        if board.ply() >= max_plies:
-            if report:
-                report(board, "1/2-1/2")
-            return "1/2-1/2", board
-        engine = white if board.turn == chess.WHITE else black
-        result = engine.play(board, limit)
-        if result.move is None or result.move not in board.legal_moves:
-            raise RuntimeError("illegal move {}".format(result.move))
-        board.push(result.move)
-        if report:
-            report(board, None)
-    outcome = board.result(claim_draw=True)
-    if report:
-        report(board, outcome)
-    return outcome, board
-
-
 class Tally(object):
     def __init__(self):
         self.lock = threading.Lock()
         self.wins = 0
         self.draws = 0
         self.losses = 0
+        # seconds each side spent per move, from the clock readings
+        self.thinking = {"machete": [], "opponent": []}
 
     def add(self, outcome, machete_white):
         with self.lock:
@@ -148,12 +125,30 @@ class Tally(object):
     def games(self):
         return self.wins + self.draws + self.losses
 
+    def add_clocks(self, clocks, first_white, machete_white, clock):
+        """Time each side spent per move, from the harness's clock readings."""
+        if not clocks or clock is None:
+            return
+        left = {True: float(clock[0]), False: float(clock[0])}
+        side = first_white
+        with self.lock:
+            for after in clocks:
+                spent = (left[side] + clock[1] - after) / 1000.0
+                who = "machete" if side == machete_white else "opponent"
+                self.thinking[who].append(max(0.0, spent))
+                left[side] = after
+                side = not side
+
+    def median_thinking(self, who):
+        values = sorted(self.thinking[who])
+        return values[len(values) // 2] if values else 0.0
+
     def score(self):
         return (self.wins + 0.5 * self.draws) / max(1, self.games())
 
 
 def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurrency, seed,
-                opponent_name="", pgn_path=None, options=()):
+                opponent_name="", pgn_path=None, options=(), clock=None, startpos=False):
     """Play `games` games, `concurrency` at a time, alternating colours."""
     tally = Tally()
     jobs = list(range(games))
@@ -173,6 +168,12 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
             # asserts on every one of them and the pairing produces nothing.
             opponent = chess.engine.SimpleEngine.popen_uci(
                 opponent_path, timeout=20, cwd=os.path.dirname(opponent_path))
+            # both sides on one thread and a fixed hash: a rating that depends
+            # on an engine's defaults is not a rating of the engine
+            engines.pin(machete)
+            if engines.pin(opponent) is None and worker_id == 0:
+                errors.append("note: {} has no thread option; single-threaded by "
+                              "assumption".format(opponent_name))
         except Exception as problem:
             errors.append("could not start engines: {}".format(problem))
             return
@@ -185,7 +186,10 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                     game_number = jobs[index[0]]
                     index[0] += 1
                 machete_white = game_number % 2 == 0
-                book = match.random_opening(rng, 4)
+                if startpos:
+                    book = chess.STARTING_FEN
+                else:
+                    book = match.random_opening(rng, 4)
                 white, black = (machete, opponent) if machete_white else (opponent, machete)
                 report = None
                 if LIVE is not None:
@@ -193,17 +197,24 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                         LIVE.set_board(_s, board,
                                        "machete" if _w else opponent_name,
                                        opponent_name if _w else "machete", result)
+                limit = chess.engine.Limit(time=movetime / 1000.0)
                 try:
-                    outcome, final_board = play(white, black, book, movetime, max_plies, report)
+                    outcome, final_board, how, clocks = match.play(
+                        white, black, book, limit, max_plies, report, None, clock)
                 except Exception as problem:
-                    errors.append(str(problem))
+                    errors.append("{}: {}".format(type(problem).__name__, problem))
                     return
                 tally.add(outcome, machete_white)
+                tally.add_clocks(clocks, match.opening_board(book).turn, machete_white, clock)
                 if pgn_path:
                     wall.save_game(pgn_path, final_board,
                                    "machete" if machete_white else opponent_name,
                                    opponent_name if machete_white else "machete",
-                                   "machete ladder vs {}".format(opponent_name), outcome)
+                                   "machete ladder vs {}".format(opponent_name), outcome,
+                                   headers={"TimeControl": "{:g}+{:g}".format(clock[0] / 1000.0, clock[1] / 1000.0)
+                                            if clock else "movetime {} ms".format(movetime),
+                                            "Termination": how},
+                                   clocks=clocks)
         finally:
             for side in (machete, opponent):
                 engines.shutdown(side)
@@ -233,25 +244,40 @@ def main():
                         help="append every game here; empty string turns it off")
     parser.add_argument("--option", action="append", default=[],
                         help="UCI option for machete as Name=Value; repeatable")
+    parser.add_argument("--tc", default="", help="a real clock in seconds, BASE+INCREMENT")
+    parser.add_argument("--startpos", action="store_true",
+                        help="every game from the standard starting position; the clock's "
+                             "timing noise is what varies them")
+    parser.add_argument("--min-rating", type=int, default=0,
+                        help="skip opponents rated below this")
+    parser.add_argument("--linger", type=int, default=600,
+                        help="seconds to keep the wall up after finishing")
     parser.add_argument("--watch", type=int, default=8760,
                         help="port for the live wall; 0 turns it off")
     args = parser.parse_args()
 
     machete_path = os.path.abspath(args.engine)
     estimates = []
+    clock = None
+    if args.tc:
+        base, increment = match.parse_tc(args.tc)
+        clock = (base, increment, 100)
+    conditions = "{} on the clock".format(args.tc) if clock else "{} ms a move".format(args.movetime)
+    if args.startpos:
+        conditions += ", from the starting position"
 
     global LIVE
     if args.watch:
         LIVE = Live(args.concurrency, title="machete rating ladder")
         wall.start(LIVE, args.watch, "the ladder")
 
-    print("machete rating ladder: {} games each at {} ms, {} at a time".format(
-        args.games, args.movetime, args.concurrency))
+    print("machete rating ladder: {} games each at {}, {} at a time".format(
+        args.games, conditions, args.concurrency))
     print("{:<16} {:>4} {:>4} {:>4} {:>7} {:>16}".format("opponent", "W", "D", "L", "score", "implied rating"))
     sys.stdout.flush()
 
     for relative, name, rating in OPPONENTS:
-        if rating > args.max_rating:
+        if rating > args.max_rating or rating < args.min_rating:
             continue
         path = os.path.join(args.arena, relative.replace("/", os.sep))
         if not os.path.exists(path):
@@ -259,10 +285,13 @@ def main():
             continue
         if LIVE is not None:
             LIVE.say("playing {} ({} Elo)".format(name, rating),
-                     "{} games at {} ms a move".format(args.games, args.movetime))
+                     "{} games at {}".format(args.games, conditions))
         tally, errors = run_pairing(machete_path, path, args.games, args.movetime,
                                     args.max_plies, args.concurrency, args.seed, name,
-                                    args.pgn or None, args.option)
+                                    args.pgn or None, args.option, clock, args.startpos)
+        for note in [e for e in errors if e.startswith("note:")]:
+            print("{:<16} {}".format(name, note))
+        errors = [e for e in errors if not e.startswith("note:")]
         if tally.games() == 0:
             print("{:<16} no games: {}".format(name, errors[:1]))
             continue
@@ -277,6 +306,13 @@ def main():
         margin_text = "+/- {:.0f}".format(margin) if margin != float("inf") else "one-sided"
         print("{:<16} {:>4} {:>4} {:>4} {:>7.3f} {:>10.0f} {}".format(
             name, tally.wins, tally.draws, tally.losses, score, implied, margin_text))
+        if clock:
+            ours, theirs = tally.median_thinking("machete"), tally.median_thinking("opponent")
+            flag = ""
+            if ours > 0 and theirs < 0.25 * ours:
+                flag = "  <- the opponent is not using its clock; this pairing is suspect"
+            print("{:<16} median thinking per move: machete {:.2f} s, opponent {:.2f} s{}".format(
+                "", ours, theirs, flag))
         sys.stdout.flush()
         if score < args.stop_below:
             print("(scoring under {:.0%}; stopping the climb here)".format(args.stop_below))
@@ -291,17 +327,17 @@ def main():
                   "(chi2/dof {:.1f}), so the".format(consistency * consistency))
             print("margin below is widened {:.1f}x to say so. The opponent ratings are CCRL "
                   "40/15 and".format(consistency))
-            print("this match is at {} ms a move, which is the usual reason.".format(
-                args.movetime))
-        print("\nmachete is about {:.0f} Elo (+/- {:.0f}) on the CCRL scale at {} ms a move".format(
-            pooled, pooled_margin, args.movetime))
+            print("this match is at {}, which is the usual reason.".format(conditions))
+        print("\nmachete is about {:.0f} Elo (+/- {:.0f}) on the CCRL scale at {}".format(
+            pooled, pooled_margin, conditions))
         if LIVE is not None:
             LIVE.say("machete is about {:.0f} Elo (+/- {:.0f})".format(pooled, pooled_margin),
-                     "on the CCRL scale at {} ms a move".format(args.movetime))
-            print("the wall stays up until you stop this")
+                     "on the CCRL scale at {}".format(conditions))
+            # a finished ladder used to keep its wall up for ever, so it never
+            # exited on its own; it now lingers for a while and then goes
+            print("the wall stays up for {} s".format(args.linger))
             try:
-                while True:
-                    time.sleep(1)
+                time.sleep(args.linger)
             except KeyboardInterrupt:
                 pass
     else:

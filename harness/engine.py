@@ -55,6 +55,35 @@ def built(target="windows-x86_64", profile="release", name="machete.exe"):
 
 MACHETE = os.environ.get("MACHETE_BIN", built())
 
+# what engines call their thread count, in the order they are tried
+THREAD_OPTIONS = ("Threads", "Max CPUs", "Cores", "CPUs")
+
+
+def pin(engine, hash_mb=128):
+    """One search thread and a fixed hash, whatever the engine calls them.
+
+    A rating is only a rating of the engine if its resources are fixed, not
+    whatever its defaults happen to be. Returns the thread option that was set,
+    or None when the engine has none - which the caller must report, since that
+    engine is then single-threaded only by assumption. The hash is clamped to
+    the range the engine declares.
+    """
+    chosen = None
+    for name in THREAD_OPTIONS:
+        if name in engine.options:
+            engine.configure({name: 1})
+            chosen = name
+            break
+    if "Hash" in engine.options:
+        option = engine.options["Hash"]
+        size = hash_mb
+        if option.max is not None:
+            size = min(size, option.max)
+        if option.min is not None:
+            size = max(size, option.min)
+        engine.configure({"Hash": size})
+    return chosen
+
 
 def shutdown(engine):
     """End an engine, politely if it will and forcibly if it will not.
