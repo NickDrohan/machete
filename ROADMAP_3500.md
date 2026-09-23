@@ -354,14 +354,14 @@ the idea until it passes, which is how noise gets merged.
 |---|---|---|---|---|---|
 | S-01 | **Done.** Continuation history removed; bench 158,026, identical to the ablation | `search.mach` | A | fewer nodes | - |
 | S-02 | **Done** for the node itself: evaluated once, reused by futility; bench unchanged, so the tree is identical. Storing it in the TT entry is still open | `search_node`, `tt.mach` | B | speed | - |
-| S-03 | **Improving** flag (eval better than two plies ago) in RFP, futility, LMP and LMR | `search_node` | B | +10..20 | S-02 |
+| S-03 | **Done, +15 +/- 15** - improving in LMR only; the RFP half lost a mate in two and was dropped | `search_node` | B | +10..20 | S-02 |
 | S-04 | **Done, +33 +/- 26.** TT probe and store in quiescence; SPRT [0,10] accepted H1 over 688 games; bench 118,470 | `quiesce` | B | +10..20 | - |
-| S-05 | Quiescence in check searches all evasions and does not stand pat | `quiesce` | B | +5..15, correctness | - |
+| S-05 | **Done, +17 +/- 18.** Quiescence in check searches all evasions, never stands pat, detects mate | `quiesce` | B | +5..15, correctness | - |
 | S-06 | Mate-distance pruning | `search_node` head | A | +2..5 | - |
 | S-07 | Capture history, used in ordering captures | `score_move`, `Search` | B | +10..20 | - |
 | S-08 | History-adjusted LMR (reduce less for good history, more for bad) | LMR block | B | +10..25 | S-07 |
 | S-09 | Null move: extra reduction from `(eval - beta)`, and require `eval >= beta` | NMP block | B | +5..15 | S-02 |
-| S-10 | SEE pruning at low depth in the main search, quiets and captures | move loop | B | +10..20 | - |
+| S-10 | **Rejected, -9 +/- 18** (H0). SEE pruning at depth <= 6, quiets below -25d^2, captures below -90d. Retry with other thresholds only as a new candidate | move loop | B | +10..20 | - |
 | S-11 | Razoring at depth 1-2 | `search_node` | B | +5..10 | S-02 |
 | S-12 | **Singular extensions**, then double extensions and multi-cut | `search_node` | C | +20..50 | S-02 |
 | S-13 | **Correction history**: learned correction of static eval keyed by pawn structure | new table, eval call site | C | +15..35 | S-02 |
