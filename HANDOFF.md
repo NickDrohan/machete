@@ -72,11 +72,16 @@ those margins were chosen against, and a different evaluation wants different
 margins. This is the largest untapped source in the engine and nobody has
 touched it.
 
-**Continuation history should come out.** SPRT-01 accepted H0 over 1,884
-games, -6 +/- 16, and it searches 4.5% *more* nodes to reach depth 8. The
-ablation is one line - `cont_slot` returning -1 disables both the read and the
-update - but do it properly: delete the table and its updates, and return
-`fixtures/bench.expected` to 158,026 in the same commit (ROADMAP S-01).
+**Continuation history is gone** (ROADMAP S-01, done). SPRT-01 accepted H0
+over 1,884 games, -6 +/- 16, and it searched 4.5% *more* nodes to reach depth
+8. The table, its updates, its use in move ordering and the `ply` parameter
+only it needed were all removed; the bench signature is 158,026, exactly what
+the one-line ablation had measured, which is the proof the removal matches it.
+
+**The static evaluation is computed once per node** (S-02, done). Reverse
+futility and futility used to evaluate the same position separately. The bench
+node count is unchanged by it, so the tree searched is identical and the
+change is a pure saving.
 
 **Won endgames are not converted, and there is no endgame knowledge at all.**
 Over 1,884 self-play games, 80 ended drawn with one side a rook or more ahead.

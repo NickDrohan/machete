@@ -21,7 +21,10 @@ bash process tree - `taskkill /PID <pid> /T /F` - since nothing else will.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Command,
-    [string]$Directory = ""
+    [string]$Directory = "",
+    # BelowNormal lets anything interactive - a game, the desktop - win every
+    # contest for the CPU. Children inherit it, so the whole job runs that way.
+    [ValidateSet("Normal", "BelowNormal", "Idle")][string]$Priority = "Normal"
 )
 
 # PowerShell 5.1 leaves $PSScriptRoot empty in a param() default, so the
@@ -34,8 +37,10 @@ $bash = "C:\Program Files\Git\bin\bash.exe"
 $unix = "/" + $Directory.Substring(0, 1).ToLower() + $Directory.Substring(2).Replace('\', '/')
 $line = '"{0}" -lc "cd {1} && {2}"' -f $bash, $unix, $Command
 
+$class = @{ Normal = 32; BelowNormal = 16384; Idle = 64 }[$Priority]
+$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ PriorityClass = [uint32]$class }
 $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-    CommandLine = $line; CurrentDirectory = $Directory }
+    CommandLine = $line; CurrentDirectory = $Directory; ProcessStartupInformation = $startup }
 if ($result.ReturnValue -ne 0) { throw "WMI could not start it (code $($result.ReturnValue))" }
 
 Start-Sleep -Seconds 2
@@ -46,4 +51,5 @@ for ($i = 0; $i -lt 6 -and $process; $i++) {
     $process = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $process.ParentProcessId) -ErrorAction SilentlyContinue
 }
 if (($chain -join " ") -match "claude") { throw "still under claude.exe: " + ($chain -join " <- ") }
-"detached, pid {0}: {1}" -f $result.ProcessId, ($chain -join " <- ")
+$base = (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $result.ProcessId)).Priority
+"detached, pid {0}, priority {1} (base {2}): {3}" -f $result.ProcessId, $Priority, $base, ($chain -join " <- ")

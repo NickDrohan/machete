@@ -147,12 +147,6 @@ pub rec Search {
     # the quiet move that refuted the same reply last time, indexed by the
     # piece the opponent just moved and where it landed
     counter:       [12][64]Move;
-    # continuation history: the same quiet move is worth more or less depending
-    # on what it answers. Indexed by the previous move's (piece, destination)
-    # folded into one number, then by this move's own. i16 because there are 33
-    # of these tables, one per thread, and the gravity update below settles
-    # around 16384, comfortably inside the range.
-    cont:          [768][12][64]i16;
     played:        [64]Move;
     mover:         [64]u8;
     pv:            [64][64]Move;
@@ -188,19 +182,6 @@ pub fun reset(s: *Search) {
         s.mover[i]  = 0;
         i           = i + 1;
     }
-    var slot: i64 = 0;
-    for (slot < 768) {
-        pc = 0;
-        for (pc < 12) {
-            var sq: i64 = 0;
-            for (sq < 64) {
-                s.cont[slot][pc][sq] = 0;
-                sq                   = sq + 1;
-            }
-            pc = pc + 1;
-        }
-        slot = slot + 1;
-    }
 }
 
 # History with gravity: a cutoff raises a move's score and a quiet move that
@@ -209,15 +190,7 @@ pub fun reset(s: *Search) {
 # a hard cap and lets old information decay as new arrives.
 val HISTORY_MAX: i64 = 16384;
 
-# which continuation table the move at this ply belongs to, or -1 at the root
-fun cont_slot(s: *Search, ply: i64) i64 {
-    if (ply == 0) { ret 0 - 1; }
-    val prev: Move = s.played[ply - 1];
-    if (prev == mv.NONE) { ret 0 - 1; }
-    ret s.mover[ply - 1]::i64 * 64 + mv.to(prev);
-}
-
-fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool, ply: i64) {
+fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
     val piece: u8  = p.board[mv.from(m)];
     val to:    i64 = mv.to(m);
     var bonus: i64 = depth * depth;
@@ -227,16 +200,6 @@ fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool, pl
     if (magnitude < 0) { magnitude = 0 - magnitude; }
     val current: i64 = s.history[piece][to];
     s.history[piece][to] = current + bonus * 32 - current * magnitude / 512;
-
-    # the same update against the move this one answers
-    val slot: i64 = cont_slot(s, ply);
-    if (slot >= 0) {
-        val prior: i64 = s.cont[slot][piece][to]::i64;
-        var next:  i64 = prior + bonus * 32 - prior * magnitude / 512;
-        if (next > 30000)      { next = 30000; }
-        if (next < 0 - 30000)  { next = 0 - 30000; }
-        s.cont[slot][piece][to] = next::i16;
-    }
 }
 
 # the counter-move slot for whatever the opponent just played
@@ -304,14 +267,7 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (m == s.killers[ply][0])   { ret 700000000; }
     if (m == s.killers[ply][1])   { ret 600000000; }
     if (m == counter_slot(s, ply)) { ret 550000000; }
-    val piece: u8  = p.board[mv.from(m)];
-    val to:    i64 = mv.to(m);
-    var score: i64 = s.history[piece][to];
-    val slot:  i64 = cont_slot(s, ply);
-    # weighted above the context-free table, which is the usual ratio: what a
-    # move answers says more about it than how often it has ever worked
-    if (slot >= 0) { score = score + 2 * s.cont[slot][piece][to]::i64; }
-    ret score;
+    ret s.history[p.board[mv.from(m)]][mv.to(m)];
 }
 
 # selection sort one move at a time: most searches never look at the tail
@@ -424,10 +380,15 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # reverse futility: if the position is already so far above beta that a
     # whole piece of swing would not bring it back, take the score. the margin
     # grows with depth because there is more time for the position to change.
+    #
+    # the evaluation is computed once here and reused by futility below: the
+    # position is the same by then (null move is undone before it), and futility
+    # only runs at depth 3 or less, which this branch always covers
+    var static_eval: i64 = 0;
     if (!is_pv && !in_check && depth <= 8) {
+        static_eval = eval.evaluate(p);
         val margin: i64 = 85 * depth;
-        val stand:  i64 = eval.evaluate(p);
-        if (stand - margin >= beta && stand < MATE_FOUND) { ret stand - margin; }
+        if (static_eval - margin >= beta && static_eval < MATE_FOUND) { ret static_eval - margin; }
     }
 
     # internal iterative reduction, but never in a principal variation node:
@@ -473,7 +434,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var futile: bool = false;
     if (!is_pv && !in_check && depth <= 3) {
         val margin: i64 = 120 + 110 * depth;
-        futile = eval.evaluate(p) + margin <= alpha;
+        futile = static_eval + margin <= alpha;
     }
 
     i = 0;
@@ -568,13 +529,13 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                         if (ply > 0 && s.played[ply - 1] != mv.NONE) {
                             s.counter[s.mover[ply - 1]][mv.to(s.played[ply - 1])] = m;
                         }
-                        history_update(s, p, m, depth, true, ply);
+                        history_update(s, p, m, depth, true);
                         # every quiet move that was tried and did not cut gets
                         # the matching penalty, which is what gives the table
                         # its ordering signal rather than just a hit count
                         var q: i64 = 0;
                         for (q < quiet_n) {
-                            if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false, ply); }
+                            if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false); }
                             q = q + 1;
                         }
                     }

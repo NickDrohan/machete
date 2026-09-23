@@ -103,11 +103,9 @@ the bottom of the target band; it is several hundred Elo below it.
    `wtime/btime/winc/binc` and `infinite`. A node-limited request is read as no
    limit and **searches until depth 62**. Fixed-node testing - the standard way
    to make a test deterministic and immune to machine load - is impossible.
-4. **The static evaluation is computed twice at the same node** (`search_node`,
-   once for reverse futility and again for futility at depth <= 3).
+4. ~~The static evaluation is computed twice at the same node~~ - fixed (S-02).
 5. **Quiescence never uses the transposition table, and stands pat in check.**
-6. **Continuation history is dead weight**: SPRT-01 accepted H0, -6 +/- 16 over
-   1,884 games, and it costs 4.5% more nodes to reach depth 8.
+6. ~~Continuation history is dead weight~~ - removed (S-01).
 
 ### Settled - do not redo
 
@@ -354,8 +352,8 @@ the idea until it passes, which is how noise gets merged.
 
 | id | change | where | tier | prior | needs |
 |---|---|---|---|---|---|
-| S-01 | **Remove continuation history** (already settled H0); bench returns to 158,026 | `search.mach` `cont*` | A | +0..5, fewer nodes | - |
-| S-02 | Compute static eval once per node; store it in the TT entry | `search_node`, `tt.mach` | B | speed | - |
+| S-01 | **Done.** Continuation history removed; bench 158,026, identical to the ablation | `search.mach` | A | fewer nodes | - |
+| S-02 | **Done** for the node itself: evaluated once, reused by futility; bench unchanged, so the tree is identical. Storing it in the TT entry is still open | `search_node`, `tt.mach` | B | speed | - |
 | S-03 | **Improving** flag (eval better than two plies ago) in RFP, futility, LMP and LMR | `search_node` | B | +10..20 | S-02 |
 | S-04 | TT probe and store in quiescence | `quiesce` | B | +10..20 | - |
 | S-05 | Quiescence in check searches all evasions and does not stand pat | `quiesce` | B | +5..15, correctness | - |
