@@ -59,18 +59,15 @@ on the board. Both engines are equally subject to it, so it inflates the draw
 rate - widening error bars - rather than shifting the estimate. Worth
 revisiting if the rate climbs at longer time controls.
 
-### measured - the rating ladder must pin its opponents to one thread
-LADDER-02 reported 2928 +/- 78 with chi2/dof 1.59 - its anchors disagreed with
-each other more than their error bars allow. The outlier was Rybka 2.3.2a,
-implying 2809 against a cluster near 2960, 2.2 standard errors below the rest.
-Its binary is the multi-processor build, which reports `Max CPUs` defaulting
-to 2048, and the ladder never configured an opponent's threads: it played with
-up to all 24 hardware threads against our one.
-
-Without that pairing the other six anchors are consistent (chi2/dof 0.92) and
-pool to **2963 +/- 65**. The exclusion rests on the measured configuration
-defect, not on the result, and the number stays provisional until the ladder
-pins every opponent and is re-run (ROADMAP_3500.md P0-1, P0-8).
+### retired - that a rating-ladder anchor was running multi-threaded
+LADDER-02 reported 2928 +/- 78 with chi2/dof 1.59, and Rybka 2.3.2a sat low at
+2809. It was blamed on Rybka's multi-processor build, whose `Max CPUs` option
+defaults to 2048, and a figure of 2963 +/- 65 was quoted without it. Both are
+withdrawn. Measured: Rybka runs 3 threads idle and 3 throughout a timed search
+on this 24-CPU machine - one search thread. The disagreement was not significant
+(chi2 9.5 on 6 degrees of freedom, p = 0.15), and dropping the largest outlier
+always lowers chi2, so that "confirmation" could not have failed. 2928 +/- 78
+stands. The lesson is recorded as rule 18 in ROADMAP_3500.md.
 
 ### open - that net-vs-net ranking at 200 ms holds at tournament time controls
 SCALE-01 tested machete against *external* engines. It did not test whether

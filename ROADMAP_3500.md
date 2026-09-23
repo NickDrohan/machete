@@ -18,8 +18,7 @@ Companion files: [HANDOFF.md](HANDOFF.md) (boundary and house rules),
 | measurement | result | status |
 |---|---|---|
 | LADDER-01, 200 ms/move | 2769 +/- 122 | superseded |
-| LADDER-02, 1000 ms/move, as reported | 2928 +/- 78, chi2/dof 1.59 | **invalid anchor** |
-| LADDER-02 without the invalid anchor | **2963 +/- 65**, chi2/dof 0.92 | best estimate, re-run owed |
+| LADDER-02, 1000 ms/move | **2928 +/- 78**, chi2/dof 1.59 | **best estimate** |
 
 LADDER-02's per-opponent results, 60 games each at 1000 ms a move:
 
@@ -30,17 +29,20 @@ LADDER-02's per-opponent results, 60 games each at 1000 ms a move:
 | Ruffian 1.0.5 | 2570 | 49-6-5 | 0.867 | 2895 +/- 151 |
 | Hermann 2.8 | 2600 | 49-7-4 | 0.875 | 2938 +/- 157 |
 | Spike 1.4 | 2950 | 32-9-19 | 0.608 | 3026 +/- 92 |
-| Rybka 2.3.2a | 3050 | 5-14-41 | 0.200 | **2809 +/- 119 — invalid** |
+| Rybka 2.3.2a | 3050 | 5-14-41 | 0.200 | 2809 +/- 119 |
 | Koivisto 9.0 | 3300 | 1-2-57 | 0.033 | 2715 +/- 986 |
 
-**Why Rybka is invalid.** The ladder uses `Rybkav2.3.2a.mp.x64.exe`, which
-reports `Max CPUs` defaulting to 2048, and `harness/ladder.py` never configures
-an opponent's threads. Rybka played with up to all 24 hardware threads against
-our one. That biases its pairing in exactly the observed direction - a
-stronger-than-rated opponent makes us look weaker - and removing it takes the
-remaining six anchors from inconsistent (chi2/dof 1.59) to consistent (0.92).
-It is excluded for a *measured configuration defect*, not for its result, and
-the honest number stays provisional until P0-1 fixes it and P0-8 re-runs.
+**A retracted claim.** An earlier version of this roadmap called Rybka an
+invalid anchor, said it had played on up to 24 threads, and quoted 2963 +/- 65
+without it. That was wrong, and how it was wrong is worth knowing. The claim
+came from reading a *default option* (`Max CPUs` 2048), not from watching the
+process: measured, Rybka runs **3 threads idle and 3 throughout a timed
+search** on this 24-CPU machine. The "inconsistency" it was meant to explain was
+not significant either - chi2 of 9.5 on 6 degrees of freedom has p = 0.15, and
+with seven anchors there is an 18% chance one sits 2.2 standard deviations out
+by luck alone. The supporting arithmetic was circular: dropping the largest
+outlier always lowers chi2. 2928 +/- 78 stands. If Rybka's pairing is off at
+all, the likelier cause is its anchor value (3050, unverified - P0-6).
 
 **Two further caveats on the number.** `net/machete.nnue` was replaced after
 LADDER-01 ran, so the 2769 to 2928 change mixes a new network with a 5x longer
@@ -151,7 +153,7 @@ reference condition and say so in every result.
 
 ## 3. The gap, and where the Elo is
 
-From about 2963 to 3500 is roughly **540 Elo**. The estimates below are priors
+From about 2928 to 3500 is roughly **570 Elo**. The estimates below are priors
 from open-source engine development, **not measurements from this engine**, and
 they do not add linearly - gains interact and shrink as the engine improves.
 Every one of them has to prove itself in an SPRT.
@@ -272,6 +274,11 @@ Each of these cost at least one wrong result. They are not style.
 17. **One engine death must not lose a run.** `tournament.py` retries a block;
     check that anything new you write does too, and that failures carry the
     exception type - an empty message cost 740 games once.
+18. **A default setting is not a measurement of behaviour.** `Max CPUs 2048`
+    was read as "runs on 24 threads"; measured, the engine ran on one. And
+    dropping the largest outlier always improves a fit, so that improvement is
+    not evidence the outlier was broken. Measure the process; test the
+    significance; then explain.
 
 ---
 
@@ -287,9 +294,9 @@ tune.
 Nothing claimed before M0 counts toward 3500.
 
 #### P0-1 Pin every opponent to one thread · HARNESS · Tier A
-- **Why:** Rybka ran on up to 24 threads and invalidated LADDER-02's headline.
+- **Why:** nothing in the harness sets an opponent's threads or hash, so an anchor's strength depends on its defaults. None of today's anchors turned out to be multi-threaded - Rybka was suspected and measured at one search thread - but a rating that depends on luck about defaults is not measured. Pin it and the question goes away.
 - **Change:** in `harness/ladder.py`, `harness/scaling.py`, `harness/tournament.py` and anywhere an external engine is opened, after `popen_uci` set the first of `Threads`, `Max CPUs`, `Cores`, `CPUs` that exists to 1, and `Hash` to a fixed 64 MB. If no thread option exists and the engine is not known to be single-threaded, refuse to use it and say which engine. Put the logic in one function in `harness/engine.py`, not four copies.
-- **Gate:** a test that opens each configured opponent and asserts the option was set; perturb by removing the pin for Rybka and confirm it fails.
+- **Gate:** a test that opens each configured opponent and asserts the option was set; perturb by removing the pin for one engine and confirm the check fails.
 - **Accept:** every ladder opponent reports one thread.
 
 #### P0-2 `go nodes` and `go movestogo` · MACH · Tier B
