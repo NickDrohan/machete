@@ -293,9 +293,31 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
     if (out_of_time(s)) { ret 0; }
     var alpha: i64 = alpha_in;
 
+    # the transposition table, which quiescence used to ignore. Every stored
+    # depth is at least quiescence's own, so any entry that bounds the window
+    # ends the node, and a stored move is tried first. An entry from the main
+    # search (depth above zero) is never overwritten from here: this node's
+    # result is shallower than what is already known about the position.
+    var tt_move:   Move = mv.NONE;
+    var protected: bool = false;
+    var entry:     tt.Entry;
+    if (tt.probe(p.key, ?entry)) {
+        tt_move   = entry.move;
+        protected = entry.depth > 0;
+        var known: i64 = entry.score;
+        if (known > MATE_FOUND)                           { known = known - ply; }
+        or (known < 0 - MATE_FOUND)                       { known = known + ply; }
+        if (entry.flag == tt.EXACT)                       { ret known; }
+        if (entry.flag == tt.LOWER && known >= beta)      { ret known; }
+        if (entry.flag == tt.UPPER && known <= alpha)     { ret known; }
+    }
+
     # standing pat: the side to move is not obliged to capture
     val stand: i64 = eval.evaluate(p);
-    if (stand >= beta)      { ret stand; }
+    if (stand >= beta) {
+        if (!protected) { tt.store(p.key, mv.NONE, stand, 0, tt.LOWER); }
+        ret stand;
+    }
     if (stand > alpha)      { alpha = stand; }
     if (ply >= MAX_PLY - 1) { ret stand; }
 
@@ -304,11 +326,12 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
     var scores: [256]i64;
     var i:      i64 = 0;
     for (i < list.count) {
-        scores[i] = score_move(s, p, list.moves[i], mv.NONE, ply);
+        scores[i] = score_move(s, p, list.moves[i], tt_move, ply);
         i         = i + 1;
     }
 
-    var best: i64 = stand;
+    var best:      i64  = stand;
+    var best_move: Move = mv.NONE;
     i = 0;
     for (i < list.count) {
         pick(?list, ?scores[0], i);
@@ -337,13 +360,29 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         pos.unmake(p);
         if (s.stop != 0) { ret 0; }
         if (score > best) {
-            best = score;
+            best      = score;
+            best_move = m;
             if (score > alpha) { alpha = score; }
-            if (alpha >= beta) { ret best; }
+            if (alpha >= beta) {
+                if (!protected) { tt.store(p.key, m, table_score(best, ply), 0, tt.LOWER); }
+                ret best;
+            }
         }
         i = i + 1;
     }
+    if (!protected) {
+        var flag: u8 = tt.UPPER;
+        if (best > alpha_in) { flag = tt.EXACT; }
+        tt.store(p.key, best_move, table_score(best, ply), 0, flag);
+    }
     ret best;
+}
+
+# a score as the table holds it: mates counted from the root, not from here
+fun table_score(score: i64, ply: i64) i64 {
+    if (score > MATE_FOUND)     { ret score + ply; }
+    if (score < 0 - MATE_FOUND) { ret score - ply; }
+    ret score;
 }
 
 fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i64, ply: i64, allow_null: bool) i64 {
