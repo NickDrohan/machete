@@ -414,7 +414,7 @@ that may be the data, not the idea (see D-02).
 
 | id | change | tier | note |
 |---|---|---|---|
-| D-01 | Read SIZE-02 (running now). Early numbers say 42M > 20M > 8M > 2M, i.e. **not saturated** - confirm when it finishes | A | decides D-02's scale |
+| D-01 | **Done.** SIZE-02, 2,000 games: 42M +131, 20M +83, 8M +4, 2M -201. **Not saturated** - about +100 Elo per doubling from 2M to 8M, +60 to 20M, +45 from 20M to 42M. Returns are diminishing, so data alone will not reach 3500, but the next doubling is still worth roughly +35 to +45 | - | justifies D-02 |
 | D-02 | Generate at scale: 500M, then 1B positions, one consistent pipeline, overnight only | B | about 100 machine-hours per 500M |
 | D-03 | Race two pipelines on equal budgets: Stockfish labels (current) against machete self-play at fixed nodes (needs P0-2) | B | self-play is how most top open engines train |
 | D-04 | Trainer throughput: profile `train.py` at 290k positions a second; evaluate a faster loader or an external trainer that can export our format | B | at 1B positions, 14 epochs is 13 hours per network |
