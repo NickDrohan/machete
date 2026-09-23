@@ -355,7 +355,7 @@ the idea until it passes, which is how noise gets merged.
 | S-01 | **Done.** Continuation history removed; bench 158,026, identical to the ablation | `search.mach` | A | fewer nodes | - |
 | S-02 | **Done** for the node itself: evaluated once, reused by futility; bench unchanged, so the tree is identical. Storing it in the TT entry is still open | `search_node`, `tt.mach` | B | speed | - |
 | S-03 | **Improving** flag (eval better than two plies ago) in RFP, futility, LMP and LMR | `search_node` | B | +10..20 | S-02 |
-| S-04 | TT probe and store in quiescence | `quiesce` | B | +10..20 | - |
+| S-04 | **Done, +33 +/- 26.** TT probe and store in quiescence; SPRT [0,10] accepted H1 over 688 games; bench 118,470 | `quiesce` | B | +10..20 | - |
 | S-05 | Quiescence in check searches all evasions and does not stand pat | `quiesce` | B | +5..15, correctness | - |
 | S-06 | Mate-distance pruning | `search_node` head | A | +2..5 | - |
 | S-07 | Capture history, used in ordering captures | `score_move`, `Search` | B | +10..20 | - |
@@ -441,7 +441,7 @@ inside one training run without a tournament saying it helps.
 
 | id | territory | change | tier |
 |---|---|---|---|
-| X-01 | MACH | Bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
+| X-01 | MACH | **Done:** mach 5.11.0, std 7.1.0, the widen written as a literal at speed parity (commit 470c86a). Was: bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
 | X-02 | MACH | `#[embed]` the network into the binary | A |
 | X-03 | MACH | One owner for `MAX_THREADS` | A |
 | X-04 | MACH | Make `go ponder` safe | B |
