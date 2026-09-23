@@ -182,7 +182,8 @@ def play_block(args, paths, table, i, j, first_pair, pairs, live, slot):
         a = match.open_engine(args.engine, ["EvalFile=" + paths[i]])
         b = match.open_engine(args.engine, ["EvalFile=" + paths[j]])
     except Exception as problem:
-        return "could not start engines: {}".format(problem)
+        return "could not start engines: {}: {}".format(
+            type(problem).__name__, problem)
     name_i, name_j = table.names[i], table.names[j]
     try:
         for index in range(first_pair, first_pair + pairs):
@@ -206,7 +207,8 @@ def play_block(args, paths, table, i, j, first_pair, pairs, live, slot):
                 table.record(i, j, outcome, i_is_white)
                 table.refresh()
     except Exception as problem:
-        return "{} vs {}: {}".format(name_i, name_j, problem)
+        return "{} vs {}: {}: {}".format(
+            name_i, name_j, type(problem).__name__, problem)
     finally:
         for side in (a, b):
             engines.shutdown(side)
@@ -304,6 +306,7 @@ def main():
     random.Random(args.seed).shuffle(tasks)            # spread pairings over time
     cursor = {"next": 0, "lock": threading.Lock()}
     failures = []
+    trouble = []
     started = time.time()
 
     def run(slot):
@@ -314,7 +317,19 @@ def main():
                 i, j, first, pairs = tasks[cursor["next"]]
                 cursor["next"] += 1
                 done = cursor["next"]
-            problem = play_block(args, paths, table, i, j, first, pairs, live, slot)
+            # Engines die occasionally under load. One death used to abort the
+            # whole run - 740 of 2,000 games were lost that way, with an empty
+            # message. Retry the block on fresh processes, and give up only
+            # when the same pairing fails three times.
+            problem = None
+            for attempt in range(3):
+                problem = play_block(args, paths, table, i, j, first, pairs, live, slot)
+                if problem is None:
+                    break
+                trouble.append(problem)
+                print("  retry {} after {}".format(attempt + 1, problem))
+                sys.stdout.flush()
+                time.sleep(2)
             if problem:
                 failures.append(problem)
                 return
@@ -332,9 +347,11 @@ def main():
         thread.start()
     for thread in threads:
         thread.join()
+    if trouble:
+        print("{} block(s) retried; first was {}".format(len(trouble), trouble[0]))
     if failures:
-        print("tournament failed: {}".format(failures[0]))
-        return 1
+        print("tournament stopped early: {}".format(failures[0]))
+        print("reporting the {} games that were played".format(table.played))
 
     rows = report(table, names, per_pairing)
     with open(args.out, "w") as handle:
@@ -345,7 +362,7 @@ def main():
                    "movetime": args.movetime, "games": total}, handle, indent=1)
     print("\n{:.1f} hours, written to {}".format(
         (time.time() - started) / 3600.0, args.out))
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

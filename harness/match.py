@@ -235,7 +235,8 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
         a = open_engine(paths[0], args.option_a)
         b = open_engine(paths[1], args.option_b)
     except Exception as problem:
-        failures.append("could not start engines: {}".format(problem))
+        failures.append("could not start engines: {}: {}".format(
+            type(problem).__name__, problem))
         return
     try:
         while True:
@@ -261,7 +262,7 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                                           args.max_plies, report,
                                           adjudicate.from_arguments(args))
                 except Exception as problem:
-                    failures.append(str(problem))
+                    failures.append("{}: {}".format(type(problem).__name__, problem))
                     return
                 wall.save_game(args.pgn, final,
                                args.label_a if a_is_white else args.label_b,
