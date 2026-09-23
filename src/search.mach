@@ -33,6 +33,9 @@ pub val MATE_FOUND: i64 = 29000;
 
 pub val MAX_PLY: i64 = 64;
 
+# no static evaluation: the node was in check
+val NO_EVAL: i64 = 0 - 32000;
+
 # How much to reduce the Nth quiet move at depth D.
 #
 # The old rule reduced by one, or two past the eighth move. That is far too
@@ -149,6 +152,8 @@ pub rec Search {
     counter:       [12][64]Move;
     played:        [64]Move;
     mover:         [64]u8;
+    # each node's static evaluation, by ply, or NO_EVAL when it was in check
+    evals:         [64]i64;
     pv:            [64][64]Move;
     pv_len:        [64]i64;
 }
@@ -180,6 +185,7 @@ pub fun reset(s: *Search) {
     for (i < MAX_PLY) {
         s.played[i] = mv.NONE;
         s.mover[i]  = 0;
+        s.evals[i]  = NO_EVAL;
         i           = i + 1;
     }
 }
@@ -416,16 +422,30 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
     }
 
+    # the static evaluation, once per node, remembered by ply. A node is
+    # improving when its side stands better than it did two plies earlier - on
+    # its own previous move - which says the position is going somewhere. An
+    # improving node is reduced less by late move reductions. A node in check has no static evaluation; the
+    # comparison then reaches back four plies, and gives the benefit of the
+    # doubt when there is nothing to compare with.
+    var static_eval: i64  = 0;
+    var improving:   bool = true;
+    if (in_check) {
+        s.evals[ply] = NO_EVAL;
+    }
+    or {
+        static_eval  = eval.evaluate(p);
+        s.evals[ply] = static_eval;
+        if (ply >= 2 && s.evals[ply - 2] != NO_EVAL)    { improving = static_eval > s.evals[ply - 2]; }
+        or (ply >= 4 && s.evals[ply - 4] != NO_EVAL)    { improving = static_eval > s.evals[ply - 4]; }
+    }
+
     # reverse futility: if the position is already so far above beta that a
     # whole piece of swing would not bring it back, take the score. the margin
     # grows with depth because there is more time for the position to change.
-    #
-    # the evaluation is computed once here and reused by futility below: the
-    # position is the same by then (null move is undone before it), and futility
-    # only runs at depth 3 or less, which this branch always covers
-    var static_eval: i64 = 0;
+    # (Shrinking it for an improving position lost a mate in two in
+    # fixtures/mate2.epd at depth 4, so improving is used by reductions only.)
     if (!is_pv && !in_check && depth <= 8) {
-        static_eval = eval.evaluate(p);
         val margin: i64 = 85 * depth;
         if (static_eval - margin >= beta && static_eval < MATE_FOUND) { ret static_eval - margin; }
     }
@@ -537,6 +557,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 var n: i64 = legal;
                 if (n > 63) { n = 63; }
                 reduction = REDUCTION[d][n];
+                # a position that is not improving is reduced a ply further
+                if (!improving)             { reduction = reduction + 1; }
                 # a principal variation node is where being wrong is expensive
                 if (is_pv)                  { reduction = reduction - 1; }
                 if (reduction < 0)          { reduction = 0; }
