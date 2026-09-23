@@ -97,7 +97,11 @@ def save_game(path, board, white_name, black_name, event, outcome,
     for name, value in (headers or {}).items():
         game.headers[name] = value
     if clocks and any(c is not None for c in clocks):
+        # the clocks cover the moves the engines played, which are the last
+        # ones; opening moves given to them come first and carry no clock
         node = game
+        for _ in range(max(0, len(board.move_stack) - len(clocks))):
+            node = node.variation(0)
         for remaining in clocks:
             if not node.variations:
                 break

@@ -320,6 +320,7 @@ Nothing claimed before M0 counts toward 3500.
 - **Change:** obtain a UHO book (the `official-stockfish/books` repository carries them - verify the source and licence before downloading, and download to `E:/`); `match.py` and `tournament.py` take `--book FILE` and draw openings from it, still one opening per colour-reversed pair.
 - **Gate:** decisive-game rate on a 400-game self-match is reported with and without the book.
 - **Accept:** decisive rate rises; the SPRT median game count at a fixed true Elo falls.
+- **Ratings are a different job (2026-09-23).** A UHO book is for SPRTs between machete versions, where a lopsided start that both sides play once is fine. For a rating against outside engines, the ladder now uses `--self-book FIRST,REPLIES` (`harness/self_book.py`): every game starts from ply 0 with a first move White's own engine ranks among its best, and a reply Black's own engine ranks among its best. The reason: LADDER-03 at `--startpos` played the same Rybka game 20 times (1. e4 Nc6 2. d4 d5 3. e5 h5 4. Nf3 Nh6, which Stockfish rates +1.06, splitting only at move five), so its 3167 ± 120 is not a rating.
 
 #### P0-5 One queue for the machine · HARNESS · Tier B
 - **Why:** agents produce patches faster than the machine can test them, and two measurements at once corrupt each other.

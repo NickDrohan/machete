@@ -30,6 +30,7 @@ import chess.pgn
 import arena
 import engine as engines
 import match
+import self_book as self_book_module
 import wall
 from wall import Live
 
@@ -148,20 +149,56 @@ class Tally(object):
 
 
 def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurrency, seed,
-                opponent_name="", pgn_path=None, options=(), clock=None, startpos=False):
-    """Play `games` games, `concurrency` at a time, alternating colours."""
+                opponent_name="", pgn_path=None, options=(), clock=None, self_book=None):
+    """Play `games` games, `concurrency` at a time, alternating colours.
+
+    `self_book` is (first, replies, seconds, margin): every game starts from
+    ply 0 with an opening the two engines chose themselves (harness/self_book.py).
+    Without it, each game starts from a four-ply random walk.
+    """
     tally = Tally()
     jobs = list(range(games))
     index = [0]
     index_lock = threading.Lock()
     errors = []
 
+    def start_machete():
+        machete = chess.engine.SimpleEngine.popen_uci(machete_path, timeout=20)
+        for setting in options:
+            name, _, value = setting.partition("=")
+            machete.configure({name: int(value) if value.isdigit() else value})
+        return machete
+
+    # machete-white games cycle through lines[True], the others through lines[False]
+    lines = {}
+    if self_book:
+        first, replies, seconds, margin = self_book
+        cache = os.path.join(engines.PRODUCT, "data", "self_book.json")
+        machete = opponent = None
+        try:
+            machete = start_machete()
+            opponent = chess.engine.SimpleEngine.popen_uci(
+                opponent_path, timeout=20, cwd=os.path.dirname(opponent_path))
+            engines.pin(machete)
+            engines.pin(opponent)
+            lines[True] = self_book_module.openings(machete, "machete", opponent, opponent_name,
+                                                    first, replies, seconds, margin, cache)
+            lines[False] = self_book_module.openings(opponent, opponent_name, machete, "machete",
+                                                     first, replies, seconds, margin, cache)
+        except Exception as problem:
+            errors.append("could not choose openings: {}: {}".format(type(problem).__name__, problem))
+            return tally, errors
+        finally:
+            engines.shutdown(machete)
+            engines.shutdown(opponent)
+        for white in (True, False):
+            errors.append("note: {} White, {} openings: {}".format(
+                "machete" if white else opponent_name, len(lines[white]),
+                ", ".join(chess.Board().variation_san(line) for line in lines[white])))
+
     def worker(worker_id):
         try:
-            machete = chess.engine.SimpleEngine.popen_uci(machete_path, timeout=20)
-            for setting in options:
-                name, _, value = setting.partition("=")
-                machete.configure({name: int(value) if value.isdigit() else value})
+            machete = start_machete()
             # started in its own folder: several of these engines read a
             # config file from the working directory and, when it is missing,
             # answer with blank lines rather than saying so. python-chess then
@@ -186,8 +223,9 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                     game_number = jobs[index[0]]
                     index[0] += 1
                 machete_white = game_number % 2 == 0
-                if startpos:
-                    book = chess.STARTING_FEN
+                if lines:
+                    own = lines[machete_white]
+                    book = own[(game_number // 2) % len(own)]
                 else:
                     book = match.random_opening(rng, 4)
                 white, black = (machete, opponent) if machete_white else (opponent, machete)
@@ -234,7 +272,8 @@ def main():
     parser.add_argument("--games", type=int, default=40, help="games per opponent")
     parser.add_argument("--movetime", type=int, default=200)
     parser.add_argument("--concurrency", type=int, default=8)
-    parser.add_argument("--max-plies", type=int, default=250)
+    parser.add_argument("--max-plies", type=int, default=0,
+                        help="adjudicate a draw after this many plies; 0 plays every game out")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--max-rating", type=int, default=3600,
                         help="skip opponents rated above this")
@@ -245,9 +284,13 @@ def main():
     parser.add_argument("--option", action="append", default=[],
                         help="UCI option for machete as Name=Value; repeatable")
     parser.add_argument("--tc", default="", help="a real clock in seconds, BASE+INCREMENT")
-    parser.add_argument("--startpos", action="store_true",
-                        help="every game from the standard starting position; the clock's "
-                             "timing noise is what varies them")
+    parser.add_argument("--self-book", default="",
+                        help="FIRST,REPLIES: start every game from ply 0 with one of White's own "
+                             "best FIRST moves and Black's own best REPLIES to it")
+    parser.add_argument("--self-book-seconds", type=float, default=1.0,
+                        help="how long each engine looks at each candidate move")
+    parser.add_argument("--self-book-margin", type=int, default=50,
+                        help="drop a candidate its own engine rates this many cp below its best")
     parser.add_argument("--min-rating", type=int, default=0,
                         help="skip opponents rated below this")
     parser.add_argument("--linger", type=int, default=600,
@@ -263,8 +306,11 @@ def main():
         base, increment = match.parse_tc(args.tc)
         clock = (base, increment, 100)
     conditions = "{} on the clock".format(args.tc) if clock else "{} ms a move".format(args.movetime)
-    if args.startpos:
-        conditions += ", from the starting position"
+    self_book = None
+    if args.self_book:
+        first, _, replies = args.self_book.partition(",")
+        self_book = (int(first), int(replies), args.self_book_seconds, args.self_book_margin)
+        conditions += ", openings chosen by the engines ({}x{})".format(first, replies)
 
     global LIVE
     if args.watch:
@@ -288,7 +334,7 @@ def main():
                      "{} games at {}".format(args.games, conditions))
         tally, errors = run_pairing(machete_path, path, args.games, args.movetime,
                                     args.max_plies, args.concurrency, args.seed, name,
-                                    args.pgn or None, args.option, clock, args.startpos)
+                                    args.pgn or None, args.option, clock, self_book)
         for note in [e for e in errors if e.startswith("note:")]:
             print("{:<16} {}".format(name, note))
         errors = [e for e in errors if not e.startswith("note:")]
