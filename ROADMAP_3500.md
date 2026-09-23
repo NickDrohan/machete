@@ -305,7 +305,7 @@ Nothing claimed before M0 counts toward 3500.
 - **Accept:** the SPRT's false-positive rate at true zero is within 2 points of alpha over 300 simulated runs.
 
 #### P0-4 An unbalanced opening book · HARNESS · Tier A
-- **Why:** four random plies make weird, often lopsided or dead positions; at 73% draws an SPRT becomes very expensive. Unbalanced books (UHO) are built to make decisive games likely while keeping pairs fair.
+- **Why:** four random plies make weird, often lopsided or dead positions; at 73% draws an SPRT becomes very expensive. Worse, a random opening can *finish* a game: LADDER-02's only "win" over Koivisto was `1. f3 e5 2. g4 Qh4#`, all four moves random, machete never having played - and the ladder scored it. Until the book lands, reject any random opening that ends the game. Unbalanced books (UHO) are built to make decisive games likely while keeping pairs fair.
 - **Change:** obtain a UHO book (the `official-stockfish/books` repository carries them - verify the source and licence before downloading, and download to `E:/`); `match.py` and `tournament.py` take `--book FILE` and draw openings from it, still one opening per colour-reversed pair.
 - **Gate:** decisive-game rate on a 400-game self-match is reported with and without the book.
 - **Accept:** decisive rate rises; the SPRT median game count at a fixed true Elo falls.
@@ -319,6 +319,7 @@ Nothing claimed before M0 counts toward 3500.
 - **Why:** there is no opponent between Rybka (3050) and Koivisto (3300), and we score 3% against Koivisto - nothing on disk measures us in the band we are climbing through.
 - **Change:** a `harness/gauntlet.py` (or a mode of `ladder.py`) with three kinds of anchor: the single-threaded old engines up to Spike and Rybka; **Stockfish with `UCI_LimitStrength` at `UCI_Elo` steps up to its maximum** (verify the range the installed build supports); and the FIELD-01 engines, optionally at fixed time odds until machete gets close. Look up each anchor's current CCRL 40/15 1-CPU rating and record it with the date and URL in the script.
 - **Gate:** chi2/dof across anchors reported every run; above 1.5, the run says so.
+- **Sanity-check every anchor at the test time control.** In LADDER-01 at 200 ms, Koivisto 9.0 hung a mate in one twice and threw away a +3.5 position once, across 40 games - not how a 3300 engine plays. An anchor that blunders like that is not measuring anything. Screen each anchor's losses with Stockfish for single moves costing a forced mate from a level position, and drop or re-time the anchor if they appear.
 
 #### P0-7 A deterministic endgame gate · HARNESS (+ `check.sh`) · Tier A · needs P0-2
 - **Why:** `harness/endgame_suite.py` uses `movetime`, so the same position converted once and failed once in the same day. A gate that flips on load is not a gate.
