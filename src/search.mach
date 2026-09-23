@@ -318,17 +318,26 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         if (entry.flag == tt.UPPER && known <= alpha)     { ret known; }
     }
 
-    # standing pat: the side to move is not obliged to capture
-    val stand: i64 = eval.evaluate(p);
-    if (stand >= beta) {
-        if (!protected) { tt.store(p.key, mv.NONE, stand, 0, tt.LOWER); }
-        ret stand;
+    # A side in check may not stand pat - it is obliged to answer the check,
+    # and "do nothing" is not a legal answer. Quiescence used to stand pat
+    # regardless, so a capture that gave check was scored as if the checked
+    # side could ignore it. In check it now searches every evasion, prunes
+    # none of them, and scores no legal move as mate.
+    val in_check: bool = pos.in_check(p);
+    var stand:    i64  = 0 - INFINITE;
+    if (!in_check) {
+        # standing pat: the side to move is not obliged to capture
+        stand = eval.evaluate(p);
+        if (stand >= beta) {
+            if (!protected) { tt.store(p.key, mv.NONE, stand, 0, tt.LOWER); }
+            ret stand;
+        }
+        if (stand > alpha) { alpha = stand; }
     }
-    if (stand > alpha)      { alpha = stand; }
-    if (ply >= MAX_PLY - 1) { ret stand; }
+    if (ply >= MAX_PLY - 1) { ret eval.evaluate(p); }
 
     var list: MoveList;
-    movegen.generate(p, ?list, true);
+    movegen.generate(p, ?list, !in_check);
     var scores: [256]i64;
     var i:      i64 = 0;
     for (i < list.count) {
@@ -338,18 +347,19 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
 
     var best:      i64  = stand;
     var best_move: Move = mv.NONE;
+    var legal:     i64  = 0;
     i = 0;
     for (i < list.count) {
         pick(?list, ?scores[0], i);
         val m: Move = list.moves[i];
         # losing captures do not improve a quiescence score, and searching them
         # is most of the work in a noisy position
-        if (mv.is_capture(m) && see.evaluate(p, m) < 0) {
+        if (!in_check && mv.is_capture(m) && see.evaluate(p, m) < 0) {
             i = i + 1;
             cnt;
         }
         # delta pruning: even winning this piece outright would not reach alpha
-        if (!mv.is_promotion(m) && p.board[mv.to(m)] != pos.EMPTY) {
+        if (!in_check && !mv.is_promotion(m) && p.board[mv.to(m)] != pos.EMPTY) {
             val gain: i64 = see.piece_value(pos.kind_of(p.board[mv.to(m)]));
             if (stand + gain + 200 < alpha) {
                 i = i + 1;
@@ -362,6 +372,7 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
             i = i + 1;
             cnt;
         }
+        legal = legal + 1;
         val score: i64 = 0 - quiesce(s, p, 0 - beta, 0 - alpha, ply + 1);
         pos.unmake(p);
         if (s.stop != 0) { ret 0; }
@@ -376,6 +387,7 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         }
         i = i + 1;
     }
+    if (in_check && legal == 0) { ret 0 - MATE + ply; }
     if (!protected) {
         var flag: u8 = tt.UPPER;
         if (best > alpha_in) { flag = tt.EXACT; }
