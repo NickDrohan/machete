@@ -40,7 +40,24 @@ PANEL = {
 }
 
 
+# MACHETE_PANEL names a JSON file mapping panel names to absolute paths, which
+# replaces the Arena layout above. It is how a Linux machine, which has no
+# Arena folder and builds its teachers from source, points the same code at its
+# own binaries. harness/cloud/teacher_check.py proves those binaries score
+# positions exactly as the ones above do before any of their labels are used.
+OVERRIDE = {}
+if os.environ.get("MACHETE_PANEL"):
+    import json
+    with open(os.environ["MACHETE_PANEL"]) as handle:
+        OVERRIDE = json.load(handle)
+
+
 def path_of(name):
+    if OVERRIDE:
+        if name not in OVERRIDE:
+            raise KeyError("{} is not in the MACHETE_PANEL file {}".format(
+                name, os.environ["MACHETE_PANEL"]))
+        return OVERRIDE[name]
     return os.path.join(ARENA, PANEL[name])
 
 
