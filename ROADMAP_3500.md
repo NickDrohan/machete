@@ -279,6 +279,12 @@ Each of these cost at least one wrong result. They are not style.
     dropping the largest outlier always improves a fit, so that improvement is
     not evidence the outlier was broken. Measure the process; test the
     significance; then explain.
+19. **Anything started from a Claude tool dies when the session restarts.**
+    The tools' shells live in a Windows job object owned by `claude.exe`, and
+    `nohup` and `&` do not leave it. A 400-game match died twenty minutes in
+    that way, with nothing in its log. Launch every long job - matches, data
+    generation, queues - with `harness/detach.ps1`, which starts it through WMI
+    and refuses to report success if `claude.exe` is still in its ancestry.
 
 ---
 
@@ -320,7 +326,7 @@ Nothing claimed before M0 counts toward 3500.
 #### P0-5 One queue for the machine · HARNESS · Tier B
 - **Why:** agents produce patches faster than the machine can test them, and two measurements at once corrupt each other.
 - **Change:** `harness/queue.py` - a job file per test in `data/queue/`, one runner that executes them strictly in order, waits for the machine to be quiet first, writes the result line to `RESULTS.tsv`, and never starts a job while another runs. `harness/longqueue.sh` becomes a list of jobs.
-- **Gate:** submit two jobs at once and show they ran serially.
+- **Gate:** submit two jobs at once and show they ran serially. The runner itself is started with `harness/detach.ps1` (rule 19), or it dies the next time the session restarts.
 
 #### P0-6 A gauntlet that can measure 3000 to 3600 · HARNESS · Tier B
 - **Why:** there is no opponent between Rybka (3050) and Koivisto (3300), and we score 3% against Koivisto - nothing on disk measures us in the band we are climbing through.
