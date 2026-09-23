@@ -29,6 +29,7 @@ import chess.pgn
 
 import arena
 import engine as engines
+import match
 import wall
 from wall import Live
 
@@ -101,16 +102,6 @@ def combine(usable):
     if consistency > 1.0:
         margin = margin * consistency
     return pooled, margin, max(1.0, consistency)
-
-
-def opening(rng, plies):
-    board = chess.Board()
-    for _ in range(plies):
-        moves = list(board.legal_moves)
-        if not moves or board.is_game_over():
-            break
-        board.push(rng.choice(moves))
-    return board.move_stack[:]
 
 
 def play(white, black, moves, movetime, max_plies, report=None):
@@ -194,7 +185,7 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                     game_number = jobs[index[0]]
                     index[0] += 1
                 machete_white = game_number % 2 == 0
-                book = opening(rng, 4)
+                book = match.random_opening(rng, 4)
                 white, black = (machete, opponent) if machete_white else (opponent, machete)
                 report = None
                 if LIVE is not None:

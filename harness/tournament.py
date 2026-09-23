@@ -199,9 +199,9 @@ def play_block(args, paths, table, i, j, first_pair, pairs, live, slot):
                 if live is not None:
                     def report(board, result, _s=slot, _w=white_name, _b=black_name):
                         live.set_board(_s, board, _w, _b, result)
-                outcome, final = match.play(white, black, opening,
-                                            match.limit_from(args), args.max_plies,
-                                            report)
+                outcome, final, _, _ = match.play(white, black, opening,
+                                                  match.limit_from(args), args.max_plies,
+                                                  report)
                 wall.save_game(args.pgn, final, white_name, black_name,
                                "subset tournament", outcome)
                 table.record(i, j, outcome, i_is_white)

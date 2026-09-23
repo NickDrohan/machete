@@ -31,6 +31,7 @@ import os
 import random
 import sys
 import threading
+import time
 
 import chess
 import chess.engine
@@ -41,50 +42,129 @@ import engine as engines
 
 
 def random_opening(rng, plies):
-    board = chess.Board()
-    for _ in range(plies):
-        moves = list(board.legal_moves)
-        if not moves or board.is_game_over():
-            break
-        board.push(rng.choice(moves))
-    return board.move_stack[:]
+    """A few random moves from the start, never ones that finish the game.
+
+    Four random plies can be 1. f3 e5 2. g4 Qh4#. That happened, twice, and
+    the rating ladder scored both as wins for an engine that had not yet made
+    a move. A walk that ends the game is thrown away and drawn again.
+    """
+    for _ in range(100):
+        board = chess.Board()
+        for _ in range(plies):
+            moves = list(board.legal_moves)
+            if not moves:
+                break
+            board.push(rng.choice(moves))
+        if not board.is_game_over(claim_draw=True):
+            return board.move_stack[:]
+    raise RuntimeError("no playable random opening in 100 tries")
 
 
-def play(white, black, opening, limit, max_plies, report=None, judge=None):
-    """Play one game; returns '1-0', '0-1', '1/2-1/2'."""
+def load_book(path):
+    """Starting positions, one FEN or EPD per line."""
+    positions = []
+    with open(path) as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                chess.Board(line)
+            except ValueError:
+                line = chess.Board.from_epd(line)[0].fen()
+            positions.append(line)
+    if not positions:
+        raise SystemExit("no positions in {}".format(path))
+    return positions
+
+
+def opening_board(opening):
+    """The starting board for an opening given as moves or as a FEN."""
+    if isinstance(opening, str):
+        return chess.Board(opening)
     board = chess.Board()
     for move in opening:
         board.push(move)
+    return board
+
+
+def parse_tc(text):
+    """'300+3' -> (300000, 3000): base and increment in milliseconds."""
+    base, _, increment = text.partition("+")
+    return int(float(base) * 1000), int(float(increment or 0) * 1000)
+
+
+def play(white, black, opening, limit, max_plies, report=None, judge=None, clock=None):
+    """Play one game. Returns (result, final board, how it ended, clocks).
+
+    `clock` is (base_ms, increment_ms, margin_ms) for a real clock, or None to
+    give each move `limit`. On a clock the harness keeps time the way a GUI
+    does: a move's wall time is charged to the side that made it, then the
+    increment is added, and a side whose clock falls more than `margin_ms`
+    below zero loses on time - unless the opponent has too little material to
+    mate, which the rules score as a draw. The margin absorbs the pipe and
+    Python overhead, which is charged to both sides alike.
+
+    `max_plies` of 0 means no cap: the game ends only by the rules.
+
+    Each game is its own `game` to python-chess, so every engine is sent
+    `ucinewgame` and starts with an empty hash, as it would in a GUI.
+    """
+    board = opening_board(opening)
+    game_id = object()
     if judge:
         judge.reset()
     if report:
         report(board, None)
+    remaining = None
+    if clock:
+        remaining = {chess.WHITE: float(clock[0]), chess.BLACK: float(clock[0])}
+    clocks = []
+
+    def finish(outcome, how):
+        if report:
+            report(board, outcome)
+        return outcome, board, how, clocks
+
     while not board.is_game_over(claim_draw=True):
-        if board.ply() >= max_plies:
-            if report:
-                report(board, "1/2-1/2")
-            return "1/2-1/2", board
-        engine = white if board.turn == chess.WHITE else black
-        white_to_move = board.turn == chess.WHITE
-        if judge and judge.enabled:
-            result = engine.play(board, limit, info=chess.engine.INFO_SCORE)
-            verdict = judge.observe(board, white_to_move,
-                                    adjudicate.score_of(result.info, white_to_move))
-            if verdict is not None:
-                if report:
-                    report(board, verdict)
-                return verdict, board
+        if max_plies and board.ply() >= max_plies:
+            return finish("1/2-1/2", "ply cap")
+        side = board.turn
+        engine = white if side == chess.WHITE else black
+        if clock:
+            increment = clock[1] / 1000.0
+            move_limit = chess.engine.Limit(
+                white_clock=max(0.0, remaining[chess.WHITE]) / 1000.0,
+                black_clock=max(0.0, remaining[chess.BLACK]) / 1000.0,
+                white_inc=increment, black_inc=increment)
         else:
-            result = engine.play(board, limit)
+            move_limit = limit
+        want_score = judge is not None and judge.enabled
+        started = time.monotonic()
+        if want_score:
+            result = engine.play(board, move_limit, info=chess.engine.INFO_SCORE, game=game_id)
+        else:
+            result = engine.play(board, move_limit, game=game_id)
+        spent = (time.monotonic() - started) * 1000.0
+        if clock:
+            remaining[side] -= spent
+            if remaining[side] < -clock[2]:
+                if board.has_insufficient_material(not side):
+                    return finish("1/2-1/2", "time forfeit, opponent cannot mate")
+                return finish("0-1" if side == chess.WHITE else "1-0", "time forfeit")
+            remaining[side] = max(0.0, remaining[side]) + clock[1]
+        if want_score:
+            verdict = judge.observe(board, side == chess.WHITE,
+                                    adjudicate.score_of(result.info, side == chess.WHITE))
+            if verdict is not None:
+                return finish(verdict, "adjudication")
         if result.move is None or result.move not in board.legal_moves:
             raise RuntimeError("illegal move {} in {}".format(result.move, board.fen()))
         board.push(result.move)
+        clocks.append(remaining[side] if clock else None)
         if report:
             report(board, None)
-    outcome = board.result(claim_draw=True)
-    if report:
-        report(board, outcome)
-    return outcome, board
+    return finish(board.result(claim_draw=True), "normal")
 
 
 def elo_to_score(elo):
@@ -221,8 +301,18 @@ def limit_from(args):
     return chess.engine.Limit(time=args.movetime / 1000.0)
 
 
+def clock_from(args):
+    """(base_ms, increment_ms, margin_ms) when --tc was given, else None."""
+    if not args.tc:
+        return None
+    base, increment = parse_tc(args.tc)
+    return base, increment, args.margin
+
+
 def open_engine(path, options):
-    engine = chess.engine.SimpleEngine.popen_uci(path)
+    # started in its own folder: several engines read a config file from the
+    # working directory, and without it answer with blank lines
+    engine = chess.engine.SimpleEngine.popen_uci(path, cwd=os.path.dirname(path) or None)
     for setting in options:
         name, _, value = setting.partition("=")
         engine.configure({name: int(value) if value.isdigit() else value})
@@ -247,8 +337,11 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                 pairs["next"] += 1
             # seeded by pair number, not by draw order, so concurrency does not
             # change which openings get played
-            opening = random_opening(random.Random(args.seed * 1000003 + pair),
-                                     args.opening_plies)
+            if args.openings:
+                opening = args.openings[pair % len(args.openings)]
+            else:
+                opening = random_opening(random.Random(args.seed * 1000003 + pair),
+                                         args.opening_plies)
             for a_is_white in (True, False):
                 white, black = (a, b) if a_is_white else (b, a)
                 report = None
@@ -258,16 +351,27 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                                        args.label_a if _w else args.label_b,
                                        args.label_b if _w else args.label_a, result)
                 try:
-                    outcome, final = play(white, black, opening, limit_from(args),
-                                          args.max_plies, report,
-                                          adjudicate.from_arguments(args))
+                    outcome, final, how, clocks = play(
+                        white, black, opening, limit_from(args), args.max_plies, report,
+                        adjudicate.from_arguments(args), clock_from(args))
                 except Exception as problem:
                     failures.append("{}: {}".format(type(problem).__name__, problem))
                     return
+                round_number = pair * 2 + (1 if a_is_white else 2)
                 wall.save_game(args.pgn, final,
                                args.label_a if a_is_white else args.label_b,
                                args.label_b if a_is_white else args.label_a,
-                               "{} vs {}".format(args.label_a, args.label_b), outcome)
+                               "{} vs {}".format(args.label_a, args.label_b), outcome,
+                               headers={"Round": str(round_number),
+                                        "TimeControl": args.tc if args.tc
+                                        else "movetime {} ms".format(args.movetime),
+                                        "Termination": how},
+                               clocks=clocks)
+                if how.startswith("time forfeit"):
+                    loser_is_a = (final.turn == chess.WHITE) == a_is_white
+                    print("  time forfeit by {} in round {}".format(
+                        args.label_a if loser_is_a else args.label_b, round_number))
+                    sys.stdout.flush()
                 if not tally.record(outcome, a_is_white):
                     return
     finally:
@@ -283,8 +387,17 @@ def main():
     parser.add_argument("--movetime", type=int, default=100, help="milliseconds per move")
     parser.add_argument("--depth", type=int, default=0,
                         help="fixed depth per move instead of a time budget")
+    parser.add_argument("--tc", default="",
+                        help="a real clock in seconds, BASE+INCREMENT, e.g. 300+3")
+    parser.add_argument("--margin", type=int, default=100,
+                        help="ms a clock may fall below zero before it loses on time")
+    parser.add_argument("--book", default="",
+                        help="starting positions, one FEN or EPD a line; each one is "
+                             "played twice with colours reversed")
     parser.add_argument("--opening-plies", type=int, default=4)
-    parser.add_argument("--max-plies", type=int, default=300)
+    parser.add_argument("--max-plies", type=int, default=300, help="0 for no cap")
+    parser.add_argument("--name-a", default="")
+    parser.add_argument("--name-b", default="")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=1,
                         help="games in flight at once; each one is a pair of engine processes")
@@ -333,6 +446,12 @@ def main():
         if args.label_a == args.label_b:
             args.label_a += " (A)"
             args.label_b += " (B)"
+    args.label_a = args.name_a or args.label_a
+    args.label_b = args.name_b or args.label_b
+    args.openings = load_book(args.book) if args.book else None
+    if args.openings and args.games > 2 * len(args.openings):
+        print("note: {} games from {} openings, so openings repeat".format(
+            args.games, len(args.openings)))
 
     live = None
     if args.watch:
@@ -341,6 +460,7 @@ def main():
                          columns=("side", "games", "W", "D", "L", "score", "Elo"))
         live.say("{} vs {}".format(args.label_a, args.label_b), "{} games at {}".format(
             args.games, "depth {}".format(args.depth) if args.depth
+            else "{} on the clock".format(args.tc) if args.tc
             else "{} ms a move".format(args.movetime)))
         wall.start(live, args.watch, "the match")
     tally = Tally(args, lower, upper, live)

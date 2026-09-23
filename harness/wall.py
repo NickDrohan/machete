@@ -79,8 +79,14 @@ class Live(object):
 PGN_LOCK = threading.Lock()
 
 
-def save_game(path, board, white_name, black_name, event, outcome):
-    """Append one finished game. Safe to call from several workers at once."""
+def save_game(path, board, white_name, black_name, event, outcome,
+              headers=None, clocks=None):
+    """Append one finished game. Safe to call from several workers at once.
+
+    `clocks`, when the game was played on a real clock, holds each mover's
+    remaining time after each move, in milliseconds, and is written as the
+    standard `[%clk h:mm:ss]` comment that GUIs show beside the move.
+    """
     if not path:
         return
     game = chess.pgn.Game.from_board(board)
@@ -88,6 +94,18 @@ def save_game(path, board, white_name, black_name, event, outcome):
     game.headers["White"] = white_name
     game.headers["Black"] = black_name
     game.headers["Result"] = outcome
+    for name, value in (headers or {}).items():
+        game.headers[name] = value
+    if clocks and any(c is not None for c in clocks):
+        node = game
+        for remaining in clocks:
+            if not node.variations:
+                break
+            node = node.variation(0)
+            if remaining is not None:
+                seconds = max(0.0, remaining / 1000.0)
+                node.comment = "[%clk {}:{:02d}:{:04.1f}]".format(
+                    int(seconds // 3600), int(seconds % 3600 // 60), seconds % 60)
     with PGN_LOCK:
         with open(path, "a") as handle:
             handle.write(str(game) + chr(10) + chr(10))
