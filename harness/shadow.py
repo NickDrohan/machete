@@ -180,11 +180,17 @@ def report(rows, out):
 
     blind = [r for r in rows if r["strong_depth"] >= BLIND_DEPTH
              and abs(clip(r["quick"]) - clip(r["strong"])) >= BLIND_GAP]
-    print("\n   {} blind spots ({}+ cp from a strong engine at depth {}+), by material:".format(
-        len(blind), BLIND_GAP, BLIND_DEPTH))
+    # one long ending contributes dozens of near-identical positions, so each
+    # group says how many games it comes from, and is ranked by that
+    print("\n   {} blind spots ({}+ cp from a strong engine at depth {}+) from {} games, by material:".format(
+        len(blind), BLIND_GAP, BLIND_DEPTH, len({r["game"] for r in blind})))
+    games_of = collections.defaultdict(set)
     counts = collections.Counter(r["signature"] for r in blind)
-    for name, count in counts.most_common(10):
-        print("   {:<24} {:>4}".format(name, count))
+    for r in blind:
+        games_of[r["signature"]].add(r["game"])
+    print("   {:<24} {:>6} {:>10}".format("", "games", "positions"))
+    for name in sorted(games_of, key=lambda n: (-len(games_of[n]), -counts[n]))[:12]:
+        print("   {:<24} {:>6} {:>10}".format(name, len(games_of[name]), counts[name]))
 
     print("\n3. whose eval predicts the result (log loss, lower is better; each at its best scale)")
     decided = [r for r in rows if r["result"] is not None]
