@@ -129,11 +129,16 @@ scans. Neither is executed here, so the claim is "it compiles", not "it works".
 ## Search
 
 Iterative deepening principal variation search: fail-soft alpha-beta, a 32 MB transposition
-table, null-move pruning, late-move reductions, futility and reverse futility pruning,
-aspiration windows, and a quiescence search over captures and promotions. Move ordering is the
-transposition move, then queen promotions, then captures ranked by static exchange evaluation,
-then killers and history. Evaluation is material, piece-square tables that taper the king into
-the endgame, the bishop pair, and doubled, isolated and passed pawns.
+table, null-move pruning, late-move reductions (reduced less at an *improving* node), futility
+and reverse futility pruning, aspiration windows, and a quiescence search over captures and
+promotions that reads the transposition table and, in check, searches every evasion and scores
+none as mate. Move ordering is the transposition move, then queen promotions, then captures
+ranked by static exchange evaluation, then killers and history. Iterative deepening stops on a
+mate only once it has searched as deep as the mate is long (the ladder-4 bug: a mate read back
+from the table at depth 1 used to end the search). Evaluation is the network - see *Evaluation:
+the network* below. The hand-written evaluation (`eval.mach`: material, tapered piece-square
+tables, the bishop pair, pawn structure) remains only as the fallback when no network is loaded;
+the early tables in this section were measured with it.
 
 ### Every search change was matched before it was kept
 
