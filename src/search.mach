@@ -754,8 +754,15 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         s.depth_reached = depth;
         val elapsed: i64 = clock.now_ms() - start;
         print_info(s, depth, score, elapsed);
-        # stop early when a mate is proven or the next iteration cannot finish
-        if (score > MATE_FOUND || score < 0 - MATE_FOUND)                  { brk; }
+        # stop early when a mate is proven or the next iteration cannot finish.
+        # A mate is proven only once the iteration is as deep as the mate is
+        # long. Shallower, the score is the table's word from an earlier move:
+        # stopping on it replayed the table's move for fifty moves and drew
+        # queen and bishop against a bare king (ladder 4, Rybka game 20).
+        var mate_plies: i64 = INFINITE;
+        if (score > MATE_FOUND)     { mate_plies = MATE - score; }
+        if (score < 0 - MATE_FOUND) { mate_plies = MATE + score; }
+        if (mate_plies <= depth)                                           { brk; }
         if (s.deadline != 0 && clock.now_ms() + elapsed / 2 >= s.deadline) { brk; }
         depth = depth + 1;
     }
