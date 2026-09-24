@@ -31,6 +31,7 @@ import traceback
 
 import chess
 import chess.engine
+import chess.pgn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "nnue"))
@@ -143,15 +144,33 @@ def main():
             tasks.append((a, b, opening))
             tasks.append((b, a, opening))
 
+    # resume: a game already in the PGN - same players, same opening - is
+    # counted, not played again
     standings = Standings(names)
+    if os.path.exists(args.pgn):
+        played = set()
+        with open(args.pgn, encoding="utf-8", errors="replace") as handle:
+            while True:
+                game = chess.pgn.read_game(handle)
+                if game is None:
+                    break
+                white, black = game.headers["White"], game.headers["Black"]
+                if white in names and black in names:
+                    played.add((white, black, game.headers.get("FEN", chess.STARTING_FEN)))
+                    standings.add(white, black, game.headers["Result"],
+                                  game.headers.get("Termination", ""))
+        tasks = [t for t in tasks if (t[0], t[1], t[2]) not in played]
+        print("resuming: {} games already in {}".format(len(played), args.pgn))
+    total = len(tasks) + len(standings.results)
     live = wall.Live(args.concurrency, title="stable round robin",
                      columns=("engine", "games", "points", "score", "Bradley-Terry"))
     if args.watch:
         wall.start(live, args.watch, "the round robin")
-    live.say("{} engines, {} games at {}".format(len(names), len(tasks), args.tc),
-             "0 of {} played".format(len(tasks)))
+    live.say("{} engines, {} games at {}".format(len(names), total, args.tc),
+             "{} of {} played".format(len(standings.results), total))
+    live.finished = standings.table()
     print("{} engines, {} pairings, {} games at {}, {} at a time".format(
-        len(names), len(pairings), len(tasks), args.tc, args.concurrency))
+        len(names), len(pairings), total, args.tc, args.concurrency))
     sys.stdout.flush()
 
     index = [0]
@@ -201,10 +220,10 @@ def main():
                 with lock:
                     done = len(standings.results)
                 live.finished = standings.table()
-                live.say("{} engines, {} games at {}".format(len(names), len(tasks), args.tc),
-                         "{} of {} played".format(done, len(tasks)))
+                live.say("{} engines, {} games at {}".format(len(names), total, args.tc),
+                         "{} of {} played".format(done, total))
                 print("{:>4}/{} {:<12} {:<12} {:<7} {}".format(
-                    done, len(tasks), white_name, black_name, outcome, how))
+                    done, total, white_name, black_name, outcome, how))
                 sys.stdout.flush()
             except Exception as problem:
                 errors.append("{} v {}: {}: {}".format(white_name, black_name,
