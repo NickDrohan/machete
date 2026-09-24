@@ -14,16 +14,17 @@
   #legend { position:fixed; right:18px; bottom:16px; color:#e8e6f088; text-align:right;
             font:11px/1.6 "Cascadia Mono", Consolas, monospace; pointer-events:none;
             text-shadow:0 0 6px #000; white-space:pre; }
+  @media (max-width: 1100px) { #legend { display:none; } }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud">waiting for the trainer...</div>
-<div id="legend">kaleidoscope   the network's own weights: 12 pieces x 64 squares x 256 neurons
-ring           the loss curve, wrapped around the centre
-zoom · spin    GPU load · positions per second
-swirl          loss falling or rising
-shimmer        GPU temperature      trails   power draw      pulse   each new loss reading</div>
+<div id="legend">arc shapes     the network's own weights, one neuron per bolt
+arcs · strikes GPU load · positions per second
+reach · jag    the loss: wild while high, tighter as it learns
+colour         violet while the loss falls, hotter while it rises
+core           GPU temperature      brightness   power draw      corona   epoch progress</div>
 
 <script id="vs" type="x-shader/x-vertex">
 attribute vec2 p;
@@ -36,9 +37,29 @@ precision highp float;
 varying vec2 uv;
 uniform sampler2D prev, weights, wave;
 uniform vec2 res;
-uniform float t, loss, trend, rate, util, heat, power, epoch, frac, beat, segs, haveWeights;
+uniform float t, loss, trend, rate, util, heat, power, epoch, frac, beat, haveWeights;
 
-vec3 pal(float x) { return 0.5 + 0.5 * cos(6.28318 * (vec3(0.0, 0.33, 0.67) + x)); }
+float hash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+float noise(float x) {
+  float i = floor(x), f = fract(x);
+  return mix(hash(i), hash(i + 1.0), f * f * (3.0 - 2.0 * f)) - 0.5;
+}
+
+// the path of one bolt: a neuron's weights read outward as the displacement,
+// a little hash noise on top so an untrained network still crackles
+float bend(float r, float seed, float strike) {
+  float neuron = fract(seed * 0.618 + epoch * 0.137);
+  float d = 0.0, amp = 1.0, freq = 1.0;
+  for (int o = 0; o < 4; o++) {
+    // a short stretch of the neuron's 768 inputs per bolt: ~40 weights, read
+    // smoothly, so the bolt is one connected path and not a spray of dots
+    float along = r * 0.05 * freq + fract(strike * 0.37 + seed * 0.21);
+    float w = texture2D(weights, vec2(fract(along), neuron)).r - 0.5;
+    d += amp * mix(noise(r * 9.0 * freq + strike + seed * 7.0), w * 2.0, haveWeights);
+    amp *= 0.5; freq *= 2.1;
+  }
+  return d;
+}
 
 void main() {
   float aspect = res.x / res.y;
@@ -46,43 +67,54 @@ void main() {
   c.x *= aspect;
   float r = length(c), a = atan(c.y, c.x);
 
-  // the feedback: last frame, pulled inward and turned. Load zooms, throughput
-  // spins, the loss trend swirls - clockwise while it falls, back while it rises
-  float zoom  = 0.988 - 0.018 * util - 0.012 * beat;
-  float spin  = 0.002 + 0.012 * rate;
-  float swirl = -0.9 * trend * r;
-  float ang   = a + spin + swirl;
-  vec2 q = vec2(cos(ang), sin(ang)) * r * zoom;
-  q += 0.0035 * (0.3 + heat) * vec2(sin(q.y * 11.0 + t * 1.3), cos(q.x * 11.0 - t * 1.1));
-  q.x /= aspect;
-  vec3 old = texture2D(prev, q + 0.5).rgb;
-  old *= 0.955 + 0.03 * power;                  // hotter card, longer trails
-  old = mix(old, old.gbr, 0.015);               // slow hue drift
+  // afterglow only: the last frame, faded fast and never zoomed
+  vec3 old = texture2D(prev, uv).rgb * 0.78;
 
-  // the kaleidoscope, cut from the weights: angle picks a neuron, radius walks
-  // its 768 inputs outward, and the symmetry changes every epoch
-  float seg = 6.28318 / segs;
-  float ka = mod(a + t * 0.04, seg);
-  ka = min(ka, seg - ka) / seg * 2.0;
-  float neuron = fract(ka * 0.5 + epoch * 0.137 + frac * 0.05);
-  float input_ = fract(r * 1.3 - t * 0.02 * (1.0 + rate));
-  float w = texture2D(weights, vec2(input_, neuron)).r;
-  float strength = abs(w - 0.5) * 2.0;
-  float cells = smoothstep(0.12, 0.8, strength + 0.3 * beat);
-  vec3 ink = pal(w * 0.9 + epoch * 0.09 + loss * 0.4 + t * 0.01) * cells
-           * smoothstep(0.85, 0.08, r) * haveWeights;
+  float arcs    = 3.0 + floor(11.0 * util);                 // GPU load: how many are live
+  float strikes = 6.0 + 18.0 * rate;                        // throughput: how often they jump
+  float wild    = 0.35 + 0.9 * loss;                        // loss: how jagged, how far
+  float reach   = 0.22 + 0.2 * loss + 0.08 * beat;
+  float core    = 0.045 + 0.02 * frac;
 
-  // the loss curve as a ring of light
+  vec3 hue = mix(vec3(0.55, 0.45, 1.0), vec3(1.0, 0.45, 0.8), clamp(trend * 0.5 + 0.5, 0.0, 1.0));
+  vec3 light = vec3(0.0);
+
+  for (int i = 0; i < 14; i++) {
+    if (float(i) >= arcs) break;
+    float fi = float(i);
+    float strike = floor(t * strikes + hash(fi) * 3.0);     // each arc re-fires on its own beat
+    float alive = step(0.25, hash(strike * 1.7 + fi));        // some strikes miss
+    float base = 6.28318 * (fi / arcs) + (hash(strike + fi * 13.0) - 0.5) * 1.6;
+    float len  = reach * (0.6 + 0.8 * hash(strike * 3.1 + fi));
+    if (r < core || r > len + 0.02) continue;
+    float along = (r - core) / max(len - core, 0.001);
+    float off = bend(along, fi + 1.0, strike) * wild * 0.55 * along;
+    float da = a - (base + off / max(r, 0.05));
+    da = abs(mod(da + 3.14159, 6.28318) - 3.14159) * r;       // distance from the bolt
+    float taper = 1.0 - smoothstep(0.7, 1.0, along);
+    float bolt = exp(-da * 700.0) * taper;                    // hot thin line
+    float glow = exp(-da * 70.0) * taper * 0.3;               // the air around it
+    // a fork partway out
+    float fork = bend(along * 1.7, fi + 21.0, strike) * wild * 0.9 * along;
+    float df = a - (base + (off + fork * 0.6) / max(r, 0.05));
+    df = abs(mod(df + 3.14159, 6.28318) - 3.14159) * r;
+    float branch = exp(-df * 500.0) * 0.6 * taper * step(0.35, along) * step(0.5, hash(strike + fi * 5.0));
+    light += alive * (vec3(1.0) * bolt + hue * (glow + branch)) * (0.55 + 0.6 * power);
+  }
+
+  // the core: blue-white, white-hot as the card heats up
+  float orb = smoothstep(core + 0.012, core - 0.004, r);
+  float halo = exp(-abs(r - core) * 45.0);
+  vec3 coreCol = mix(vec3(0.55, 0.65, 1.0), vec3(1.0, 0.95, 0.85), heat);
+  light += coreCol * (orb * (0.8 + 0.3 * beat) + halo * 0.35);
+
+  // corona: epoch progress as a faint ring the arcs reach through
+  float ringR = core + 0.06 + 0.25 * frac;
   float h = texture2D(wave, vec2(abs(fract(a / 6.28318 + 0.25) * 2.0 - 1.0), 0.5)).r;
-  float ringR = 0.14 + 0.26 * h + 0.02 * beat;
-  float ring = exp(-pow((r - ringR) * 110.0, 2.0));
-  vec3 ringCol = pal(0.6 + h * 0.5 + t * 0.03) * ring * (0.35 + 0.65 * (1.0 - loss));
+  light += hue * 0.25 * exp(-pow((r - ringR - 0.015 * h) * 160.0, 2.0));
 
-  // a slow bloom at the centre that breathes with the epoch's progress
-  float core = exp(-r * r * 160.0) * (0.04 + 0.12 * beat) * (0.5 + frac);
-
-  vec3 col = old + ink * 0.22 + ringCol * 0.7 + pal(epoch * 0.2 + t * 0.02) * core;
-  gl_FragColor = vec4(min(col, vec3(1.0)), 1.0);
+  vec3 col = max(old, 1.0 - exp(-light * 1.4));             // tone-mapped: bright, never flat white
+  gl_FragColor = vec4(col, 1.0);
 }
 </script>
 
@@ -168,7 +200,7 @@ let haveWeights = 0;
 // what the data says, smoothed so the picture glides rather than jumps
 const target = { loss: 0.5, trend: 0, rate: 0, util: 0, heat: 0, power: 0, epoch: 0, frac: 0 };
 const now = Object.assign({}, target);
-let beat = 0, seen = null, weightsVersion = -1, maxRate = 1, segs = 6;
+let beat = 0, seen = null, weightsVersion = -1, maxRate = 1;
 
 function fmt(n) { return n.toLocaleString('en-US'); }
 
@@ -196,7 +228,6 @@ async function poll() {
   target.rate = s.rate / maxRate;
   target.epoch = s.epoch;
   target.frac = s.total ? s.positions / s.total : 0;
-  segs = 6 + (s.epoch % 5) * 2;
   const g = s.gpu || {};
   target.util = (g.util || 0) / 100;
   target.heat = Math.max(0, Math.min(1, ((g.temp || 40) - 40) / 45));
@@ -218,7 +249,7 @@ async function poll() {
     (v ? '   validation ' + v[2].toFixed(5) + ' after epoch ' + v[0] : '') + '\n' +
     fmt(s.rate) + ' positions/s   ' + fmt(s.total) + ' positions on ' + (s.device || '?') + '\n' +
     (g.name ? g.name + '   ' + g.util + '%   ' + g.temp + '°C   ' + g.power.toFixed(0) + ' W   ' + g.clock + ' MHz' : 'no GPU reading') + '\n' +
-    (haveWeights ? 'weights: epoch ' + (v ? v[0] : '?') + ' network, ' + segs + '-fold' : 'weights: after the first epoch');
+    (haveWeights ? 'arcs shaped by the epoch ' + (v ? v[0] : '?') + ' network' : 'arcs shaped by noise until the first epoch');
 }
 poll();
 setInterval(poll, 500);
@@ -247,7 +278,6 @@ function draw() {
   gl.uniform1f(L.t, t);
   for (const k of ['loss', 'trend', 'rate', 'util', 'heat', 'power', 'epoch', 'frac']) gl.uniform1f(L[k], now[k]);
   gl.uniform1f(L.beat, beat);
-  gl.uniform1f(L.segs, segs);
   gl.uniform1f(L.haveWeights, haveWeights);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
