@@ -102,4 +102,24 @@ if [[ -n "$python" ]]; then
         "$python" "$here/harness/match.py" "$release" --games 6 --movetime 30 --max-plies 160
 fi
 
+# The binpack decoder (src/binpack.mach) against its Python reference. The
+# fixture is the first chunk of linrock's test80-2023-11-nov-2tb7p.min-v2
+# (Leela Chess Zero training data, Open Database License): 451,559 positions.
+# leela_chunk.sha256 is the hash of harness/nnue/leela.py's records for it -
+#   python harness/nnue/leela.py fixtures/leela_chunk.binpack --out X --positions 100000000 --workers 1
+# - identical under Python 3.7 and 3.13; running leela.py here would add two
+# minutes, so the hash stands in for it the way bench.expected does.
+binpack="$here/out/windows-x86_64/release/bin/binpack.exe"
+gate "binpack decoder writes leela.py's records byte for byte" 0 bash -c '
+    "$1" convert "$2" "$3" "$4" 100000000 1 >/dev/null &&
+    [[ "$(sha256sum "$3" | cut -d" " -f1)" == "$(tr -d "\r\n" <"$5")" ]]' _ \
+    "$binpack" "$here/fixtures/leela_chunk.binpack" "$work/leela_chunk.bin" \
+    "$here/harness/nnue/leela_scale.json" "$here/fixtures/leela_chunk.sha256"
+# one flipped bit in the move text puts every later index out of step, and the
+# decoder must say so rather than write plausible nonsense
+gate "binpack decoder refuses a corrupted chunk" 2 bash -c '
+    head -c 5000 "$2" >"$3"; printf "\x5a" >>"$3"; tail -c +5002 "$2" >>"$3"
+    "$1" check "$3" 100000000' _ \
+    "$binpack" "$here/fixtures/leela_chunk.binpack" "$work/corrupt.binpack"
+
 gates_done

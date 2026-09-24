@@ -423,8 +423,17 @@ def main():
     parser.add_argument("--calibrate", type=int, default=0,
                         help="have our teachers score this many positions and write the scale table")
     parser.add_argument("--nodes", type=int, default=1500, help="the teachers' budget when calibrating")
+    parser.add_argument("--decompress", default="",
+                        help="write the file uncompressed to this path, for the Mach decoder "
+                             "(src/tools/binpack.mach): std has no zstd")
     args = parser.parse_args()
 
+    if args.decompress:
+        import zstandard
+        with open(args.binpack, "rb") as source, open(args.decompress, "wb") as out:
+            zstandard.ZstdDecompressor().copy_stream(source, out, read_size=1 << 22, write_size=1 << 22)
+        print("{:,} bytes written to {}".format(os.path.getsize(args.decompress), args.decompress))
+        return 0
     if args.calibrate:
         calibrate(args.binpack, args.calibrate, args.nodes)
         return 0

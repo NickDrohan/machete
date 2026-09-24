@@ -463,6 +463,14 @@ itself: every decoded move must be legal and every chunk consumed exactly, and a
 the move text is caught at once. Scores are not self-checking, so file integrity rests on the
 published SHA-256.
 
+The same decoder exists in Mach: `src/binpack.mach`, built as a second executable,
+`binpack` (`binpack check FILE N`, `binpack convert FILE OUT SCALE N STRIDE`). It reuses the
+engine's own move generation - a binpack move is an index into exactly the destination set
+movegen computes - and writes records byte-identical to `leela.py`'s, 39x faster (2,000,000
+positions in 14.6 s against 9 min 26 s), which `check.sh` gates. It reads uncompressed
+binpack, since std has no zstd (`leela.py --decompress` makes the copy). What the port taught
+about Mach is in [MACH_FINDINGS.md](../../MACH_FINDINGS.md).
+
 Leela's centipawns are not ours. On the same positions our five teachers at 1,500 nodes give
 about 0.65 of Leela's score in the middle and far less at the top, where Leela's
 win-to-centipawn curve stretches decided positions to the clamp (10.3% of its positions, 2.4% of

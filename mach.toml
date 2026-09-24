@@ -21,9 +21,19 @@ os  = "linux"
 abi = "aapcs64"
 
 [artifact.machete]
+default = true
 kind = "bin"
 entry = "root.mach"
 out = "bin/machete{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# decodes Leela training data (binpack) into training records; see src/binpack.mach
+[artifact.binpack]
+kind = "bin"
+entry = "tools/binpack.mach"
+out = "bin/binpack{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []

@@ -1,0 +1,297 @@
+# machete.tools.binpack: decode Leela training data into machete's training records
+#
+#   binpack check   <file.binpack> <positions>
+#   binpack convert <file.binpack> <out.bin> <scale.json> <positions> <stride>
+#
+# the Mach counterpart of harness/nnue/leela.py, and checked against it: the
+# records it writes must be byte-identical. `check` decodes and verifies and
+# reports what the data looks like; `convert` also writes one training record
+# per position not in check, its score mapped onto our teachers' scale through
+# the table leela.py --calibrate measured. `stride` converts every stride-th
+# chunk, so a sample spans the whole file.
+#
+# the file must be uncompressed binpack: std has gzip and zlib but no zstd, so
+# linrock's .binpack.zst files are decompressed first (leela.py can).
+
+use std.print;
+use std.runtime;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.option.opt;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use A:        std.allocator;
+use fixed:    std.allocator.fixed;
+use fs:       std.filesystem;
+use io_error: std.io.error;
+use json:     std.data.json;
+
+use machete.binpack;
+use machete.binpack.Scale;
+use machete.move.Move;
+use pos: machete.position;
+use machete.position.Position;
+
+val CHUNK_CAP:  i64 = 16777216;    # binpack's suggested chunk is 1 MiB; this allows 16
+val OUT_CAP:    i64 = 4194240;     # records batched per write: a multiple of 70 bytes
+val EXIT_USAGE: i64 = 1;
+val EXIT_FAIL:  i64 = 2;
+
+var CHUNK:   [16777216]u8;
+var OUT:     [4194240]u8;
+var POS:     Position;
+var SCALE:   Scale;
+var JSON_IN: [65536]u8;
+var JSON_MEM: [1048576]u8;
+
+# what the visitors keep between positions
+# ---
+# out:       the output file, when converting
+# used:      bytes of OUT waiting to be written
+# written:   records written
+# limit:     positions wanted
+# seen:      positions visited
+# in_check:  of those, in check
+# results:   of those, won/drawn/lost from the side to move
+# failed:    set when a write failed
+rec Run {
+    out:      fs.File;
+    used:     i64;
+    written:  i64;
+    limit:    i64;
+    seen:     i64;
+    in_check: i64;
+    results:  [3]i64;
+    failed:   bool;
+}
+
+var RUN: Run;
+
+fun usage() i64 {
+    print.eprintln("usage: binpack check   <file.binpack> <positions>");
+    print.eprintln("       binpack convert <file.binpack> <out.bin> <scale.json> <positions> <stride>");
+    ret EXIT_USAGE;
+}
+
+fun read_exact(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val got: res[usize, io_error.Error] = fs.read(f, ?buf[at], (len - at)::usize);
+        if (sel got.err)      { ret false; }
+        if (got.ok::i64 == 0) { ret false; }
+        at = at + got.ok::i64;
+    }
+    ret true;
+}
+
+fun write_all(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val put: res[usize, io_error.Error] = fs.write(f, ?buf[at], (len - at)::usize);
+        if (sel put.err)      { ret false; }
+        if (put.ok::i64 == 0) { ret false; }
+        at = at + put.ok::i64;
+    }
+    ret true;
+}
+
+fun flush(r: *Run) {
+    if (r.used == 0) { ret; }
+    if (!write_all(r.out, ?OUT[0], r.used)) { r.failed = true; }
+    r.used = 0;
+}
+
+fun tally(r: *Run, p: *Position, result: i64) {
+    r.seen = r.seen + 1;
+    r.results[result + 1] = r.results[result + 1] + 1;
+    if (pos.in_check(p)) { r.in_check = r.in_check + 1; }
+}
+
+fun visit_check(ctx: ptr, p: *Position, m: Move, score: i64, result: i64) i64 {
+    val r: *Run = ctx::*Run;
+    tally(r, p, result);
+    if (r.seen >= r.limit) { ret 1; }
+    ret 0;
+}
+
+fun visit_convert(ctx: ptr, p: *Position, m: Move, score: i64, result: i64) i64 {
+    val r: *Run = ctx::*Run;
+    tally(r, p, result);
+    # positions in check are left out, as leela.py and gen.py leave them out
+    if (pos.in_check(p)) { ret 0; }
+    binpack.write_record(p, binpack.mapped(?SCALE, score), result, ?OUT[r.used]);
+    r.used    = r.used + binpack.RECORD_SIZE;
+    r.written = r.written + 1;
+    if (r.used + binpack.RECORD_SIZE > OUT_CAP) { flush(r); }
+    if (r.written >= r.limit) { ret 1; }
+    ret 0;
+}
+
+fun reason(code: i64) str {
+    if (code == binpack.BAD_STEM)     { ret "a game's first move is not legal in its position"; }
+    if (code == binpack.BAD_MOVE)     { ret "a decoded move is not legal: the bits are out of step"; }
+    if (code == binpack.OVERRUN)      { ret "the move text runs past the end of its chunk"; }
+    if (code == binpack.NOT_CONSUMED) { ret "the chunk has bytes no game accounts for"; }
+    ret "unknown";
+}
+
+# every stride-th chunk of the file, decoded into visit; returns OK, STOPPED or a failure
+fun each_chunk(path: str, stride: i64, visit: binpack.Visit, r: *Run) i64 {
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) {
+        print.eprintlnf("cannot open {}", path);
+        ret EXIT_FAIL;
+    }
+    var f: fs.File = opened.ok;
+    var status: i64 = binpack.OK;
+    var index:  i64 = 0;
+    var header: [8]u8;
+    for (status == binpack.OK) {
+        if (!read_exact(f, ?header[0], 8)) { brk; }
+        if (header[0] != 'B' || header[1] != 'I' || header[2] != 'N' || header[3] != 'P') {
+            print.eprintlnf("chunk {}: not a binpack chunk header", index);
+            status = EXIT_FAIL;
+            brk;
+        }
+        val size: i64 = header[4]::i64 | (header[5]::i64 << 8) | (header[6]::i64 << 16) | (header[7]::i64 << 24);
+        if (size > CHUNK_CAP) {
+            print.eprintlnf("chunk {}: {} bytes, more than this reader holds", index, size);
+            status = EXIT_FAIL;
+            brk;
+        }
+        if (index % stride == 0) {
+            if (!read_exact(f, ?CHUNK[0], size)) {
+                print.eprintlnf("chunk {}: the file ends inside it", index);
+                status = EXIT_FAIL;
+                brk;
+            }
+            status = binpack.decode_chunk(?CHUNK[0], size, ?POS, visit, r::ptr);
+            if (status != binpack.OK && status != binpack.STOPPED) {
+                print.eprintlnf("chunk {}: {}", index, reason(status));
+            }
+        }
+        or {
+            val moved: res[i64, io_error.Error] = fs.seek(f, size, fs.SEEK_CUR);
+            if (sel moved.err) {
+                status = EXIT_FAIL;
+                brk;
+            }
+        }
+        index = index + 1;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    ret status;
+}
+
+fun number_of(v: *json.Value) f64 {
+    if (json.value_is_float(v)) { ret json.value_float(v); }
+    ret json.value_number(v)::f64;
+}
+
+# the scale table, with the leading zero leela.py's load_scale prepends
+fun load_scale(path: str) bool {
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f: fs.File = opened.ok;
+    val got: res[usize, io_error.Error] = fs.read(f, ?JSON_IN[0], 65535);
+    val shut: err[io_error.Error] = fs.close(?f);
+    if (sel got.err) { ret false; }
+
+    var a: A.Allocator;
+    var state: fixed.FixedState;
+    val made: err[A.Error] = fixed.make(?a, ?state, ?JSON_MEM[0], 1048576);
+    if (sel made.err) { ret false; }
+    val parsed: res[json.Value, json.JsonError] = json.parse(?JSON_IN[0], got.ok, ?a);
+    if (sel parsed.err) { ret false; }
+    var root: json.Value = parsed.ok;
+
+    val leela: opt[*json.Value] = json.value_find(?root, "leela");
+    if (!sel leela.some) { ret false; }
+    val teachers: opt[*json.Value] = json.value_find(?root, "teachers");
+    if (!sel teachers.some) { ret false; }
+    val count: usize = json.value_count(leela.some);
+    if (count != json.value_count(teachers.some)) { ret false; }
+
+    SCALE.n = 0;
+    if (!binpack.scale_add(?SCALE, 0.0, 0.0)) { ret false; }
+    var i: usize = 0;
+    for (i < count) {
+        val x: opt[*json.Value] = json.value_get(leela.some, i);
+        if (!sel x.some) { ret false; }
+        val y: opt[*json.Value] = json.value_get(teachers.some, i);
+        if (!sel y.some) { ret false; }
+        if (!binpack.scale_add(?SCALE, number_of(x.some), number_of(y.some))) { ret false; }
+        i = i + 1;
+    }
+    ret true;
+}
+
+fun percent(part: i64, whole: i64) i64 {
+    if (whole == 0) { ret 0; }
+    ret part * 1000 / whole;
+}
+
+fun report(r: *Run) {
+    print.printlnf("{} positions decoded, every move legal, every chunk consumed exactly", r.seen);
+    print.printlnf("results from the side to move (per mille): won {}  drew {}  lost {}",
+        percent(r.results[2], r.seen), percent(r.results[1], r.seen), percent(r.results[0], r.seen));
+    print.printlnf("in check: {} per mille (left out on conversion)", percent(r.in_check, r.seen));
+}
+
+fun check(argc: i64, argv: **u8) i64 {
+    if (argc < 4) { ret usage(); }
+    val limit: res[i64, parse.ParseError] = parse.parse_i64_exact(argv[3], 10);
+    if (sel limit.err) { ret usage(); }
+    RUN.limit = limit.ok;
+    val status: i64 = each_chunk(argv[2], 1, visit_check, ?RUN);
+    if (status != binpack.OK && status != binpack.STOPPED) { ret EXIT_FAIL; }
+    report(?RUN);
+    ret 0;
+}
+
+fun convert(argc: i64, argv: **u8) i64 {
+    if (argc < 7) { ret usage(); }
+    val limit:  res[i64, parse.ParseError] = parse.parse_i64_exact(argv[5], 10);
+    val stride: res[i64, parse.ParseError] = parse.parse_i64_exact(argv[6], 10);
+    if (sel limit.err)  { ret usage(); }
+    if (sel stride.err) { ret usage(); }
+    if (stride.ok < 1)  { ret usage(); }
+    if (!load_scale(argv[4])) {
+        print.eprintlnf("cannot read the scale table {}", argv[4]);
+        ret EXIT_FAIL;
+    }
+    val created: res[fs.File, io_error.Error] = fs.create(argv[3], 420);
+    if (sel created.err) {
+        print.eprintlnf("cannot create {}", argv[3]);
+        ret EXIT_FAIL;
+    }
+    RUN.out   = created.ok;
+    RUN.limit = limit.ok;
+    val status: i64 = each_chunk(argv[2], stride.ok, visit_convert, ?RUN);
+    flush(?RUN);
+    val shut: err[io_error.Error] = fs.close(?RUN.out);
+    if (status != binpack.OK && status != binpack.STOPPED) { ret EXIT_FAIL; }
+    if (RUN.failed) {
+        print.eprintln("a write failed");
+        ret EXIT_FAIL;
+    }
+    report(?RUN);
+    print.printlnf("{} positions written to {}", RUN.written, argv[3]);
+    ret 0;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    pos.init();
+    if (argc < 2) { ret usage(); }
+    val command: str = argv[1];
+    if (str_equals(command, "check"))   { ret check(argc, argv); }
+    if (str_equals(command, "convert")) { ret convert(argc, argv); }
+    ret usage();
+}
