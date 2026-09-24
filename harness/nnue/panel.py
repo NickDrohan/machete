@@ -38,7 +38,7 @@ PANEL = {
     "Reckless":    r"Reckless 0.9.0 dev-2a847427\reckless-windows-avx2.exe",
     "Koivisto":    r"Koi\Koivisto_9.0-windows-sse2-pgo.exe",
     # jnlt3/blackmarlin release 9.0, x86-64-v3 (AVX2) build; sha256 9fbc60c2...a756748
-    "BlackMarlin": r"BlackMarlinlackmarlin-windows-x86-64-v3.exe",
+    "BlackMarlin": r"BlackMarlin\blackmarlin-windows-x86-64-v3.exe",
 }
 
 
