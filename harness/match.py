@@ -94,7 +94,7 @@ def parse_tc(text):
     return int(float(base) * 1000), int(float(increment or 0) * 1000)
 
 
-def play(white, black, opening, limit, max_plies, report=None, judge=None, clock=None):
+def play(white, black, opening, limit, max_plies, report=None, judge=None, clock=None, record=None):
     """Play one game. Returns (result, final board, how it ended, clocks).
 
     `clock` is (base_ms, increment_ms, margin_ms) for a real clock, or None to
@@ -106,6 +106,10 @@ def play(white, black, opening, limit, max_plies, report=None, judge=None, clock
     Python overhead, which is charged to both sides alike.
 
     `max_plies` of 0 means no cap: the game ends only by the rules.
+
+    `record`, a list, receives one entry per move played: what the mover's own
+    search said, as {"cp": ..., "mate": ..., "depth": ..., "nodes": ...} from
+    White's side, or None where the engine reported no score.
 
     Each game is its own `game` to python-chess, so every engine is sent
     `ucinewgame` and starts with an empty hash, as it would in a GUI.
@@ -141,7 +145,9 @@ def play(white, black, opening, limit, max_plies, report=None, judge=None, clock
             move_limit = limit
         want_score = judge is not None and judge.enabled
         started = time.monotonic()
-        if want_score:
+        if record is not None:
+            result = engine.play(board, move_limit, info=chess.engine.INFO_ALL, game=game_id)
+        elif want_score:
             result = engine.play(board, move_limit, info=chess.engine.INFO_SCORE, game=game_id)
         else:
             result = engine.play(board, move_limit, game=game_id)
@@ -160,11 +166,22 @@ def play(white, black, opening, limit, max_plies, report=None, judge=None, clock
                 return finish(verdict, "adjudication")
         if result.move is None or result.move not in board.legal_moves:
             raise RuntimeError("illegal move {} in {}".format(result.move, board.fen()))
+        if record is not None:
+            record.append(said(result.info))
         board.push(result.move)
         clocks.append(remaining[side] if clock else None)
         if report:
             report(board, None)
     return finish(board.result(claim_draw=True), "normal")
+
+
+def said(info):
+    """An engine's own verdict on the move it just played, from White's side."""
+    if "score" not in info:
+        return None
+    score = info["score"].white()
+    return {"cp": score.score(), "mate": score.mate(),
+            "depth": info.get("depth"), "nodes": info.get("nodes")}
 
 
 def elo_to_score(elo):

@@ -44,9 +44,13 @@ class Live(object):
         self.current = ""
         self.progress = ""
 
-    def set_board(self, slot, board, white_name, black_name, result=None):
+    def set_board(self, slot, board, white_name, black_name, result=None, lines=None):
         """Show a position. Both sides are named explicitly: a match between two
-        of our own networks has no "us" and no "opponent"."""
+        of our own networks has no "us" and no "opponent".
+
+        `lines`, if given, is drawn as an eval chart under the board: a list of
+        {"name": ..., "points": [[ply, centipawns from White's side], ...]}.
+        """
         squares = []
         for rank in range(7, -1, -1):
             for file in range(8):
@@ -62,6 +66,7 @@ class Live(object):
                 "lastMove": [last.from_square, last.to_square] if last else None,
                 "plies": board.ply(),
                 "result": result,
+                "lines": lines or [],
             }
 
     def say(self, current, progress=""):
@@ -79,13 +84,36 @@ class Live(object):
 PGN_LOCK = threading.Lock()
 
 
+def annotate(game, moves, per_move, render):
+    """Append render(item) to each move's comment, skipping None items.
+
+    The items cover the moves the engines played, which are the last ones;
+    opening moves given to them come first and carry nothing.
+    """
+    if not per_move:
+        return
+    node = game
+    for _ in range(max(0, moves - len(per_move))):
+        node = node.variation(0)
+    for item in per_move:
+        if not node.variations:
+            break
+        node = node.variation(0)
+        if item is not None:
+            tag = render(item)
+            node.comment = node.comment + " " + tag if node.comment else tag
+
+
 def save_game(path, board, white_name, black_name, event, outcome,
-              headers=None, clocks=None):
+              headers=None, clocks=None, evals=None, notes=None):
     """Append one finished game. Safe to call from several workers at once.
 
     `clocks`, when the game was played on a real clock, holds each mover's
     remaining time after each move, in milliseconds, and is written as the
     standard `[%clk h:mm:ss]` comment that GUIs show beside the move.
+    `evals`, from match.play's `record`, becomes `[%eval]` with the mover's
+    depth: what each engine thought of the position when it moved.
+    `notes` are comments of the caller's own, one per move, written as given.
     """
     if not path:
         return
@@ -96,20 +124,19 @@ def save_game(path, board, white_name, black_name, event, outcome,
     game.headers["Result"] = outcome
     for name, value in (headers or {}).items():
         game.headers[name] = value
-    if clocks and any(c is not None for c in clocks):
-        # the clocks cover the moves the engines played, which are the last
-        # ones; opening moves given to them come first and carry no clock
-        node = game
-        for _ in range(max(0, len(board.move_stack) - len(clocks))):
-            node = node.variation(0)
-        for remaining in clocks:
-            if not node.variations:
-                break
-            node = node.variation(0)
-            if remaining is not None:
-                seconds = max(0.0, remaining / 1000.0)
-                node.comment = "[%clk {}:{:02d}:{:04.1f}]".format(
-                    int(seconds // 3600), int(seconds % 3600 // 60), seconds % 60)
+    def clock_tag(remaining):
+        seconds = max(0.0, remaining / 1000.0)
+        return "[%clk {}:{:02d}:{:04.1f}]".format(
+            int(seconds // 3600), int(seconds % 3600 // 60), seconds % 60)
+
+    def eval_tag(said):
+        value = "#{}".format(said["mate"]) if said["mate"] is not None \
+            else "{:.2f}".format(said["cp"] / 100.0)
+        return "[%eval {},{}]".format(value, said["depth"] or 0)
+
+    annotate(game, len(board.move_stack), clocks, clock_tag)
+    annotate(game, len(board.move_stack), evals, eval_tag)
+    annotate(game, len(board.move_stack), notes, lambda note: note)
     with PGN_LOCK:
         with open(path, "a") as handle:
             handle.write(str(game) + chr(10) + chr(10))
@@ -166,6 +193,11 @@ WALL = """<!doctype html>
   th { color:var(--dim); font-weight:500; border-bottom:1px solid var(--line); }
   td.name, th.name { text-align:left; }
   .implied { color:#7fd18a; font-weight:600; }
+  .chart { display:block; margin-top:6px; background:#15171d; border-radius:3px; }
+  .legend { font-size:11px; color:var(--dim); margin-top:3px; width:208px;
+            font-variant-numeric:tabular-nums; }
+  .legend span { display:inline-block; margin-right:8px; white-space:nowrap; }
+  .legend i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:3px; }
 </style>
 </head>
 <body>
@@ -195,6 +227,41 @@ function squareIndex(sq) {        // chess square number -> cell, white at the b
   return (7 - Math.floor(sq / 8)) * 8 + (sq % 8);
 }
 
+// the White engine, the Black engine, then machete
+const LINE_COLOURS = ['#f4f1ea', '#5aa9ff', '#ff7a59'];
+const CHART_W = 208, CHART_H = 64;
+
+// centipawns -> height by expected score, so +3 and +30 both sit near the
+// top and the interesting middle is not squashed flat
+function chartY(cp) {
+  return CHART_H * (1 - 1 / (1 + Math.pow(10, -cp / 400)));
+}
+
+function pawns(cp) {
+  if (Math.abs(cp) >= 2900) return (cp > 0 ? '+' : '-') + 'M';
+  return (cp > 0 ? '+' : '') + (cp / 100).toFixed(2);
+}
+
+function chart(lines, plies) {
+  const span = Math.max(plies, 40);
+  let svg = '<svg class="chart" width="' + CHART_W + '" height="' + CHART_H + '">'
+          + '<line x1="0" x2="' + CHART_W + '" y1="' + CHART_H / 2 + '" y2="' + CHART_H / 2
+          + '" stroke="#3a3f4b" stroke-dasharray="3 3"/>';
+  lines.forEach((line, n) => {
+    if (!line.points.length) return;
+    const path = line.points.map(p =>
+      (p[0] / span * CHART_W).toFixed(1) + ',' + chartY(p[1]).toFixed(1)).join(' ');
+    svg += '<polyline fill="none" stroke-width="1.6" stroke="' + LINE_COLOURS[n % 3]
+         + '" points="' + path + '"/>';
+  });
+  svg += '</svg><div class="legend">' + lines.map((line, n) => {
+    const last = line.points.length ? pawns(line.points[line.points.length - 1][1]) : '-';
+    return '<span><i style="background:' + LINE_COLOURS[n % 3] + '"></i>'
+         + line.name + ' ' + last + '</span>';
+  }).join('') + '</div>';
+  return svg;
+}
+
 async function tick() {
   let state;
   try { state = await (await fetch('/state')).json(); } catch (e) { return; }
@@ -207,7 +274,8 @@ async function tick() {
       card.className = 'game';
       card.id = 'g' + i;
       card.innerHTML = '<div class="tag" id="t' + i + '"></div>'
-                     + '<div class="board" id="b' + i + '"></div>';
+                     + '<div class="board" id="b' + i + '"></div>'
+                     + '<div id="c' + i + '"></div>';
       wall.appendChild(card);
     }
     const cells = cellsFor(document.getElementById('b' + i));
@@ -222,6 +290,8 @@ async function tick() {
       '<b>' + (game.white || '') + '</b> vs <b>' + (game.black || '') + '</b>'
       + ' &middot; ' + game.plies + ' plies'
       + (game.result ? ' &middot; ' + game.result : '');
+    document.getElementById('c' + i).innerHTML =
+      game.lines && game.lines.length ? chart(game.lines, game.plies) : '';
   });
 
   document.title = state.title;
