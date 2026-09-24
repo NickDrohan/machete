@@ -121,8 +121,8 @@ def main():
               "FAIL, {} unproven mate claims, first {}".format(len(claims), claims[0])))
         failed += 1 if claims else 0
         # each ending is played --trials times: machete moves on a clock, so
-        # one game is one draw from a distribution - network A converted
-        # KQ v KN in 18, 35 and 52 moves on three runs of the same build
+        # one game is one draw from a distribution - network A had mated
+        # KQ v KN in single games, then converted it once in five
         need = (2 * args.trials + 2) // 3
         for name, fen, required in [p + (True,) for p in POSITIONS] + [p + (False,) for p in TARGETS]:
             lengths = []
