@@ -47,6 +47,9 @@ OPPONENTS = [
     ("Engines/Koi/Koivisto_9.0-windows-sse2-pgo.exe", "Koivisto 9.0", 3300),
     ("Engines/Plenty/PlentyChess-7.0.0-windows-ssse3.exe", "PlentyChess 7", 3400),
     ("Engines/Caissa/caissa-1.23-x64-sse2.exe", "Caissa 1.23", 3450),
+    # CCRL 40/15, 64-bit 1CPU: 3492 +/- 12 over 1514 games, read 2026-09-23 from
+    # computerchess.org/cgi/engine_details.cgi?eng=Black+Marlin+9.0+64-bit
+    ("Engines/BlackMarlin/blackmarlin-windows-x86-64-v3.exe", "Black Marlin 9.0", 3492),
     ("Engines/berserk/berserk-13-ssse3.exe", "Berserk 13", 3500),
 ]
 
