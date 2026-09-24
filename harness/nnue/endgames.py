@@ -24,7 +24,10 @@ would both be 1.0 and the network would still have nothing to learn.
 
 So distance to mate is mapped *into* the band the sigmoid can still resolve:
 
-    score = NEAR - STEP * plies_to_mate,  clipped to [FAR, NEAR]
+    score = MATE_NEAR - MATE_STEP * plies_to_mate,  clipped to [MATE_FAR, MATE_NEAR]
+
+(gen.ending_label, shared with gen.py, which labels its own few-piece endings
+the same way so the two corpora agree about what a mate is worth.)
 
 At the defaults that is 900 for a mate in one down to 400 for a mate in fifty,
 which spans sigmoid 0.9975 to 0.9309 - a real gradient, where the raw scores
@@ -34,8 +37,9 @@ magnitude, it needs to know which way is downhill. Positions with no forced
 mate yet keep the teacher's own score, clipped to the same band, so the two
 label kinds meet rather than step.
 
-This is the one place in the harness where a label is not simply the teacher's
-evaluation, and it is a deliberate distortion with a measurable purpose:
+This and gen.py's few-piece endings are the places in the harness where a
+label is not simply the teacher's evaluation - a deliberate distortion with a
+measurable purpose:
 `harness/endgame_suite.py` says whether it worked, and the tournament says what
 it cost elsewhere.
 """
@@ -55,10 +59,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen
 import panel
 from reference import RECORD
-
-NEAR = 900      # a mate in one, in centipawns on the training scale
-FAR = 400       # a mate that is far enough away to be nearly flat
-STEP = 10       # centipawns per ply of distance
 
 # Material that is a forced win, and the ones this engine actually fails.
 # Weighted towards the failures: KBB, KBN and queen-versus-a-piece are where
@@ -126,17 +126,6 @@ def build(rng):
     return None, None
 
 
-def label(score_cp, mate_plies):
-    """Distance to mate, mapped into the band the sigmoid target can resolve."""
-    if mate_plies is not None:
-        value = NEAR - STEP * abs(mate_plies)
-        value = max(FAR, min(NEAR, value))
-        return value if mate_plies > 0 else -value
-    if score_cp is None:
-        return None
-    return max(-NEAR, min(NEAR, score_cp))
-
-
 def worker(index, args, counter):
     names = [n.strip() for n in args.engines.split(",") if n.strip()]
     teacher = panel.open_engine(names[index % len(names)], args.hash)
@@ -154,7 +143,7 @@ def worker(index, args, counter):
                 while not board.is_game_over(claim_draw=True) and plies < args.max_plies:
                     info = teacher.analyse(board, limit)
                     relative = info["score"].relative
-                    value = label(relative.score(), relative.mate() and relative.mate() * 2)
+                    value = gen.ending_label(relative.score(), relative.mate() and relative.mate() * 2)
                     move = info.get("pv", [None])[0]
                     if move is None or move not in board.legal_moves:
                         break
