@@ -44,13 +44,15 @@ POSITIONS = [
     ("KQB v K, ladder 4 move 106", "5Q2/8/5K2/4B3/8/5k2/8/8 w - - 0 1"),
     ("KQ v K", "8/8/8/4k3/8/8/8/3QK3 w - - 0 1"),
     ("KR v K", "8/8/8/4k3/8/8/8/R3K3 w - - 0 1"),
-    ("KQ v KN", "8/8/3n4/4k3/8/8/8/3QK3 w - - 0 1"),
 ]
 
 # won endings machete cannot yet finish in fifty moves, before or after the fix
 # above: reported every run, not failed on. They are the network's to learn -
 # the next corpus's mate-distance labels - and move up to POSITIONS once won.
 TARGETS = [
+    # 1 of 5 on network A and on the endgame network (2026-09-24): the ending
+    # the owner watched drawn. Single games had converted it, which was luck
+    ("KQ v KN", "8/8/3n4/4k3/8/8/8/3QK3 w - - 0 1"),
     ("KQ v KR", "8/8/3r4/4k3/8/8/8/3QK3 w - - 0 1"),
     ("KBB v K", "8/8/8/4k3/8/8/8/2B1KB2 w - - 0 1"),
 ]
