@@ -1,6 +1,9 @@
 """A MilkDrop-style visualiser driven by a network while it trains.
 
-    python harness/nnue/trainviz.py data/train_eg.log --port 8790
+    python harness/nnue/trainviz.py "data/train_*.log" --port 8790
+
+Given a pattern, it follows whichever matching log was written to last, so one
+visualiser left running shows each training run in turn.
 
 Nothing on the screen is decoration for its own sake. Three things feed it:
 
@@ -17,6 +20,7 @@ network file. Click the page for full screen.
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -51,9 +55,22 @@ class Watch(object):
         self.net_stamp = None
         self.weights = b""
 
+    def current_log(self):
+        """The log itself, or the most recently written match of a pattern."""
+        matches = glob.glob(self.log)
+        return max(matches, key=os.path.getmtime) if matches else self.log
+
     def read_log(self):
+        path = self.current_log()
+        with self.lock:
+            if path != self.state.get("log"):
+                # a new run: its history is not the last one's
+                self.state.update({"log": path, "history": [], "validation": [], "epoch": 0,
+                                   "positions": 0, "total": 0, "loss": None, "rate": 0})
+                self.seen = None
+                self.net_path = None
         try:
-            with open(self.log, "rb") as handle:
+            with open(path, "rb") as handle:
                 handle.seek(0, os.SEEK_END)
                 size = handle.tell()
                 handle.seek(max(0, size - 200000))
@@ -134,7 +151,7 @@ class Watch(object):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("log", help="the trainer's log file")
+    parser.add_argument("log", help="the trainer's log file, or a pattern such as data/train_*.log")
     parser.add_argument("--epochs", type=int, default=14, help="how many the run was started with")
     parser.add_argument("--port", type=int, default=8790)
     args = parser.parse_args()
