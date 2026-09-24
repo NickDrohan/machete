@@ -186,9 +186,9 @@ def run_pairing(machete_path, opponent_path, games, movetime, max_plies, concurr
                          "each ranks its own first moves and replies, {:g} s a candidate; "
                          "a few minutes, once per opponent".format(seconds))
             lines[True] = self_book_module.openings(machete, "machete", opponent, opponent_name,
-                                                    first, replies, seconds, margin, cache)
+                                                    first, replies, seconds, margin, cache, (games + 1) // 2)
             lines[False] = self_book_module.openings(opponent, opponent_name, machete, "machete",
-                                                     first, replies, seconds, margin, cache)
+                                                     first, replies, seconds, margin, cache, (games + 1) // 2)
         except Exception as problem:
             errors.append("could not choose openings: {}: {}".format(type(problem).__name__, problem))
             return tally, errors

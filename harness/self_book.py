@@ -67,13 +67,24 @@ def choices(scores, count, margin):
     return [uci for uci, cp in scores[:count] if best - cp <= margin]
 
 
-def openings(white, white_name, black, black_name, first, replies, seconds, margin, cache_path):
-    """Two-move openings: White's own first moves, each with Black's own replies."""
+def openings(white, white_name, black, black_name, first, replies, seconds, margin, cache_path,
+             minimum=0):
+    """Two-move openings: White's own first moves, each with Black's own replies.
+
+    A selective engine can leave fewer than `minimum` - Koivisto allowed six
+    first moves, so 18 openings for 20 games and two played twice. Black then
+    gets more replies, one at a time, until there are enough or its own margin
+    allows no more. The rankings are cached, so asking again costs nothing.
+    """
     start = chess.Board()
-    result = []
-    for uci in choices(ranked(white, white_name, start, seconds, cache_path), first, margin):
-        board = start.copy()
-        board.push_uci(uci)
-        for reply in choices(ranked(black, black_name, board, seconds, cache_path), replies, margin):
-            result.append([chess.Move.from_uci(uci), chess.Move.from_uci(reply)])
-    return result
+    firsts = choices(ranked(white, white_name, start, seconds, cache_path), first, margin)
+    while True:
+        result = []
+        for uci in firsts:
+            board = start.copy()
+            board.push_uci(uci)
+            for reply in choices(ranked(black, black_name, board, seconds, cache_path), replies, margin):
+                result.append([chess.Move.from_uci(uci), chess.Move.from_uci(reply)])
+        if len(result) >= minimum or replies >= 20:
+            return result
+        replies += 1
