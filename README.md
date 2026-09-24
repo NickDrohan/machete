@@ -449,6 +449,33 @@ Elo above `balanced`, so knowing which positions are won matters far more than d
 finely near zero. A network that only ever saw a score within 150 of equal cannot tell +200 from
 +800, and has nothing to steer toward.
 
+### Leela's data, on our teachers' scale
+
+`harness/nnue/leela.py` reads the Leela Chess Zero training data Stockfish trains on, in
+binpack format (linrock's conversions on Hugging Face; Open Database License, so a published
+network trained on it must say so). The decoder follows nnue-pytorch's `binpack.h` and checks
+itself: every decoded move must be legal and every chunk consumed exactly, and a flipped bit in
+the move text is caught at once. Scores are not self-checking, so file integrity rests on the
+published SHA-256.
+
+Leela's centipawns are not ours. On the same positions our five teachers at 1,500 nodes give
+about 0.65 of Leela's score in the middle and far less at the top, where Leela's
+win-to-centipawn curve stretches decided positions to the clamp (10.3% of its positions, 2.4% of
+ours). Mixing labels of different provenance lost 159 Elo once already, so `--calibrate` maps
+Leela's scores through the teachers' own medians (`leela_scale.json`) rather than copying them.
+
+## Studying the strong engines
+
+| tool | what it answers |
+|---|---|
+| `harness/stable.py` | a clocked round robin of the strong engines; each move keeps its engine's own eval, and a machete observer's view of every position |
+| `harness/shadow.py` | where machete's view departs from theirs: move agreement, eval gaps by phase, whose eval predicts results, blind spots ranked by the games they come from |
+| `harness/audit.py` | machete's own mistakes, split into evaluation (data can fix) and search (depth finds it) |
+| `harness/missed.py` | wins machete had and let go, in drawn games |
+| `harness/conversion.py` | can it finish won endings; gates the stale-mate-claim bug in a replayed game |
+| `harness/divergence.py` | a narrow change measured where it acts: two builds on the same positions, Stockfish judging every disagreement |
+| `harness/nnue/trainviz.py` | a Tesla coil driven by a training run: GPU load, loss, and arcs shaped by the network's own weights |
+
 ## Deliberately not built
 
 No opening book, endgame tablebases or pondering. Gated on windows-x86_64 only.
