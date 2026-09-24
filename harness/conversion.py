@@ -13,10 +13,14 @@ Two checks. First, fixtures/unproven_mate.pgn - that game - is replayed from
 move 103 through one engine, and machete must never stop searching on a mate
 it has not searched to its length. A mate found shallower than its length is
 fine - checks extend - but ending the search there, with time left, is the bug.
-The old engine did it on 50 moves of that game, at depth 1 to 7. Second, each position below is played out as a game: machete with one engine
+The old engine did it on 50 moves of that game, at depth 1 to 7.
+
+Second, each position below is played out as a game: machete with one engine
 instance and no `ucinewgame` between moves, a Stockfish defender, a real
-fifty-move rule. Every position must end in mate, and the number of moves it
-took is printed so a slow conversion is visible before it becomes a draw.
+fifty-move rule. Each is played --trials times, because machete moves on a
+clock and one game is one sample; an ending passes if two thirds of its games
+end in mate. The length of every game is printed, so a slow conversion is
+visible before it becomes a draw.
 """
 
 import argparse
@@ -98,6 +102,8 @@ def main():
     parser.add_argument("--engine", default=engines.MACHETE)
     parser.add_argument("--net", default=os.path.join(os.path.dirname(HERE), "net", "machete.nnue"))
     parser.add_argument("--seconds", type=float, default=1.0, help="machete's time per move")
+    parser.add_argument("--trials", type=int, default=3,
+                        help="games per ending; an ending passes if at least two thirds are mated")
     parser.add_argument("--defender-nodes", type=int, default=200000)
     args = parser.parse_args()
 
@@ -112,14 +118,22 @@ def main():
               "every mate claim searched to its length" if not claims else
               "FAIL, {} unproven mate claims, first {}".format(len(claims), claims[0])))
         failed += 1 if claims else 0
+        # each ending is played --trials times: machete moves on a clock, so
+        # one game is one draw from a distribution - network A converted
+        # KQ v KN in 18, 35 and 52 moves on three runs of the same build
+        need = (2 * args.trials + 2) // 3
         for name, fen, required in [p + (True,) for p in POSITIONS] + [p + (False,) for p in TARGETS]:
-            board = play_out(ours, defender, fen, args.seconds, args.defender_nodes)
-            mated = board.is_checkmate() and board.turn == chess.BLACK
-            moves = (board.ply() + 1) // 2
-            failed += 0 if mated or not required else 1
-            print("{:<28} {:<7} in {:>3} moves{}".format(
-                name, "mate" if mated else ("FAIL" if required else "not yet"), moves,
-                "" if mated else "  ({}; {})".format(board.result(claim_draw=True), board.fen())))
+            lengths = []
+            for _ in range(args.trials):
+                board = play_out(ours, defender, fen, args.seconds, args.defender_nodes)
+                mated = board.is_checkmate() and board.turn == chess.BLACK
+                lengths.append((board.ply() + 1) // 2 if mated else None)
+            won = sum(1 for n in lengths if n is not None)
+            verdict = "ok" if won >= need else ("FAIL" if required else "not yet")
+            failed += 1 if required and won < need else 0
+            print("{:<28} {:<7} {}/{} mated   moves {}".format(
+                name, verdict, won, args.trials,
+                " ".join(str(n) if n is not None else "draw" for n in lengths)))
             sys.stdout.flush()
     finally:
         engines.shutdown(ours)
