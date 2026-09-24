@@ -35,10 +35,23 @@ nothing else (shown on nnue-pytorch's sample: one flip moved one score from
 -956 to -1085, every move still legal). Their integrity comes from the file:
 the sha256 its host publishes, checked after download, and zstd's own frame
 checksum.
+
+Leela's scores are not on our teachers' scale, and not by a constant factor.
+On the same 800 positions our five teachers at 1,500 nodes gave a median of
+0.61-0.71 of Leela's centipawns between half a pawn and four, but a least-
+squares slope of only 0.30-0.41: Leela maps its win expectation to centipawns
+through a curve that stretches decided positions enormously (10.3% of them
+reach our clamp, against 2.4% in our own corpus). The theoden corpus lost 159
+Elo on labels of inconsistent provenance, so these are mapped, not copied:
+--calibrate has the teachers score a sample, bins Leela's centipawns, and
+writes the teachers' median per bin to leela_scale.json; conversion
+interpolates through that table. Every label then says what our own teachers
+would have said about a position of that strength.
 """
 
 import argparse
 import itertools
+import json
 import multiprocessing
 import os
 import sys
@@ -49,6 +62,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import RECORD
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCALE_TABLE = os.path.join(HERE, "leela_scale.json")
 ENGINE_ID = 11           # our records' teacher id: 10 is theoden, 11 is Leela
 INTERNAL_PAWN = 208      # Stockfish internal units per pawn, as binpack.h converts them
 CLAMP = 10000
@@ -265,7 +280,24 @@ def read_exactly(stream, size):
     return b"".join(parts)
 
 
-def record(board, score, result):
+def leela_cp(score):
+    """Leela's score as centipawns, before mapping: binpack.h's own conversion."""
+    return max(-CLAMP, min(CLAMP, score * 100.0 / INTERNAL_PAWN))
+
+
+def load_scale():
+    with open(SCALE_TABLE) as handle:
+        table = json.load(handle)
+    return np.array([0.0] + table["leela"]), np.array([0.0] + table["teachers"])
+
+
+def mapped(cp, scale):
+    """What our teachers would say about a position Leela scores at cp."""
+    xs, ys = scale
+    return float(np.sign(cp) * np.interp(abs(cp), xs, ys))
+
+
+def record(board, score, result, scale):
     row = np.zeros(1, dtype=RECORD)[0]
     row["engine"] = ENGINE_ID
     row["stm"] = 0 if board.turn == chess.WHITE else 1
@@ -274,14 +306,15 @@ def record(board, score, result):
     for slot, (square, piece) in enumerate(items):
         row["pieces"][slot] = (0 if piece.color == chess.WHITE else 1) * 6 + piece.piece_type - 1
         row["squares"][slot] = square
-    row["score"] = max(-CLAMP, min(CLAMP, int(round(score * 100.0 / INTERNAL_PAWN))))
+    row["score"] = int(round(mapped(leela_cp(score), scale)))
     row["result"] = result + 1
     return row
 
 
 def convert_chunk(chunk):
     """One chunk as records, positions in check left out as our generator does."""
-    rows = [record(b, s, r) for b, _, s, r in games(chunk) if not b.is_check()]
+    scale = load_scale()
+    rows = [record(b, s, r, scale) for b, _, s, r in games(chunk) if not b.is_check()]
     return np.array(rows, dtype=RECORD).tobytes() if rows else b""
 
 
@@ -314,6 +347,71 @@ def check(path, limit):
         np.median(abs(s)) / 100, np.percentile(abs(s), 90) / 100, float((abs(s) > 400).mean())))
 
 
+def calibrate(path, count, nodes, every=50):
+    """Our teachers' median score for each band of Leela's, written to SCALE_TABLE.
+
+    Positions are taken every `every`th, not consecutively, so the sample spans
+    many games. Each teacher scores each position at `nodes` - the budget our
+    own corpus was labelled at - with a mate counted as the clamp, as gen.py
+    counts it. Bands are quantiles of Leela's centipawns, so each holds the
+    same number of positions.
+    """
+    sys.path.insert(0, os.path.dirname(HERE))           # harness/, for engine.py
+    import chess.engine
+    import panel
+    import engine as engines
+
+    boards, leela = [], []
+    seen = 0
+    for chunk in chunks(path):
+        for board, _, score, _ in games(chunk):
+            if board.is_check():
+                continue
+            seen += 1
+            if seen % every == 0:
+                boards.append(board.copy(stack=False))
+                leela.append(leela_cp(score))
+        if len(boards) >= count:
+            break
+    boards, leela = boards[:count], np.array(leela[:count])
+    teachers = ["Stockfish", "Berserk", "Alexandria", "Obsidian", "Caissa"]
+    said = np.zeros((len(teachers), len(boards)))
+    for t, name in enumerate(teachers):
+        e = panel.open_engine(name, 16)
+        try:
+            for i, board in enumerate(boards):
+                s = e.analyse(board, chess.engine.Limit(nodes=nodes))["score"].pov(board.turn)
+                said[t, i] = (CLAMP if s.mate() > 0 else -CLAMP) if s.is_mate() else max(-CLAMP, min(CLAMP, s.score()))
+        finally:
+            engines.shutdown(e)
+        print("{:<11} scored {} positions".format(name, len(boards)))
+        sys.stdout.flush()
+    pooled = np.median(said, axis=0)                    # the teachers' consensus per position
+    size = np.abs(leela)
+    agree = pooled * np.sign(leela)                     # the teachers, on Leela's side of zero
+    # quantile bands to the 85th percentile; above that, fixed bands, because
+    # a tenth of Leela's positions sit at the clamp and one quantile band from
+    # four pawns to the clamp would interpolate +10 pawns to about +2
+    body = np.quantile(size, np.linspace(0, 0.85, 21))
+    tail = [x for x in (400.0, 700.0, 1200.0, 2500.0, 6000.0, CLAMP - 1, CLAMP) if x > body[-1]]
+    edges = np.unique(np.concatenate([body, tail]))
+    xs, ys = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        inside = (size >= lo) & (size <= hi)
+        if inside.sum() >= 20:
+            xs.append(float(np.median(size[inside])))
+            ys.append(float(np.median(agree[inside])))
+    ys = list(np.maximum.accumulate(np.maximum(ys, 0.0)))   # monotone: stronger stays stronger
+    with open(SCALE_TABLE, "w") as handle:
+        json.dump({"leela": xs, "teachers": ys, "teachers_used": teachers, "nodes": nodes,
+                   "positions": len(boards), "source": os.path.basename(path)}, handle, indent=1)
+    print()
+    print("Leela cp -> our teachers' cp, {} positions:".format(len(boards)))
+    for x, y in zip(xs, ys):
+        print("  {:>7.0f} -> {:>7.0f}".format(x, y))
+    print("written to", SCALE_TABLE)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binpack")
@@ -321,8 +419,15 @@ def main():
     parser.add_argument("--out", default="")
     parser.add_argument("--positions", type=int, default=60000000)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--stride", type=int, default=1, help="convert every stride-th chunk")
+    parser.add_argument("--calibrate", type=int, default=0,
+                        help="have our teachers score this many positions and write the scale table")
+    parser.add_argument("--nodes", type=int, default=1500, help="the teachers' budget when calibrating")
     args = parser.parse_args()
 
+    if args.calibrate:
+        calibrate(args.binpack, args.calibrate, args.nodes)
+        return 0
     if args.check:
         check(args.binpack, args.check)
         return 0
@@ -332,7 +437,9 @@ def main():
     # batches, not pool.imap: imap's feeder thread reads its whole input as fast
     # as it can, which here would be the whole decompressed file, into memory
     written = 0
-    source = chunks(args.binpack)
+    # every stride-th chunk, so a sample spans the whole file - a month of
+    # Leela's games - rather than its first few days
+    source = itertools.islice(chunks(args.binpack), 0, None, args.stride)
     with open(args.out, "wb") as out, multiprocessing.Pool(args.workers) as pool:
         while written < args.positions:
             batch = list(itertools.islice(source, args.workers * 2))
