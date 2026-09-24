@@ -472,7 +472,7 @@ Leela's scores through the teachers' own medians (`leela_scale.json`) rather tha
 | `harness/shadow.py` | where machete's view departs from theirs: move agreement, eval gaps by phase, whose eval predicts results, blind spots ranked by the games they come from |
 | `harness/audit.py` | machete's own mistakes, split into evaluation (data can fix) and search (depth finds it) |
 | `harness/missed.py` | wins machete had and let go, in drawn games |
-| `harness/conversion.py` | can it finish won endings; gates the stale-mate-claim bug in a replayed game |
+| `harness/conversion.py` | can it finish won endings; and replays the game where machete stopped on an unproven mate |
 | `harness/divergence.py` | a narrow change measured where it acts: two builds on the same positions, Stockfish judging every disagreement |
 | `harness/nnue/trainviz.py` | a Tesla coil driven by a training run: GPU load, loss, and arcs shaped by the network's own weights |
 
