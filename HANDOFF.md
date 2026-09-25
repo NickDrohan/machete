@@ -6,24 +6,39 @@ actually open.
 
 ## The boundary
 
-**Yours — everything that plays chess.** `src/*.mach` (4,569 lines),
-`check.sh`, `fixtures/`. It compiles to one 218 KB binary that speaks UCI and
-needs nothing else at runtime. Arena loads it directly.
+**Yours — everything written in Mach.** `src/*.mach` (19 files, 5,458 lines),
+`check.sh`, `fixtures/`. Two executables from one `mach.toml`:
 
-**Not yours unless you want it — everything that measures.** `harness/*.py`
-(4,845 lines): match drivers, the rating ladder, the tournament, the live
-board, the training-data generator, the PyTorch trainer. Python never gets a
-vote on a move. During a running tournament the split measures 83% engine,
-17% harness.
+- `machete` (220 KB, the default artifact) plays chess. It speaks UCI and needs
+  nothing else at runtime; Arena loads it directly.
+- `binpack` (171 KB, `src/tools/binpack.mach` over `src/binpack.mach`) decodes
+  Leela Chess Zero's training data from Stockfish's binpack format into our
+  training records, reusing the engine's own board and move generation. Its
+  records are byte-identical to the Python reference, `harness/nnue/leela.py`,
+  and it is 39x faster.
+
+**Not yours unless you want it — everything that measures.** `harness/**/*.py`
+(7,936 lines): match drivers, the rating ladder, the stable round robin and
+its analysis, the training-data generator, the PyTorch trainer. Python never
+gets a vote on a move. During a running tournament the split measures 83%
+engine, 17% harness.
 
 The test for whether a change belongs on your side: delete `harness/` and the
 engine still plays chess. Delete `src/` and there is nothing left to test.
+
+**The portfolio exists to exercise Mach**, so moving Python work into Mach is
+welcome, not scope creep - the binpack decoder was the first. What each port
+teaches about the language goes in [MACH_FINDINGS.md](../../MACH_FINDINGS.md)
+at the portfolio root, and from there upstream (the first: zstd,
+briar-systems/mach-std#913). The next candidate is the match runner - engines
+on pipes, concurrent games, real clocks - which would work `std.process` and
+`std.sync` hard and run every SPRT from then on.
 
 ## House rules
 
 These are not style preferences. They came from being wrong.
 
-**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 18.
+**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 27.
 A new one is not finished until it has been made to fail on purpose and the
 failure recorded in the commit message. Two gates in this repo were green for
 days while being structurally incapable of failing - one held a stale node
@@ -47,14 +62,19 @@ and put every nps figure 20% low.
 
 No type inference, no `else` (use `or`), no `while` (use `for`), no compound
 assignment. `?x` is address-of, `@p` is dereference, `::` is a value cast,
-`:~` is a bitwise reinterpret. Arrays take constant expressions. `sel` guards
-tags. **An unreferenced module is not compiled**, which is a real trap: a file
-can be broken and silent.
+`:~` is a bitwise reinterpret. Arrays take constant expressions. Tagged values
+(`res`, `opt`, `err`) are read with `sel` guards. **An unreferenced module is
+not compiled**, which is a real trap: a file can be broken and silent.
 
-Two std limitations shaped code here: `i16x8` multiply is one instruction but
-there is no packed 32-bit multiply (#3739) and no vector shifts (#3740). The
-NNUE forward pass works around both by multiplying in `i16x8` and widening the
-products by masking - see `src/nnue.mach`.
+**Read the language skill from upstream**, `doc/skills/mach/SKILL.md` in
+briar-systems/mach, not from a local clone of the compiler repo: one here was
+three months stale, still calling tags unsupported, and nearly produced a false
+bug report. Working code in `src/` is the other reliable reference.
+
+The NNUE forward pass multiplies in `i16x8` and widens the products with a
+vector literal of extended lanes (`i32x4{product[0]::i32, ...}`), which mach
+5.11 packs (#3738). The three codegen issues it once had to work around -
+#3738, #3739 (32-bit multiply), #3740 (vector shifts) - are all closed.
 
 ## What is actually open
 
@@ -83,19 +103,33 @@ futility and futility used to evaluate the same position separately. The bench
 node count is unchanged by it, so the tree searched is identical and the
 change is a pure saving.
 
-**Won endgames are not converted, and there is no endgame knowledge at all.**
-Over 1,884 self-play games, 80 ended drawn with one side a rook or more ahead.
-Reproduced: KQ v K mates in 15 plies, but **KQ v KN and KBB v K both draw by
-the fifty-move rule**. It is not a search bug - from KQ v K at depth 18 it
-finds mate in 9 - it is that nothing in the evaluation rewards driving a king
-toward a corner, so a win needing a plan rather than a capture has no gradient
-to follow. `eval.mach` has no corner, edge or king-proximity term and no
-mate-distance pruning, and with a network loaded the classical evaluation is
-not consulted anyway. The harness half of the fix (endgame data, which the
-generator's adjudication currently excludes by construction) is being handled
-on the Python side. Roughly 4.2% of games are at stake.
+**A search bug that drew won endings is fixed** (2026-09-24, `think()` in
+`src/search.mach`). Iterative deepening stopped on any mate score, including
+one read back from the transposition table at depth 1, then replayed the
+table's move: it drew queen and bishop against a bare king by the fifty-move
+rule while reporting mate in 19-30. It now stops only once the mate is
+searched to its length. `harness/conversion.py` replays that game as a gate,
+and `harness/divergence.py` measured the fix where it acts (132 differing
+moves in 40,000 positions: 2 better, 0 worse).
 
-**Not built yet:** singular extensions, staged move generation.
+**Hard won endings still convert only sometimes.** Five games each, 1 s a
+move against Stockfish: KQ v KN 2/5, KQ v KR 1/5, KBB v K 4/5 (easy mates
+5/5). That is the evaluation, not the search - nothing in it rewards driving
+a king to a corner - and it is being fixed with data on the Python side
+(`endgames.py`, and the new generator's mate-distance labels). `eval.mach` is
+only the fallback when no network is loaded.
+
+**Search, next.** Against Koivisto, half the games turned on a search mistake
+(depth would have found the move), not an evaluation one. Not built yet:
+singular extensions, correction history, capture history, staged move
+generation.
+
+**A like-for-like speed comparison with C++.** Stockfish's perft is 12x
+machete's, but it counts the last ply's legal moves without making them, using
+a pin-aware generator; machete makes, checks and unmakes every leaf. A legal
+generator with bulk counting would make the engine faster and give the Mach
+team a real Mach-against-C++ number. Against pure Python, Mach is 66-108x on
+perft.
 
 **Architecture, untested:** `HIDDEN = 256` has never been varied, so it is
 possible every data experiment is bounded by the architecture rather than the
@@ -110,13 +144,19 @@ the binary.
 ## Running it
 
 ```bash
-bash check.sh                      # 18 gates
+bash check.sh                      # 27 gates
 bash ../../scripts/check.sh        # every product's gates
 
-mach build . --profile release     # build
-mach run   . --profile release -- bench    # run the built artifact
+mach build . --profile release     # build both executables
+mach run   . --profile release -- bench    # run the built engine
+mach test  .                       # the engine's inline tests
+mach test  . --bin binpack         # the decoder's
 mach check .                       # type-check without building
 ```
+
+The decoder reads uncompressed binpack; `python harness/nnue/leela.py
+FILE.binpack.zst --decompress FILE.binpack` makes the copy, since std has no
+zstd yet (mach-std#913).
 
 `mach run` resolves the built artifact from the manifest, so there is no reason
 to type `out/<target>/<profile>/bin/machete.exe` by hand - which most of this
