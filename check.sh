@@ -137,4 +137,12 @@ gate "binpack decoder refuses a corrupted chunk" 2 bash -c '
     "$1" check "$3" 100000000' _ \
     "$binpack" "$here/fixtures/leela_chunk.binpack" "$work/corrupt.binpack"
 
+# Data generation: a teacher that never answers a search must cost one game,
+# not a shard. A stand-in teacher goes silent mid-game; the worker has to kill
+# it, restart it, drop that game and record the position it hung on.
+if [[ -n "$python" ]]; then
+    gate "gen.py restarts a teacher that hangs and throws its game away" 0 \
+        "$python" "$here/harness/nnue/hang.py"
+fi
+
 gates_done
