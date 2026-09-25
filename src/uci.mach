@@ -201,11 +201,44 @@ fun parse_go(t: *Tokens) {
 }
 
 # read commands until quit or end of input
-pub fun loop() i64 {
+# the network found next to the executable, reported as EvalFile's default
+var DEFAULT_NET: [512]u8;
+
+# load machete.nnue from the executable's own folder, as a GUI launches it:
+# without this an engine installed in Arena would play on the hand-written
+# evaluation unless its user found the EvalFile option. Silent, because a GUI
+# may not expect output before its first command; `uci` reports the result.
+fun load_default_net(exe: str) {
+    val name: str = "machete.nnue";
+    var cut: i64 = 0;
+    var i:   i64 = 0;
+    for (exe[i] != 0 && i < 400) {
+        if (exe[i] == '\\' || exe[i] == '/') { cut = i + 1; }
+        i = i + 1;
+    }
+    i = 0;
+    for (i < cut) {
+        DEFAULT_NET[i] = exe[i];
+        i = i + 1;
+    }
+    var j: i64 = 0;
+    for (name[j] != 0) {
+        DEFAULT_NET[cut + j] = name[j];
+        j = j + 1;
+    }
+    DEFAULT_NET[cut + j] = 0;
+    if (!nn.load(?DEFAULT_NET[0])) { DEFAULT_NET[0] = 0; }
+}
+
+# loop: speak UCI on stdin/stdout until told to quit
+# ---
+# exe: the executable's path (argv[0]); its folder is searched for machete.nnue
+pub fun loop(exe: str) i64 {
     pos.init();
     tt.clear();
     pos.set_fen(?GAME, pos.START_FEN);
     search.reset(?ENGINE);
+    load_default_net(exe);
 
     var line: [8192]u8;
     var t:    Tokens;
@@ -226,7 +259,12 @@ pub fun loop() i64 {
             print.printlnf("option name Hash type spin default {} min {} max {}",
                 tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
-            print.println("option name EvalFile type string default <empty>");
+            if (DEFAULT_NET[0] != 0) {
+                print.printlnf("option name EvalFile type string default {}", ?DEFAULT_NET[0]);
+            }
+            or {
+                print.println("option name EvalFile type string default <empty>");
+            }
             print.println("uciok");
         }
         or (str_equals(command, "isready")) {

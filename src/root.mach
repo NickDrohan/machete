@@ -243,7 +243,7 @@ fun nnue_of(argc: i64, argv: **u8) i64 {
 #[symbol("main")]
 fun main(argc: i64, argv: **u8) i64 {
     pos.init();
-    if (argc < 2) { ret uci.loop(); }
+    if (argc < 2) { ret uci.loop(argv[0]); }
     val command: str = argv[1];
     if (str_equals(command, "perft"))  { ret counting(argc, argv, 0); }
     if (str_equals(command, "divide")) { ret counting(argc, argv, 1); }

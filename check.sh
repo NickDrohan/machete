@@ -102,6 +102,21 @@ if [[ -n "$python" ]]; then
         "$python" "$here/harness/match.py" "$release" --games 6 --movetime 30 --max-plies 160
 fi
 
+# A GUI starts the engine with no options: it must find machete.nnue in its own
+# folder, or an installed engine plays on the hand-written evaluation unless
+# its user finds EvalFile. Both ways round: beside the network it must load
+# it, and alone it must say so rather than claim one.
+mkdir -p "$work/installed"
+cp "$release" "$work/installed/machete.exe"
+cp "$here/net/machete.nnue" "$work/installed/machete.nnue"
+gate "loads the network beside the executable, as a GUI starts it" 0 bash -c '
+    printf "uci\nquit\n" | "$1" | grep -q "option name EvalFile type string default .*machete.nnue"' _ \
+    "$work/installed/machete.exe"
+rm "$work/installed/machete.nnue"
+gate "reports no network when there is none beside it" 0 bash -c '
+    printf "uci\nquit\n" | "$1" | grep -q "option name EvalFile type string default <empty>"' _ \
+    "$work/installed/machete.exe"
+
 # The binpack decoder (src/binpack.mach) against its Python reference. The
 # fixture is the first chunk of linrock's test80-2023-11-nov-2tb7p.min-v2
 # (Leela Chess Zero training data, Open Database License): 451,559 positions.
