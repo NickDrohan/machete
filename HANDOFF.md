@@ -28,11 +28,12 @@ engine, 17% harness.
 The test for whether a change belongs on your side: delete `harness/` and the
 engine still plays chess. Delete `src/` and there is nothing left to test.
 
-**The portfolio exists to exercise Mach**, so moving Python work into Mach is
+**machete exists to exercise Mach**, so moving Python work into Mach is
 welcome, not scope creep - the binpack decoder was the first. What each port
-teaches about the language goes in [MACH_FINDINGS.md](../../MACH_FINDINGS.md)
-at the portfolio root, and from there upstream (the first: zstd,
-briar-systems/mach-std#913). The next candidate is the match runner - engines
+teaches about the language goes in [MACH_FINDINGS.md](MACH_FINDINGS.md), and
+from there upstream (the first: zstd, briar-systems/mach-std#913). machete
+grew up as `products/machete` in the private mach-portfolio repository and
+moved here, history and all, on 2026-09-25 (#1). The next candidate is the match runner - engines
 on pipes, concurrent games, real clocks - which would work `std.process` and
 `std.sync` hard and run every SPRT from then on.
 
@@ -147,8 +148,7 @@ and `#[embed]` would fold it into the binary so a release is one file.
 ## Running it
 
 ```bash
-bash check.sh                      # 29 gates
-bash ../../scripts/check.sh        # every product's gates
+bash check.sh                      # 29 gates; MACH=<path> to use a particular compiler
 
 mach build . --profile release     # build both executables
 mach run   . --profile release -- bench    # run the built engine
@@ -174,32 +174,26 @@ exit code is the one that matters.
 
 ## Releases
 
-**machete 0.1** is tagged `machete-v0.1` (commit 20a6381) and published as a
-GitHub release on this repository, which is private: collaborators can
-download it, anyone else needs the zip sent to them. The release is network A
-(md5 `b9f0183b`), about 3100-3200 on the CCRL 40/15 scale at 3+2 on one
-thread (ladder 4: Spike 1.4 and Rybka 2.3.2a, 40 games each).
+**machete 0.1** is network A (md5 `b9f0183b`), about 3100-3200 on the CCRL
+40/15 scale at 3+2 on one thread (ladder 4: Spike 1.4 and Rybka 2.3.2a, 40
+games each). It was first released from mach-portfolio as `machete-v0.1`;
+here it is `v0.1.0`.
 
-A release is two files and two documents, all in `release/`:
+Releases follow the template's flow (see *Releases* in the README): set
+`version` in `mach.toml`, merge `dev` into `main`, push a `vX.Y.Z` tag, and
+`.github/workflows/cd.yml` publishes a GitHub release with every executable
+for every target. Two things it does not do yet, so a release is finished by
+hand:
 
-| file | from |
-|---|---|
-| `machete.exe` | `out/windows-x86_64/release/bin/`, after `bash check.sh` passes |
-| `machete.nnue` | `net/machete.nnue` - the promoted network |
-| `README.txt` | `release/README.txt`: Arena setup, options, strength, credits |
-| `SHA256SUMS.txt` | `sha256sum machete.exe machete.nnue` |
+- **attach the network.** `net/machete.nnue` must sit beside `machete.exe`;
+  the engine loads it from its own folder. `#[embed]` would end this step.
+- **the release page.** `release/notes-X.Y.md` replaces the generated notes
+  (`gh release edit vX.Y.Z --notes-file ...`), and `release/README.txt` goes
+  in the Windows download. Check every number in both against the code: 0.1's
+  notes caught a wrong thread limit and hash size.
 
-`release/notes-0.1.md` is the GitHub release page. To cut the next one: update
-both documents (strength, options, what changed - and check every number
-against the code, as 0.1's notes caught a wrong thread limit and hash size),
-build and gate, assemble and zip the four files, tag `machete-vX.Y`, and
-`gh release create machete-vX.Y ZIP SHA256SUMS.txt --notes-file
-release/notes-X.Y.md`. The engine's UCI name is set in `src/uci.mach`
-(`id name machete 0.1`); bump it with the tag.
-
-Open before sharing more widely: there is **no licence**, so recipients have
-no stated right to redistribute, and the UCI author field reads
-`mach-portfolio`.
+The engine's UCI name is set in `src/uci.mach` (`id name machete 0.1`); bump
+it with the version. Its `id author` still reads `mach-portfolio`.
 
 ## Python
 

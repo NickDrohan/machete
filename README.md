@@ -1,14 +1,16 @@
 # machete
 
-[![release](https://img.shields.io/badge/release-machete%200.1-2ea44f?style=for-the-badge)](https://github.com/NickDrohan/mach-portfolio/releases/tag/machete-v0.1)
-[![download](https://img.shields.io/badge/download-windows%20x86--64-0078D6?style=for-the-badge&logo=windows)](https://github.com/NickDrohan/mach-portfolio/releases/download/machete-v0.1/machete-0.1-windows-x86_64.zip)
+[![release](https://img.shields.io/github/v/release/NickDrohan/machete?style=for-the-badge&color=2ea44f)](https://github.com/NickDrohan/machete/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/NickDrohan/machete/ci.yml?branch=dev&style=for-the-badge&label=CI)](https://github.com/NickDrohan/machete/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/NickDrohan/machete?style=for-the-badge)](LICENSE)
 
 A chess engine in Mach, named for what it does to a variation tree. It speaks UCI, so it plays in any chess GUI and against the models in `llmchess`.
 **Status: playing. Move generation, search and the UCI protocol are done and gated.**
 
 ```bash
-scripts/mach build products/machete --profile release
-out=products/machete/out/windows-x86_64/release/bin/machete.exe
+mach dep pull .                       # fetch the pinned standard library
+mach build . --profile release
+out=out/windows-x86_64/release/bin/machete.exe
 
 $out                                  # UCI mode: speak the protocol on stdin/stdout
 $out smp 8 3000 <fen...>              # search with 8 threads for 3 seconds
@@ -472,7 +474,7 @@ engine's own move generation - a binpack move is an index into exactly the desti
 movegen computes - and writes records byte-identical to `leela.py`'s, 39x faster (2,000,000
 positions in 14.6 s against 9 min 26 s), which `check.sh` gates. It reads uncompressed
 binpack, since std has no zstd (`leela.py --decompress` makes the copy). What the port taught
-about Mach is in [MACH_FINDINGS.md](../../MACH_FINDINGS.md).
+about Mach is in [MACH_FINDINGS.md](MACH_FINDINGS.md).
 
 Leela's centipawns are not ours. On the same positions our five teachers at 1,500 nodes give
 about 0.65 of Leela's score in the middle and far less at the top, where Leela's
