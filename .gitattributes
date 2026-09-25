@@ -1,0 +1,9 @@
+# text files are LF everywhere: the gates compare fixture text byte for byte,
+# and a checkout with CRLF made "counted 4085603, published 4085603" a failure
+* text=auto eol=lf
+
+# binary fixtures and the network, never converted
+*.binpack binary
+*.nnue binary
+*.bin binary
+*.exe binary
