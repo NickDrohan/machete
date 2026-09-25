@@ -18,6 +18,7 @@ goes, which is not the same distribution a teacher's self-play visits.
 """
 
 import json
+import os
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -138,6 +139,10 @@ def save_game(path, board, white_name, black_name, event, outcome,
     annotate(game, len(board.move_stack), evals, eval_tag)
     annotate(game, len(board.move_stack), notes, lambda note: note)
     with PGN_LOCK:
+        # a fresh clone has no data/: the first saved game used to kill its worker
+        folder = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
         with open(path, "a") as handle:
             handle.write(str(game) + chr(10) + chr(10))
 
