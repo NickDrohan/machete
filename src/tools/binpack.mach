@@ -26,11 +26,11 @@ use std.types.size.usize;
 use std.types.string.str;
 use std.types.string.str_equals;
 
-use A:        std.allocator;
-use fixed:    std.allocator.fixed;
+use A: std.allocator;
+use std.allocator.fixed;
+use std.data.json;
 use fs:       std.filesystem;
 use io_error: std.io.error;
-use json:     std.data.json;
 
 use machete.binpack;
 use machete.binpack.Scale;
@@ -38,28 +38,28 @@ use machete.move.Move;
 use pos: machete.position;
 use machete.position.Position;
 
-val CHUNK_CAP:  i64 = 16777216;    # binpack's suggested chunk is 1 MiB; this allows 16
-val OUT_CAP:    i64 = 4194240;     # records batched per write: a multiple of 70 bytes
+val CHUNK_CAP:  i64 = 16777216; # binpack's suggested chunk is 1 MiB; this allows 16
+val OUT_CAP:    i64 = 4194240; # records batched per write: a multiple of 70 bytes
 val EXIT_USAGE: i64 = 1;
 val EXIT_FAIL:  i64 = 2;
 
-var CHUNK:   [16777216]u8;
-var OUT:     [4194240]u8;
-var POS:     Position;
-var SCALE:   Scale;
-var JSON_IN: [65536]u8;
+var CHUNK:    [16777216]u8;
+var OUT:      [4194240]u8;
+var POS:      Position;
+var SCALE:    Scale;
+var JSON_IN:  [65536]u8;
 var JSON_MEM: [1048576]u8;
 
 # what the visitors keep between positions
 # ---
-# out:       the output file, when converting
-# used:      bytes of OUT waiting to be written
-# written:   records written
-# limit:     positions wanted
-# seen:      positions visited
-# in_check:  of those, in check
-# results:   of those, won/drawn/lost from the side to move
-# failed:    set when a write failed
+# out:      the output file, when converting
+# used:     bytes of OUT waiting to be written
+# written:  records written
+# limit:    positions wanted
+# seen:     positions visited
+# in_check: of those, in check
+# results:  of those, won/drawn/lost from the side to move
+# failed:   set when a write failed
 rec Run {
     out:      fs.File;
     used:     i64;
@@ -102,13 +102,13 @@ fun write_all(f: fs.File, buf: *u8, len: i64) bool {
 }
 
 fun flush(r: *Run) {
-    if (r.used == 0) { ret; }
+    if (r.used == 0)                        { ret; }
     if (!write_all(r.out, ?OUT[0], r.used)) { r.failed = true; }
     r.used = 0;
 }
 
 fun tally(r: *Run, p: *Position, result: i64) {
-    r.seen = r.seen + 1;
+    r.seen                = r.seen + 1;
     r.results[result + 1] = r.results[result + 1] + 1;
     if (pos.in_check(p)) { r.in_check = r.in_check + 1; }
 }
@@ -129,7 +129,7 @@ fun visit_convert(ctx: ptr, p: *Position, m: Move, score: i64, result: i64) i64 
     r.used    = r.used + binpack.RECORD_SIZE;
     r.written = r.written + 1;
     if (r.used + binpack.RECORD_SIZE > OUT_CAP) { flush(r); }
-    if (r.written >= r.limit) { ret 1; }
+    if (r.written >= r.limit)                   { ret 1; }
     ret 0;
 }
 
@@ -148,9 +148,9 @@ fun each_chunk(path: str, stride: i64, visit: binpack.Visit, r: *Run) i64 {
         print.eprintlnf("cannot open {}", path);
         ret EXIT_FAIL;
     }
-    var f: fs.File = opened.ok;
-    var status: i64 = binpack.OK;
-    var index:  i64 = 0;
+    var f:      fs.File = opened.ok;
+    var status: i64     = binpack.OK;
+    var index:  i64     = 0;
     var header: [8]u8;
     for (status == binpack.OK) {
         if (!read_exact(f, ?header[0], 8)) { brk; }
@@ -198,14 +198,14 @@ fun number_of(v: *json.Value) f64 {
 fun load_scale(path: str) bool {
     val opened: res[fs.File, io_error.Error] = fs.open(path);
     if (sel opened.err) { ret false; }
-    var f: fs.File = opened.ok;
-    val got: res[usize, io_error.Error] = fs.read(f, ?JSON_IN[0], 65535);
-    val shut: err[io_error.Error] = fs.close(?f);
+    var f:    fs.File                    = opened.ok;
+    val got:  res[usize, io_error.Error] = fs.read(f, ?JSON_IN[0], 65535);
+    val shut: err[io_error.Error]        = fs.close(?f);
     if (sel got.err) { ret false; }
 
-    var a: A.Allocator;
+    var a:     A.Allocator;
     var state: fixed.FixedState;
-    val made: err[A.Error] = fixed.make(?a, ?state, ?JSON_MEM[0], 1048576);
+    val made:  err[A.Error] = fixed.make(?a, ?state, ?JSON_MEM[0], 1048576);
     if (sel made.err) { ret false; }
     val parsed: res[json.Value, json.JsonError] = json.parse(?JSON_IN[0], got.ok, ?a);
     if (sel parsed.err) { ret false; }
@@ -225,7 +225,7 @@ fun load_scale(path: str) bool {
         val x: opt[*json.Value] = json.value_get(leela.some, i);
         if (!sel x.some) { ret false; }
         val y: opt[*json.Value] = json.value_get(teachers.some, i);
-        if (!sel y.some) { ret false; }
+        if (!sel y.some)                                                      { ret false; }
         if (!binpack.scale_add(?SCALE, number_of(x.some), number_of(y.some))) { ret false; }
         i = i + 1;
     }

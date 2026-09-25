@@ -24,10 +24,10 @@ use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
 
-use nn: machete.nnue;
 use machete.clock;
 use mv: machete.move;
 use machete.move.Move;
+use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
 use machete.search;

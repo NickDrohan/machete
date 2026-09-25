@@ -1,10 +1,10 @@
-# What building these products says about Mach
+# What building machete says about Mach
 
-The portfolio exists to put Mach to real work and report what that work finds.
-Each entry names what was observed, the evidence, and whether it has gone
-upstream. Earlier findings live in the product READMEs (machete: the missing
-`popcnt`/`bsf`/`bsr` mnemonics, briar-systems/mach#3724, accepted; the SIMD
-widening results on #3736).
+machete exists partly to put Mach to real work and report what that work
+finds. Each entry names what was observed, the evidence, and whether it has
+gone upstream. Earlier findings live in the README: the missing
+`popcnt`/`bsf`/`bsr` mnemonics (briar-systems/mach#3724, accepted) and the
+SIMD widening results on #3736.
 
 ## 2026-09-24 - a binpack decoder in Mach (machete, `src/binpack.mach`)
 

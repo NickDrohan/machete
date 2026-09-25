@@ -20,10 +20,10 @@ use mv: machete.move;
 use machete.move.Move;
 use machete.movegen;
 use machete.movegen.MoveList;
+use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
 use machete.see;
-use nn: machete.nnue;
 use machete.tt;
 
 pub val INFINITE: i64 = 31000;
@@ -47,7 +47,7 @@ val NO_EVAL: i64 = 0 - 32000;
 # reduces almost nothing early and up to five plies for the fiftieth move at
 # depth 30. std has no natural log, so the table is built at startup with a
 # bit-by-bit log2, which costs microseconds once.
-var REDUCTION: [64][64]i64;
+var REDUCTION:   [64][64]i64;
 var table_ready: i64 = 0;
 
 fun log2_f64(x: f64) f64 {
@@ -92,7 +92,7 @@ pub fun init_tables() {
             }
             if (r < 0) { r = 0; }
             REDUCTION[depth][move] = r;
-            move = move + 1;
+            move                   = move + 1;
         }
         depth = depth + 1;
     }
@@ -144,26 +144,26 @@ pub rec Search {
     depth_reached: i64;
     quiet:         u8;
     # which accumulator stack this search owns; every thread needs its own
-    thread_id:     i64;
-    killers:       [64][2]Move;
-    history:       [12][64]i64;
+    thread_id: i64;
+    killers:   [64][2]Move;
+    history:   [12][64]i64;
     # the quiet move that refuted the same reply last time, indexed by the
     # piece the opponent just moved and where it landed
-    counter:       [12][64]Move;
-    played:        [64]Move;
-    mover:         [64]u8;
+    counter: [12][64]Move;
+    played:  [64]Move;
+    mover:   [64]u8;
     # each node's static evaluation, by ply, or NO_EVAL when it was in check
-    evals:         [64]i64;
-    pv:            [64][64]Move;
-    pv_len:        [64]i64;
+    evals:  [64]i64;
+    pv:     [64][64]Move;
+    pv_len: [64]i64;
 }
 
 pub fun reset(s: *Search) {
     s.nodes     = 0;
     s.thread_id = 0;
     s.stop      = 0;
-    s.deadline = 0;
-    s.best     = mv.NONE;
+    s.deadline  = 0;
+    s.best      = mv.NONE;
     var i: i64 = 0;
     for (i < MAX_PLY) {
         s.killers[i][0] = mv.NONE;
@@ -200,8 +200,8 @@ fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
     val piece: u8  = p.board[mv.from(m)];
     val to:    i64 = mv.to(m);
     var bonus: i64 = depth * depth;
-    if (bonus > 400)  { bonus = 400; }
-    if (!good)        { bonus = 0 - bonus; }
+    if (bonus > 400) { bonus = 400; }
+    if (!good)       { bonus = 0 - bonus; }
     var magnitude: i64 = bonus;
     if (magnitude < 0) { magnitude = 0 - magnitude; }
     val current: i64 = s.history[piece][to];
@@ -210,9 +210,9 @@ fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
 
 # the counter-move slot for whatever the opponent just played
 fun counter_slot(s: *Search, ply: i64) Move {
-    if (ply == 0)                 { ret mv.NONE; }
+    if (ply == 0) { ret mv.NONE; }
     val prev: Move = s.played[ply - 1];
-    if (prev == mv.NONE)          { ret mv.NONE; }
+    if (prev == mv.NONE) { ret mv.NONE; }
     ret s.counter[s.mover[ply - 1]][mv.to(prev)];
 }
 
@@ -270,8 +270,8 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
         if (gain >= 0) { ret 800000000 + gain * 100 + capture_score(p, m); }
         ret 50000000 + gain;
     }
-    if (m == s.killers[ply][0])   { ret 700000000; }
-    if (m == s.killers[ply][1])   { ret 600000000; }
+    if (m == s.killers[ply][0])    { ret 700000000; }
+    if (m == s.killers[ply][1])    { ret 600000000; }
     if (m == counter_slot(s, ply)) { ret 550000000; }
     ret s.history[p.board[mv.from(m)]][mv.to(m)];
 }
@@ -311,11 +311,11 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         tt_move   = entry.move;
         protected = entry.depth > 0;
         var known: i64 = entry.score;
-        if (known > MATE_FOUND)                           { known = known - ply; }
-        or (known < 0 - MATE_FOUND)                       { known = known + ply; }
-        if (entry.flag == tt.EXACT)                       { ret known; }
-        if (entry.flag == tt.LOWER && known >= beta)      { ret known; }
-        if (entry.flag == tt.UPPER && known <= alpha)     { ret known; }
+        if (known > MATE_FOUND)                       { known = known - ply; }
+        or (known < 0 - MATE_FOUND)                   { known = known + ply; }
+        if (entry.flag == tt.EXACT)                   { ret known; }
+        if (entry.flag == tt.LOWER && known >= beta)  { ret known; }
+        if (entry.flag == tt.UPPER && known <= alpha) { ret known; }
     }
 
     # A side in check may not stand pat - it is obliged to answer the check,
@@ -448,8 +448,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     or {
         static_eval  = eval.evaluate(p);
         s.evals[ply] = static_eval;
-        if (ply >= 2 && s.evals[ply - 2] != NO_EVAL)    { improving = static_eval > s.evals[ply - 2]; }
-        or (ply >= 4 && s.evals[ply - 4] != NO_EVAL)    { improving = static_eval > s.evals[ply - 4]; }
+        if (ply >= 2 && s.evals[ply - 2] != NO_EVAL) { improving = static_eval > s.evals[ply - 2]; }
+        or (ply >= 4 && s.evals[ply - 4] != NO_EVAL) { improving = static_eval > s.evals[ply - 4]; }
     }
 
     # reverse futility: if the position is already so far above beta that a
@@ -496,7 +496,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var legal:     i64  = 0;
     var flag:      u8   = tt.UPPER;
     var quiets:    [64]Move;
-    var quiet_n:   i64 = 0;
+    var quiet_n:   i64  = 0;
 
     # futility: near the horizon, a quiet move that cannot lift a losing
     # position to alpha is not worth a node. captures, promotions and checks
@@ -536,7 +536,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             i = i + 1;
             cnt;
         }
-        legal = legal + 1;
+        legal         = legal + 1;
         s.played[ply] = m;
         s.mover[ply]  = p.board[mv.to(m)];
         if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
@@ -570,12 +570,12 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (n > 63) { n = 63; }
                 reduction = REDUCTION[d][n];
                 # a position that is not improving is reduced a ply further
-                if (!improving)             { reduction = reduction + 1; }
+                if (!improving) { reduction = reduction + 1; }
                 # a principal variation node is where being wrong is expensive
-                if (is_pv)                  { reduction = reduction - 1; }
-                if (reduction < 0)          { reduction = 0; }
+                if (is_pv)         { reduction = reduction - 1; }
+                if (reduction < 0) { reduction = 0; }
                 # never reduce straight into quiescence: leave a ply to look
-                if (reduction > depth - 2)  { reduction = depth - 2; }
+                if (reduction > depth - 2) { reduction = depth - 2; }
             }
             score = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
             if (score > alpha && reduction > 0) {
@@ -760,8 +760,8 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         # stopping on it replayed the table's move for fifty moves and drew
         # queen and bishop against a bare king (ladder 4, Rybka game 20).
         var mate_plies: i64 = INFINITE;
-        if (score > MATE_FOUND)     { mate_plies = MATE - score; }
-        if (score < 0 - MATE_FOUND) { mate_plies = MATE + score; }
+        if (score > MATE_FOUND)                                            { mate_plies = MATE - score; }
+        if (score < 0 - MATE_FOUND)                                        { mate_plies = MATE + score; }
         if (mate_plies <= depth)                                           { brk; }
         if (s.deadline != 0 && clock.now_ms() + elapsed / 2 >= s.deadline) { brk; }
         depth = depth + 1;

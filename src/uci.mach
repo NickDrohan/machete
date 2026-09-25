@@ -25,11 +25,11 @@ use std.types.string.str_equals;
 use mv: machete.move;
 use machete.move.Move;
 use machete.movegen;
+use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
 use machete.search;
 use machete.smp;
-use nn: machete.nnue;
 use machete.tt;
 
 val LINE_CAP:   usize = 8192;
@@ -210,8 +210,8 @@ var DEFAULT_NET: [512]u8;
 # may not expect output before its first command; `uci` reports the result.
 fun load_default_net(exe: str) {
     val name: str = "machete.nnue";
-    var cut: i64 = 0;
-    var i:   i64 = 0;
+    var cut:  i64 = 0;
+    var i:    i64 = 0;
     for (exe[i] != 0 && i < 400) {
         if (exe[i] == '\\' || exe[i] == '/') { cut = i + 1; }
         i = i + 1;
@@ -219,12 +219,12 @@ fun load_default_net(exe: str) {
     i = 0;
     for (i < cut) {
         DEFAULT_NET[i] = exe[i];
-        i = i + 1;
+        i              = i + 1;
     }
     var j: i64 = 0;
     for (name[j] != 0) {
         DEFAULT_NET[cut + j] = name[j];
-        j = j + 1;
+        j                    = j + 1;
     }
     DEFAULT_NET[cut + j] = 0;
     if (!nn.load(?DEFAULT_NET[0])) { DEFAULT_NET[0] = 0; }

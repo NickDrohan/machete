@@ -16,10 +16,10 @@ use bb: machete.bitboard;
 use machete.magic;
 use mv: machete.move;
 use machete.move.Move;
-use nn: machete.nnue;
+use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
-use rng: machete.rng;
+use machete.rng;
 
 pub val MAX_MOVES: i64 = 256;
 
@@ -243,7 +243,7 @@ test "nnue: the incremental accumulator matches a fresh one, move by move" {
     # update cannot cancel out. no network file is needed: this checks the
     # bookkeeping in make/unmake, not any particular set of numbers.
     var r: rng.Rng = rng.seeded(0xD1B54A32D192ED03);
-    var i: i64 = 0;
+    var i: i64     = 0;
     for (i < nn.INPUTS * nn.HIDDEN) {
         nn.FEATURE_WEIGHTS[i] = (rng.below(?r, 601)::i64 - 300)::i16;
         i                     = i + 1;
@@ -302,6 +302,6 @@ test "nnue: the incremental accumulator matches a fresh one, move by move" {
     if (p.acc_top != 0)                                  { ret 7; }
     # four recorded changes is the ceiling nnue.mach argues for; this is the
     # argument being checked rather than believed
-    if (nn.OVERFLOW != 0)                                { ret 8; }
+    if (nn.OVERFLOW != 0) { ret 8; }
     ret 0;
 }

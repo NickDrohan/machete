@@ -77,8 +77,8 @@ pub rec Position {
     # the network's hidden layer for this position and its ancestors, or nil
     # when no network is attached. put/remove patch the top slot, so the
     # accumulator follows the board without knowing anything about moves.
-    accs:     *nn.Acc;
-    acc_top:  i64;
+    accs:    *nn.Acc;
+    acc_top: i64;
 }
 
 pub var Z_PIECE:  [12][64]u64;
