@@ -1,5 +1,8 @@
 # machete
 
+[![release](https://img.shields.io/badge/release-machete%200.1-2ea44f?style=for-the-badge)](https://github.com/NickDrohan/mach-portfolio/releases/tag/machete-v0.1)
+[![download](https://img.shields.io/badge/download-windows%20x86--64-0078D6?style=for-the-badge&logo=windows)](https://github.com/NickDrohan/mach-portfolio/releases/download/machete-v0.1/machete-0.1-windows-x86_64.zip)
+
 A chess engine in Mach, named for what it does to a variation tree. It speaks UCI, so it plays in any chess GUI and against the models in `llmchess`.
 **Status: playing. Move generation, search and the UCI protocol are done and gated.**
 
