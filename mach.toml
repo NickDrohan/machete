@@ -20,6 +20,15 @@ isa = "aarch64"
 os  = "linux"
 abi = "aapcs64"
 
+[target.darwin-x86_64]
+isa = "x86_64"
+os  = "darwin"
+abi = "sysv64"
+
+# darwin-aarch64 is left out until briar-systems/mach#3888: the 128 MB
+# transposition table puts dynamic call stubs out of a 26-bit branch's reach.
+# Apple silicon runs the darwin-x86_64 build under Rosetta.
+
 [artifact.machete]
 default = true
 kind = "bin"
