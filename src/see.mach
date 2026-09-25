@@ -1,0 +1,178 @@
+# static exchange evaluation: what a capture is worth once both sides have
+# finished recapturing on that square
+#
+# QxP looks like winning a pawn until you notice the pawn is defended. the swap
+# algorithm plays out the exchange with the least valuable attacker each time,
+# then walks the gain list backwards deciding at each step whether the side to
+# move would rather stop than continue.
+#
+# x-rays matter: removing a rook from the exchange can reveal the queen behind
+# it, so the attacker set is recomputed from sliders after every capture.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
+use machete.attacks;
+use bb: machete.bitboard;
+use machete.magic;
+use mv: machete.move;
+use machete.move.Move;
+use pos: machete.position;
+use machete.position.Position;
+
+# the king's value only has to exceed every other piece: it ends an exchange
+val VALUE: [6]i64 = [6]i64{100, 320, 330, 500, 900, 10000};
+
+pub fun piece_value(kind: u8) i64 {
+    ret VALUE[kind];
+}
+
+# every piece of either colour attacking sq, given an occupancy
+pub fun attackers_to(p: *Position, sq: i64, occ: u64) u64 {
+    var set: u64 = 0;
+    set = set | (attacks.PAWN[pos.WHITE][sq] & p.pieces[pos.code(pos.BLACK, pos.PAWN)]);
+    set = set | (attacks.PAWN[pos.BLACK][sq] & p.pieces[pos.code(pos.WHITE, pos.PAWN)]);
+    set = set | (attacks.KNIGHT[sq] & (p.pieces[pos.code(pos.WHITE, pos.KNIGHT)] | p.pieces[pos.code(pos.BLACK, pos.KNIGHT)]));
+    set = set | (attacks.KING[sq] & (p.pieces[pos.code(pos.WHITE, pos.KING)] | p.pieces[pos.code(pos.BLACK, pos.KING)]));
+    val diagonal: u64 = p.pieces[pos.code(pos.WHITE, pos.BISHOP)] | p.pieces[pos.code(pos.BLACK, pos.BISHOP)]
+        | p.pieces[pos.code(pos.WHITE, pos.QUEEN)] | p.pieces[pos.code(pos.BLACK, pos.QUEEN)];
+    val straight: u64 = p.pieces[pos.code(pos.WHITE, pos.ROOK)] | p.pieces[pos.code(pos.BLACK, pos.ROOK)]
+        | p.pieces[pos.code(pos.WHITE, pos.QUEEN)] | p.pieces[pos.code(pos.BLACK, pos.QUEEN)];
+    set = set | (magic.bishop(sq, occ) & diagonal);
+    set = set | (magic.rook(sq, occ) & straight);
+    ret set & occ;
+}
+
+# the cheapest piece of `side` in `set`, as a one-bit board, or zero
+fun least_valuable(p: *Position, set: u64, side: u8, kind_out: *u8) u64 {
+    var kind: u8 = pos.PAWN;
+    for (kind <= pos.KING) {
+        val found: u64 = set & p.pieces[pos.code(side, kind)];
+        if (found != 0) {
+            @kind_out = kind;
+            ret found & (0 - found);
+        }
+        kind = kind + 1;
+    }
+    ret 0;
+}
+
+# material the side to move wins by playing this capture, in centipawns
+#
+# a positive score means the capture wins material even if every recapture is
+# played; zero means it trades evenly.
+pub fun evaluate(p: *Position, m: Move) i64 {
+    val from: i64 = mv.from(m);
+    val to:   i64 = mv.to(m);
+    var gain: [32]i64;
+
+    var captured: i64 = 0;
+    var occ:      u64 = pos.all(p);
+    if (mv.flag(m) == mv.EP_CAPTURE) {
+        captured = VALUE[pos.PAWN];
+        var victim: i64 = to - 8;
+        if (p.side == pos.BLACK) { victim = to + 8; }
+        occ = occ ^ bb.bit(victim);
+    }
+    or (p.board[to] != pos.EMPTY) {
+        captured = VALUE[pos.kind_of(p.board[to])];
+    }
+
+    gain[0] = captured;
+    var on_square: i64 = VALUE[pos.kind_of(p.board[from])];
+    if (mv.is_promotion(m)) {
+        # the pawn leaves as the promoted piece, and the gain includes the swap
+        gain[0]   = gain[0] + VALUE[mv.promotion_type(m)] - VALUE[pos.PAWN];
+        on_square = VALUE[mv.promotion_type(m)];
+    }
+
+    occ = occ ^ bb.bit(from);
+    var set:   u64 = attackers_to(p, to, occ);
+    var side:  u8  = p.side ^ 1;
+    var depth: i64 = 0;
+
+    for {
+        depth = depth + 1;
+        if (depth >= 31) { brk; }
+        gain[depth] = on_square - gain[depth - 1];
+
+        var kind:     u8  = pos.PAWN;
+        val attacker: u64 = least_valuable(p, set, side, ?kind);
+        if (attacker == 0) { brk; }
+
+        on_square = VALUE[kind];
+        occ       = occ ^ attacker;
+        # a capture can uncover a slider behind the piece that just left
+        set  = attackers_to(p, to, occ);
+        side = side ^ 1;
+    }
+
+    # walk back: at each step the side to move stops if continuing is worse
+    depth = depth - 1;
+    for (depth > 0) {
+        if (gain[depth] > 0 - gain[depth - 1]) { gain[depth - 1] = 0 - gain[depth]; }
+        or                                     { gain[depth - 1] = gain[depth - 1]; }
+        depth = depth - 1;
+    }
+    ret gain[0];
+}
+
+# whether a capture does not lose material
+pub fun is_winning(p: *Position, m: Move) bool {
+    ret evaluate(p, m) >= 0;
+}
+
+fun see_of(fen: *u8, uci: *u8) i64 {
+    var p: Position;
+    if (!pos.set_fen(?p, fen)) { ret -99999; }
+    val m: Move = mate_parse(?p, uci);
+    if (m == mv.NONE) { ret -99999; }
+    ret evaluate(?p, m);
+}
+
+use machete.movegen;
+
+fun mate_parse(p: *Position, uci: *u8) Move {
+    ret movegen.parse_uci(p, uci);
+}
+
+# Every position below was checked with python-chess first, after two earlier
+# attempts used knights that did not defend the square I thought they did.
+
+test "see: a free pawn is worth a pawn" {
+    if (see_of("4k3/8/8/8/3p4/8/8/3RK3 w - - 0 1", "d1d4") != 100) { ret 1; }
+    ret 0;
+}
+
+test "see: taking a defended pawn with a rook loses the exchange" {
+    # the pawn on d4 is defended by a pawn on c5: RxP, PxR is 100 for 500
+    if (see_of("4k3/8/8/2p5/3p4/8/8/3RK3 w - - 0 1", "d1d4") != 100 - 500) { ret 1; }
+    # the same shape with a knight defender, and a rook that is worth more
+    if (see_of("4k3/8/5n2/3p4/8/8/3R4/4K3 w - - 0 1", "d2d5") != 100 - 500) { ret 2; }
+    ret 0;
+}
+
+test "see: a knight taking a defended pawn loses a knight for a pawn" {
+    if (see_of("4k3/5n2/8/4p3/8/5N2/8/4K3 w - - 0 1", "f3e5") != 100 - 320) { ret 1; }
+    ret 0;
+}
+
+test "see: an x-ray attacker behind the capturer is counted" {
+    # rook d2 takes d5, knight f6 recaptures, and the queen on d1 - which only
+    # sees d5 once the rook has left - takes the knight
+    val backed: i64 = see_of("4k3/8/5n2/3p4/8/8/3R4/3QK3 w - - 0 1", "d2d5");
+    if (backed != 100 - 500 + 320) { ret 1; }
+    ret 0;
+}
+
+test "see: winning captures are separated from losing ones" {
+    var p: Position;
+    if (!pos.set_fen(?p, "4k3/8/5n2/3p4/8/8/3R4/3QK3 w - - 0 1")) { ret 1; }
+    val losing: Move = movegen.parse_uci(?p, "d2d5");
+    if (is_winning(?p, losing))                               { ret 2; }
+    if (!pos.set_fen(?p, "4k3/8/8/8/3p4/8/8/3RK3 w - - 0 1")) { ret 3; }
+    val winning: Move = movegen.parse_uci(?p, "d1d4");
+    if (!is_winning(?p, winning)) { ret 4; }
+    ret 0;
+}

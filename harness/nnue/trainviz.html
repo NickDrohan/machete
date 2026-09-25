@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>machete training</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; cursor:pointer; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hud { position:fixed; left:18px; bottom:16px; color:#e8e6f0cc;
+         font:12px/1.55 "Cascadia Mono", Consolas, monospace; letter-spacing:.3px;
+         text-shadow:0 0 6px #000, 0 0 2px #000; pointer-events:none; white-space:pre; }
+  #hud b { color:#fff; font-weight:600; }
+  #legend { position:fixed; right:18px; bottom:16px; color:#e8e6f088; text-align:right;
+            font:11px/1.6 "Cascadia Mono", Consolas, monospace; pointer-events:none;
+            text-shadow:0 0 6px #000; white-space:pre; }
+  @media (max-width: 1100px) { #legend { display:none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">waiting for the trainer...</div>
+<div id="legend">arc shapes     the network's own weights, one neuron per bolt
+arcs · strikes GPU load · positions per second
+reach · jag    the loss: wild while high, tighter as it learns
+colour         violet while the loss falls, hotter while it rises
+core           GPU temperature      brightness   power draw      corona   epoch progress</div>
+
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 p;
+varying vec2 uv;
+void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }
+</script>
+
+<script id="warp" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 uv;
+uniform sampler2D prev, weights, wave;
+uniform vec2 res;
+uniform float t, loss, trend, rate, util, heat, power, epoch, frac, beat, haveWeights;
+
+float hash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+float noise(float x) {
+  float i = floor(x), f = fract(x);
+  return mix(hash(i), hash(i + 1.0), f * f * (3.0 - 2.0 * f)) - 0.5;
+}
+
+// the path of one bolt: a neuron's weights read outward as the displacement,
+// a little hash noise on top so an untrained network still crackles
+float bend(float r, float seed, float strike) {
+  float neuron = fract(seed * 0.618 + epoch * 0.137);
+  float d = 0.0, amp = 1.0, freq = 1.0;
+  for (int o = 0; o < 4; o++) {
+    // a short stretch of the neuron's 768 inputs per bolt: ~40 weights, read
+    // smoothly, so the bolt is one connected path and not a spray of dots
+    float along = r * 0.05 * freq + fract(strike * 0.37 + seed * 0.21);
+    float w = texture2D(weights, vec2(fract(along), neuron)).r - 0.5;
+    d += amp * mix(noise(r * 9.0 * freq + strike + seed * 7.0), w * 2.0, haveWeights);
+    amp *= 0.5; freq *= 2.1;
+  }
+  return d;
+}
+
+void main() {
+  float aspect = res.x / res.y;
+  vec2 c = uv - 0.5;
+  c.x *= aspect;
+  float r = length(c), a = atan(c.y, c.x);
+
+  // afterglow only: the last frame, faded fast and never zoomed
+  vec3 old = texture2D(prev, uv).rgb * 0.78;
+
+  float arcs    = 3.0 + floor(11.0 * util);                 // GPU load: how many are live
+  float strikes = 6.0 + 18.0 * rate;                        // throughput: how often they jump
+  float wild    = 0.35 + 0.9 * loss;                        // loss: how jagged, how far
+  float reach   = 0.22 + 0.2 * loss + 0.08 * beat;
+  float core    = 0.045 + 0.02 * frac;
+
+  vec3 hue = mix(vec3(0.55, 0.45, 1.0), vec3(1.0, 0.45, 0.8), clamp(trend * 0.5 + 0.5, 0.0, 1.0));
+  vec3 light = vec3(0.0);
+
+  for (int i = 0; i < 14; i++) {
+    if (float(i) >= arcs) break;
+    float fi = float(i);
+    float strike = floor(t * strikes + hash(fi) * 3.0);     // each arc re-fires on its own beat
+    float alive = step(0.25, hash(strike * 1.7 + fi));        // some strikes miss
+    float base = 6.28318 * (fi / arcs) + (hash(strike + fi * 13.0) - 0.5) * 1.6;
+    float len  = reach * (0.6 + 0.8 * hash(strike * 3.1 + fi));
+    if (r < core || r > len + 0.02) continue;
+    float along = (r - core) / max(len - core, 0.001);
+    float off = bend(along, fi + 1.0, strike) * wild * 0.55 * along;
+    float da = a - (base + off / max(r, 0.05));
+    da = abs(mod(da + 3.14159, 6.28318) - 3.14159) * r;       // distance from the bolt
+    float taper = 1.0 - smoothstep(0.7, 1.0, along);
+    float bolt = exp(-da * 700.0) * taper;                    // hot thin line
+    float glow = exp(-da * 70.0) * taper * 0.3;               // the air around it
+    // a fork partway out
+    float fork = bend(along * 1.7, fi + 21.0, strike) * wild * 0.9 * along;
+    float df = a - (base + (off + fork * 0.6) / max(r, 0.05));
+    df = abs(mod(df + 3.14159, 6.28318) - 3.14159) * r;
+    float branch = exp(-df * 500.0) * 0.6 * taper * step(0.35, along) * step(0.5, hash(strike + fi * 5.0));
+    light += alive * (vec3(1.0) * bolt + hue * (glow + branch)) * (0.55 + 0.6 * power);
+  }
+
+  // the core: blue-white, white-hot as the card heats up
+  float orb = smoothstep(core + 0.012, core - 0.004, r);
+  float halo = exp(-abs(r - core) * 45.0);
+  vec3 coreCol = mix(vec3(0.55, 0.65, 1.0), vec3(1.0, 0.95, 0.85), heat);
+  light += coreCol * (orb * (0.8 + 0.3 * beat) + halo * 0.35);
+
+  // corona: epoch progress as a faint ring the arcs reach through
+  float ringR = core + 0.06 + 0.25 * frac;
+  float h = texture2D(wave, vec2(abs(fract(a / 6.28318 + 0.25) * 2.0 - 1.0), 0.5)).r;
+  light += hue * 0.25 * exp(-pow((r - ringR - 0.015 * h) * 160.0, 2.0));
+
+  vec3 col = max(old, 1.0 - exp(-light * 1.4));             // tone-mapped: bright, never flat white
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<script id="show" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 uv;
+uniform sampler2D img;
+uniform vec2 res;
+void main() {
+  vec2 c = uv - 0.5;
+  float d = length(c);
+  vec2 off = c * 0.004;                         // a touch of chromatic aberration
+  vec3 col = vec3(texture2D(img, uv + off).r, texture2D(img, uv).g, texture2D(img, uv - off).b);
+  col *= smoothstep(0.95, 0.35, d);             // vignette
+  gl_FragColor = vec4(pow(col, vec3(0.85)), 1.0);
+}
+</script>
+
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', { antialias: false, preserveDrawingBuffer: false });
+const hud = document.getElementById('hud');
+
+function shader(id, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, document.getElementById(id).textContent);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, shader('vs', gl.VERTEX_SHADER));
+  gl.attachShader(p, shader(fs, gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  const loc = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const u = gl.getActiveUniform(p, i).name;
+    loc[u] = gl.getUniformLocation(p, u);
+  }
+  return { p, loc };
+}
+const warp = program('warp'), show = program('show');
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+function texture(w, h, format, data) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, format, w, h, 0, format, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+// ping-pong frames for the feedback loop
+let frames = [], W = 0, H = 0;
+function resize() {
+  const scale = Math.min(window.devicePixelRatio || 1, 1.5);
+  W = Math.floor(innerWidth * scale); H = Math.floor(innerHeight * scale);
+  canvas.width = W; canvas.height = H;
+  frames = [0, 1].map(() => {
+    const tex = texture(W, H, gl.RGBA, null);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return { tex, fb };
+  });
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+addEventListener('resize', resize);
+resize();
+
+const weightsTex = texture(1, 1, gl.LUMINANCE, new Uint8Array([128]));
+const waveTex = texture(1, 1, gl.LUMINANCE, new Uint8Array([128]));
+let haveWeights = 0;
+
+// what the data says, smoothed so the picture glides rather than jumps
+const target = { loss: 0.5, trend: 0, rate: 0, util: 0, heat: 0, power: 0, epoch: 0, frac: 0 };
+const now = Object.assign({}, target);
+let beat = 0, seen = null, weightsVersion = -1, maxRate = 1;
+
+function fmt(n) { return n.toLocaleString('en-US'); }
+
+async function poll() {
+  let s;
+  try { s = await (await fetch('/state')).json(); } catch (e) { return; }
+  const hist = s.history;
+  if (hist.length) {
+    const lo = Math.min(...hist), hi = Math.max(...hist), span = Math.max(hi - lo, 1e-9);
+    target.loss = (s.loss - lo) / span;
+    const k = Math.min(8, Math.floor(hist.length / 2));
+    if (k >= 2) {
+      const recent = hist.slice(-k).reduce((a, b) => a + b) / k;
+      const before = hist.slice(-2 * k, -k).reduce((a, b) => a + b) / k;
+      target.trend = Math.max(-1, Math.min(1, (recent - before) / span * 4));
+    }
+    const wave = new Uint8Array(hist.length);
+    hist.forEach((v, i) => wave[i] = 255 * (1 - (v - lo) / span));
+    gl.bindTexture(gl.TEXTURE_2D, waveTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, hist.length, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, wave);
+  }
+  const key = s.epoch + ':' + s.positions;
+  if (key !== seen) { if (seen !== null) beat = 1; seen = key; }
+  maxRate = Math.max(maxRate, s.rate);
+  target.rate = s.rate / maxRate;
+  target.epoch = s.epoch;
+  target.frac = s.total ? s.positions / s.total : 0;
+  const g = s.gpu || {};
+  target.util = (g.util || 0) / 100;
+  target.heat = Math.max(0, Math.min(1, ((g.temp || 40) - 40) / 45));
+  target.power = Math.max(0, Math.min(1, (g.power || 0) / 165));
+
+  if (s.weights !== weightsVersion && s.weights > 0) {
+    const buf = new Uint8Array(await (await fetch('/weights')).arrayBuffer());
+    if (buf.length === 768 * 256) {
+      gl.bindTexture(gl.TEXTURE_2D, weightsTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 768, 256, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, buf);
+      weightsVersion = s.weights; haveWeights = 1; beat = 1;
+    }
+  }
+
+  const v = s.validation.length ? s.validation[s.validation.length - 1] : null;
+  hud.innerHTML =
+    '<b>epoch ' + s.epoch + ' of ' + s.epochs + '</b>   ' + (100 * target.frac).toFixed(0) + '% through it\n' +
+    'loss ' + (s.loss === null ? '-' : s.loss.toFixed(5)) +
+    (v ? '   validation ' + v[2].toFixed(5) + ' after epoch ' + v[0] : '') + '\n' +
+    fmt(s.rate) + ' positions/s   ' + fmt(s.total) + ' positions on ' + (s.device || '?') + '\n' +
+    (g.name ? g.name + '   ' + g.util + '%   ' + g.temp + '°C   ' + g.power.toFixed(0) + ' W   ' + g.clock + ' MHz' : 'no GPU reading') + '\n' +
+    (haveWeights ? 'arcs shaped by the epoch ' + (v ? v[0] : '?') + ' network' : 'arcs shaped by noise until the first epoch');
+}
+poll();
+setInterval(poll, 500);
+
+let frame = 0;
+const start = performance.now();
+function draw() {
+  for (const k in target) now[k] += (target[k] - now[k]) * 0.04;
+  beat *= 0.94;
+  const src = frames[frame % 2], dst = frames[(frame + 1) % 2];
+  const t = (performance.now() - start) / 1000;
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.useProgram(warp.p);
+  const pa = gl.getAttribLocation(warp.p, 'p');
+  gl.enableVertexAttribArray(pa);
+  gl.vertexAttribPointer(pa, 2, gl.FLOAT, false, 0, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, weightsTex);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, waveTex);
+  const L = warp.loc;
+  gl.uniform1i(L.prev, 0); gl.uniform1i(L.weights, 1); gl.uniform1i(L.wave, 2);
+  gl.uniform2f(L.res, W, H);
+  gl.uniform1f(L.t, t);
+  for (const k of ['loss', 'trend', 'rate', 'util', 'heat', 'power', 'epoch', 'frac']) gl.uniform1f(L[k], now[k]);
+  gl.uniform1f(L.beat, beat);
+  gl.uniform1f(L.haveWeights, haveWeights);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.useProgram(show.p);
+  const pb = gl.getAttribLocation(show.p, 'p');
+  gl.enableVertexAttribArray(pb);
+  gl.vertexAttribPointer(pb, 2, gl.FLOAT, false, 0, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, dst.tex);
+  gl.uniform1i(show.loc.img, 0);
+  gl.uniform2f(show.loc.res, W, H);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  frame++;
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+canvas.addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,130 @@
+# transposition table: fixed size, allocated with the program
+#
+# the table is a statically sized array so the engine allocates nothing at
+# run time. 2^23 slots of 16 bytes is 128 MB, and because the size never
+# changes it is one less thing that can fail mid-search. The UCI Hash option
+# is therefore reported but not honoured.
+#
+# a stored mate score counts from the root, so it must be converted to and
+# from "distance from this node" as it crosses the table; search does that.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
+use mv: machete.move;
+use machete.move.Move;
+
+# what the stored score means
+pub val EXACT: u8 = 0;
+# the score is a lower bound: the search failed high
+pub val LOWER: u8 = 1;
+# the score is an upper bound: no move beat alpha
+pub val UPPER: u8 = 2;
+
+pub val ENTRIES: i64 = 8388608;
+# what the UCI Hash option reports: ENTRIES (2^23) slots of 16 bytes, a fixed size
+pub val MEGABYTES: i64 = 128;
+
+pub rec Entry {
+    key:   u64;
+    move:  Move;
+    score: i64;
+    depth: i64;
+    flag:  u8;
+}
+
+# A slot holds two words: everything but the key packed into one, and the key
+# xor that word. A reader recovers the key by xoring them back, so an entry
+# half-written by another thread fails to match and is simply ignored. This is
+# the standard lockless-hashing trick, and it is what lets several threads
+# share the table with no atomics on the common path.
+rec Slot {
+    guard: u64;
+    data:  u64;
+}
+
+var TABLE: [8388608]Slot;
+
+# move in the low 32 bits, then score (16, biased), depth (8) and flag (2)
+fun pack(move: Move, score: i64, depth: i64, flag: u8) u64 {
+    val biased: u64 = (score + 32768)::u64 & 0xFFFF;
+    ret move::u64 | (biased << 32) | ((depth::u64 & 0xFF) << 48) | ((flag::u64 & 3) << 56);
+}
+
+fun unpack(data: u64, out: *Entry) {
+    out.move  = (data & 0xFFFFFFFF)::u32;
+    out.score = ((data >> 32) & 0xFFFF)::i64 - 32768;
+    out.depth = ((data >> 48) & 0xFF)::i64;
+    out.flag  = ((data >> 56) & 3)::u8;
+}
+
+pub fun clear() {
+    var i: i64 = 0;
+    for (i < ENTRIES) {
+        TABLE[i].guard = 0;
+        TABLE[i].data  = 0;
+        i              = i + 1;
+    }
+}
+
+fun slot(key: u64) i64 {
+    ret (key & (ENTRIES - 1)::u64)::i64;
+}
+
+# copy the entry for key into out; false when this position is not stored, or
+# when the slot was caught mid-write by another thread
+pub fun probe(key: u64, out: *Entry) bool {
+    val e:    *Slot = ?TABLE[slot(key)];
+    val data: u64   = e.data;
+    if ((e.guard ^ data) != key) { ret false; }
+    out.key = key;
+    unpack(data, out);
+    ret true;
+}
+
+# keep the entry that searched deeper; a new position always replaces an old one
+pub fun store(key: u64, move: Move, score: i64, depth: i64, flag: u8) {
+    val e:       *Slot = ?TABLE[slot(key)];
+    val current: u64   = e.data;
+    if ((e.guard ^ current) == key && flag != EXACT) {
+        var existing: Entry;
+        unpack(current, ?existing);
+        if (depth < existing.depth) { ret; }
+    }
+    val data: u64 = pack(move, score, depth, flag);
+    e.data  = data;
+    e.guard = key ^ data;
+}
+
+test "tt: stores, probes and prefers depth" {
+    clear();
+    var out: Entry;
+    if (probe(12345, ?out)) { ret 1; }
+    store(12345, mv.make(12, 28, mv.QUIET), 42, 5, EXACT);
+    if (!probe(12345, ?out))                                    { ret 2; }
+    if (out.score != 42 || out.depth != 5 || out.flag != EXACT) { ret 3; }
+
+    # a shallower bound must not displace a deeper entry
+    store(12345, mv.make(1, 2, mv.QUIET), -9, 2, LOWER);
+    if (!probe(12345, ?out)) { ret 4; }
+    if (out.score != 42)     { ret 5; }
+
+    # a different position in the same slot replaces it
+    store(12345 + ENTRIES::u64, mv.make(3, 4, mv.QUIET), 7, 1, UPPER);
+    if (probe(12345, ?out))                                   { ret 6; }
+    if (!probe(12345 + ENTRIES::u64, ?out) || out.score != 7) { ret 7; }
+
+    # negative and mate-range scores survive the packing
+    clear();
+    store(77, mv.make(5, 6, mv.QUIET), -29997, 9, EXACT);
+    if (!probe(77, ?out) || out.score != -29997 || out.depth != 9) { ret 8; }
+    store(78, mv.make(7, 8, mv.QUIET), 29997, 63, LOWER);
+    if (!probe(78, ?out) || out.score != 29997 || out.depth != 63 || out.flag != LOWER) { ret 9; }
+
+    # a slot corrupted the way a torn write would corrupt it is rejected, not
+    # returned: this is the property the guard word exists for
+    TABLE[slot(78)].data = TABLE[slot(78)].data ^ 0x1234;
+    if (probe(78, ?out)) { ret 10; }
+    ret 0;
+}

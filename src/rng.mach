@@ -1,0 +1,56 @@
+# deterministic splitmix64 generator
+#
+# owned here rather than taken from std.rand so recorded batch digests depend
+# only on this file, not on the pinned standard library's algorithm choice.
+
+pub rec Rng {
+    state: u64;
+}
+
+# create a generator from a seed; every seed, including zero, is valid
+# ---
+# seed: starting state
+# ret:  generator
+pub fun seeded(seed: u64) Rng {
+    ret Rng{state: seed};
+}
+
+# advance the generator and return the next 64-bit value
+# ---
+# r:   generator state
+# ret: pseudorandom value
+pub fun next(r: *Rng) u64 {
+    r.state = r.state + 0x9E3779B97F4A7C15;
+    var z: u64 = r.state;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
+    ret z ^ (z >> 31);
+}
+
+# value in [0, n) by multiply-shift of the high 32 bits; n must be in 1..2^32
+# ---
+# r:   generator state
+# n:   exclusive upper bound
+# ret: pseudorandom value below n
+pub fun below(r: *Rng, n: u64) u64 {
+    val hi: u64 = next(r) >> 32;
+    ret (hi * n) >> 32;
+}
+
+test "rng: matches the splitmix64 reference sequence for seed 0" {
+    var r: Rng = seeded(0);
+    if (next(?r) != 0xE220A8397B1DCDAF) { ret 1; }
+    if (next(?r) != 0x6E789E6AA1B965F4) { ret 2; }
+    if (next(?r) != 0x06C45D188009454F) { ret 3; }
+    ret 0;
+}
+
+test "rng: below stays in range" {
+    var r: Rng = seeded(7);
+    var i: i64 = 0;
+    for (i < 10000) {
+        if (below(?r, 5) >= 5) { ret 1; }
+        i = i + 1;
+    }
+    ret 0;
+}

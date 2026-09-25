@@ -1,0 +1,471 @@
+# magic bitboards: sliding attacks by one multiply, shift and table read
+#
+# a rook on a square only cares about the occupancy of the squares it could be
+# blocked on - its rays minus the board edges, at most 12 squares. those bits
+# are gathered by masking, spread across the top of a 64-bit word by
+# multiplying with a "magic" constant, and shifted down into an index.
+#
+# a magic is valid when no two occupancies that produce different attack sets
+# land on the same index. collisions where the attack sets agree are fine and
+# are what keeps the tables small. the constants are searched for at startup
+# from a fixed seed, so every run builds the same tables, and a test checks
+# every lookup against the ray-walking implementation it replaces.
+
+use std.print;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
+use machete.attacks;
+use bb: machete.bitboard;
+use machete.rng;
+
+# 102400 rook entries plus 5248 bishop entries, the standard sizes
+pub val TABLE_SIZE: i64 = 107648;
+
+var TABLE: [107648]u64;
+
+var ROOK_MASK:   [64]u64;
+var ROOK_MAGIC:  [64]u64;
+var ROOK_SHIFT:  [64]u64;
+var ROOK_OFFSET: [64]i64;
+
+var BISHOP_MASK:   [64]u64;
+var BISHOP_MAGIC:  [64]u64;
+var BISHOP_SHIFT:  [64]u64;
+var BISHOP_OFFSET: [64]i64;
+
+# The constants the search below found, embedded so a normal run does no
+# searching at all: startup then only fills the tables. Regenerate with
+# `machete magics` after changing the mask or index scheme, and paste the output
+# here.
+val ROOK_MAGIC_CONST: [64]u64 = [64]u64{
+    0x0080001020804000,
+    0x80c0004020001000,
+    0x0300081102412000,
+    0x1180241001080080,
+    0x0080040008008002,
+    0x2200044801900200,
+    0x4080010000800200,
+    0x0080042100134080,
+    0x4020800028884002,
+    0x005100400081002e,
+    0x8202001020820040,
+    0x0000800800801000,
+    0x0001000801000610,
+    0xa008800400804200,
+    0x0004000110589204,
+    0x0042800100004880,
+    0x0080004000200041,
+    0xe01002400040e000,
+    0x0000828010002000,
+    0x3140808008001006,
+    0x0085b10025004800,
+    0x2006008002040080,
+    0x1001010100020004,
+    0x0409020020840449,
+    0x0422800180204002,
+    0x1022400240201000,
+    0x0001044100102001,
+    0x0000080080100080,
+    0x4006008a00042010,
+    0x0042000200040811,
+    0x0201000700060024,
+    0x4600404200008104,
+    0x0081804004800120,
+    0x0001020022004082,
+    0x0010100181802000,
+    0x1028082101001000,
+    0x0000800400800800,
+    0x1402000402000810,
+    0x0a10020001010004,
+    0x0004800c40801500,
+    0x0480002000404004,
+    0x40c0201000404004,
+    0x2010200010008080,
+    0x2000100100210008,
+    0x0000040008008080,
+    0x0002001020040400,
+    0x000a108898c4000a,
+    0x0005012142820014,
+    0x05800421c0188080,
+    0x0000810040002100,
+    0x0020042410008080,
+    0x0100100008008080,
+    0x1044040181080080,
+    0x0004040080020080,
+    0x0022000801040200,
+    0x0080010080440200,
+    0x080a001041042082,
+    0x88035900c0802202,
+    0x3507081120010041,
+    0x0100210010000409,
+    0x100b001008000403,
+    0x4041000400080201,
+    0x0052100108008204,
+    0x00240102c4108022
+};
+val BISHOP_MAGIC_CONST: [64]u64 = [64]u64{
+    0x2009211002004100,
+    0x9c21082100408004,
+    0x4004440414402000,
+    0x2811040080400020,
+    0x0002021018044000,
+    0x1602901018030c00,
+    0x2000808848411404,
+    0x2680402088084020,
+    0x0400c01831940080,
+    0x9000041004210420,
+    0x0000044102020080,
+    0x8890080851000902,
+    0x0220411040800820,
+    0x03000a0202210800,
+    0x00000402a6901000,
+    0x0300062421080810,
+    0x4040008504040430,
+    0xc003002484080200,
+    0x0008001000801012,
+    0x2002000920820048,
+    0x0881040820080010,
+    0x181100c200522208,
+    0x4001218218020200,
+    0x0802010021110808,
+    0x4421108020220208,
+    0x0042a00002040400,
+    0x0026080101080420,
+    0x4202008018008002,
+    0x0029001021004021,
+    0x0118002126020108,
+    0x2048008008440440,
+    0x00ac510200490800,
+    0x3004822005412440,
+    0x0009211000093004,
+    0x1921014800044800,
+    0x4000080800220a00,
+    0x5012008402060020,
+    0x7101021881080800,
+    0x6204088412160100,
+    0x00c8010022410088,
+    0x1289186240001084,
+    0x025041345010e000,
+    0x140a001048008400,
+    0x0120014208000884,
+    0x0000902010400208,
+    0x0290600083008088,
+    0x2120120401100440,
+    0x4401141102000048,
+    0x0600420804404022,
+    0x0010420804024040,
+    0x4000020118880310,
+    0x0000000108480802,
+    0x6000002020412040,
+    0x018a041102120001,
+    0x0020041000812000,
+    0x0010040100520000,
+    0x3402048400821000,
+    0x0405030080d00804,
+    0x0200410642189020,
+    0x4045803100208821,
+    0x02141000e0024404,
+    0x8c40144010828080,
+    0x0000041090311100,
+    0x0002441000810100
+};
+
+# working space for the search, module-level so no frame has to hold 4096 words
+var OCCUPANCY: [4096]u64;
+var REFERENCE: [4096]u64;
+var EPOCH:     [4096]i64;
+var FILLED:    [4096]u64;
+
+var ready: i64 = 0;
+# one number per verification pass across all squares: EPOCH is shared, so a
+# per-square counter would read another square's entries as collisions
+var epoch: i64 = 0;
+# set while `machete magics` searches for a fresh set instead of using the embedded one
+var searching: bool = false;
+
+# the squares a slider can be blocked on: its rays, minus the edges it cannot
+# be blocked on, because a blocker on the last square changes nothing
+fun blocker_mask(sq: i64, rook: bool) u64 {
+    val file: i64 = bb.file_of(sq);
+    val rank: i64 = bb.rank_of(sq);
+    var mask: u64 = 0;
+    var d:    i64 = 0;
+    for (d < 4) {
+        var df: i64 = 0;
+        var dr: i64 = 0;
+        if (rook) {
+            if (d == 0) { dr = 1; }
+            or (d == 1) { dr = -1; }
+            or (d == 2) { df = 1; }
+            or          { df = -1; }
+        }
+        or {
+            if (d == 0) {
+                df = 1;
+                dr = 1;
+            }
+            or (d == 1) {
+                df = 1;
+                dr = -1;
+            }
+            or (d == 2) {
+                df = -1;
+                dr = 1;
+            }
+            or {
+                df = -1;
+                dr = -1;
+            }
+        }
+        var f: i64 = file + df;
+        var r: i64 = rank + dr;
+        for (f + df >= 0 && f + df < 8 && r + dr >= 0 && r + dr < 8) {
+            mask = mask | bb.bit(r * 8 + f);
+            f    = f + df;
+            r    = r + dr;
+        }
+        d = d + 1;
+    }
+    ret mask;
+}
+
+# find a magic for one square and fill its slice of the table
+fun install(sq: i64, rook: bool, offset: i64, r: *rng.Rng) i64 {
+    var mask: u64 = 0;
+    if (rook) { mask = ROOK_MASK[sq]; }
+    or        { mask = BISHOP_MASK[sq]; }
+
+    val bits:  i64 = bb.count(mask);
+    val shift: u64 = (64 - bits)::u64;
+    val count: i64 = (1u64 << bits::u64)::i64;
+
+    # every subset of the mask, by the carry-rippler trick, with the attack
+    # set each one produces according to the ray walker
+    var subset: u64 = 0;
+    var i:      i64 = 0;
+    for (i < count) {
+        OCCUPANCY[i] = subset;
+        if (rook) { REFERENCE[i] = attacks.rook_rays(sq, subset); }
+        or        { REFERENCE[i] = attacks.bishop_rays(sq, subset); }
+        subset = (subset - mask) & mask;
+        i      = i + 1;
+    }
+
+    var attempt: i64 = 0;
+    for (attempt < 10000000) {
+        attempt = attempt + 1;
+        # the embedded constant is tried first; the search is the fallback that
+        # found it in the first place, and is what `machete magics` exercises
+        var magic: u64 = 0;
+        if (attempt == 1 && !searching) {
+            if (rook) { magic = ROOK_MAGIC_CONST[sq]; }
+            or        { magic = BISHOP_MAGIC_CONST[sq]; }
+        }
+        or {
+            # a sparse constant is far likelier to work: three randoms anded
+            magic = rng.next(r) & rng.next(r) & rng.next(r);
+        }
+        # a quick reject: the top byte of mask * magic should be well spread
+        if (bb.count((mask * magic) >> 56) < 6) { cnt; }
+
+        epoch = epoch + 1;
+        var collided: bool = false;
+        i = 0;
+        for (i < count) {
+            val index: i64 = ((OCCUPANCY[i] * magic) >> shift)::i64;
+            if (EPOCH[index] != epoch) {
+                EPOCH[index]  = epoch;
+                FILLED[index] = REFERENCE[i];
+            }
+            or (FILLED[index] != REFERENCE[i]) {
+                # a collision is only fatal when the two attack sets differ
+                collided = true;
+                brk;
+            }
+            i = i + 1;
+        }
+        if (collided) { cnt; }
+
+        i = 0;
+        for (i < count) {
+            TABLE[offset + ((OCCUPANCY[i] * magic) >> shift)::i64] = REFERENCE[i];
+            i                                                      = i + 1;
+        }
+        if (rook) {
+            ROOK_MAGIC[sq]  = magic;
+            ROOK_SHIFT[sq]  = shift;
+            ROOK_OFFSET[sq] = offset;
+        }
+        or {
+            BISHOP_MAGIC[sq]  = magic;
+            BISHOP_SHIFT[sq]  = shift;
+            BISHOP_OFFSET[sq] = offset;
+        }
+        ret count;
+    }
+    ret 0;
+}
+
+# build the tables; safe to call more than once
+pub fun init() {
+    if (ready != 0) { ret; }
+    attacks.init();
+    var r: rng.Rng = rng.seeded(0x3C79AC492BA7B653);
+
+    var sq: i64 = 0;
+    for (sq < 64) {
+        ROOK_MASK[sq]   = blocker_mask(sq, true);
+        BISHOP_MASK[sq] = blocker_mask(sq, false);
+        sq              = sq + 1;
+    }
+
+    var offset: i64 = 0;
+    sq = 0;
+    for (sq < 64) {
+        offset = offset + install(sq, true, offset, ?r);
+        sq     = sq + 1;
+    }
+    sq = 0;
+    for (sq < 64) {
+        offset = offset + install(sq, false, offset, ?r);
+        sq     = sq + 1;
+    }
+    ready = 1;
+}
+
+pub fun rook(sq: i64, occ: u64) u64 {
+    val index: i64 = (((occ & ROOK_MASK[sq]) * ROOK_MAGIC[sq]) >> ROOK_SHIFT[sq])::i64;
+    ret TABLE[ROOK_OFFSET[sq] + index];
+}
+
+pub fun bishop(sq: i64, occ: u64) u64 {
+    val index: i64 = (((occ & BISHOP_MASK[sq]) * BISHOP_MAGIC[sq]) >> BISHOP_SHIFT[sq])::i64;
+    ret TABLE[BISHOP_OFFSET[sq] + index];
+}
+
+pub fun queen(sq: i64, occ: u64) u64 {
+    ret rook(sq, occ) | bishop(sq, occ);
+}
+
+# print the constants as Mach array literals, for pasting back into this file
+pub fun print_found() {
+    searching = true;
+    ready     = 0;
+    init();
+    print.println("val ROOK_MAGIC_CONST: [64]u64 = [64]u64{");
+    var sq: i64 = 0;
+    for (sq < 64) {
+        print.printlnf("    0x{:016x},", ROOK_MAGIC[sq]);
+        sq = sq + 1;
+    }
+    print.println("};");
+    print.println("val BISHOP_MAGIC_CONST: [64]u64 = [64]u64{");
+    sq = 0;
+    for (sq < 64) {
+        print.printlnf("    0x{:016x},", BISHOP_MAGIC[sq]);
+        sq = sq + 1;
+    }
+    print.println("};");
+}
+
+# whether the embedded constant for every square is a valid magic on its own
+#
+# init() falls back to searching when a constant fails, which keeps a bad paste
+# working but hides it. this asks the question the fallback would mask.
+pub fun embedded_are_valid() bool {
+    attacks.init();
+    var sq: i64 = 0;
+    for (sq < 128) {
+        val rook_side: bool = sq < 64;
+        var square:    i64  = sq;
+        if (!rook_side) { square = sq - 64; }
+
+        var mask:  u64 = 0;
+        var magic: u64 = 0;
+        if (rook_side) {
+            mask  = blocker_mask(square, true);
+            magic = ROOK_MAGIC_CONST[square];
+        }
+        or {
+            mask  = blocker_mask(square, false);
+            magic = BISHOP_MAGIC_CONST[square];
+        }
+        val shift: u64 = (64 - bb.count(mask))::u64;
+
+        epoch = epoch + 1;
+        var subset: u64 = 0;
+        for {
+            var reference: u64 = 0;
+            if (rook_side) { reference = attacks.rook_rays(square, subset); }
+            or             { reference = attacks.bishop_rays(square, subset); }
+            val index: i64 = ((subset * magic) >> shift)::i64;
+            if (EPOCH[index] != epoch) {
+                EPOCH[index]  = epoch;
+                FILLED[index] = reference;
+            }
+            or (FILLED[index] != reference) {
+                ret false;
+            }
+            subset = (subset - mask) & mask;
+            if (subset == 0) { brk; }
+        }
+        sq = sq + 1;
+    }
+    ret true;
+}
+
+test "magic: the embedded constants are valid without the search" {
+    if (!embedded_are_valid()) { ret 1; }
+    ret 0;
+}
+
+test "magic: every square and occupancy matches the ray walker" {
+    init();
+    var r:  rng.Rng = rng.seeded(99);
+    var sq: i64     = 0;
+    for (sq < 64) {
+        # the corners of the occupancy space: empty and full boards
+        if (rook(sq, 0) != attacks.rook_rays(sq, 0))     { ret 1; }
+        if (bishop(sq, 0) != attacks.bishop_rays(sq, 0)) { ret 2; }
+        val full: u64 = 0xFFFFFFFFFFFFFFFF;
+        if (rook(sq, full) != attacks.rook_rays(sq, full))     { ret 3; }
+        if (bishop(sq, full) != attacks.bishop_rays(sq, full)) { ret 4; }
+
+        var trial: i64 = 0;
+        for (trial < 2000) {
+            # sparse occupancies look like real positions
+            val occ: u64 = rng.next(?r) & rng.next(?r);
+            if (rook(sq, occ) != attacks.rook_rays(sq, occ))     { ret 5; }
+            if (bishop(sq, occ) != attacks.bishop_rays(sq, occ)) { ret 6; }
+            trial = trial + 1;
+        }
+        sq = sq + 1;
+    }
+    ret 0;
+}
+
+test "magic: every subset of a mask is exact" {
+    init();
+    # exhaustive for two squares, one central and one in a corner
+    var which: i64 = 0;
+    for (which < 2) {
+        var sq: i64 = 27;
+        if (which == 1) { sq = 0; }
+        var rook_sub: u64 = 0;
+        for {
+            if (rook(sq, rook_sub) != attacks.rook_rays(sq, rook_sub)) { ret 1; }
+            rook_sub = (rook_sub - ROOK_MASK[sq]) & ROOK_MASK[sq];
+            if (rook_sub == 0) { brk; }
+        }
+        var bishop_sub: u64 = 0;
+        for {
+            if (bishop(sq, bishop_sub) != attacks.bishop_rays(sq, bishop_sub)) { ret 2; }
+            bishop_sub = (bishop_sub - BISHOP_MASK[sq]) & BISHOP_MASK[sq];
+            if (bishop_sub == 0) { brk; }
+        }
+        which = which + 1;
+    }
+    ret 0;
+}

@@ -1,0 +1,144 @@
+# 64-bit square sets: bit n is square n, a1 = 0, h1 = 7, a8 = 56, h8 = 63
+#
+# every bit scan in the engine goes through this module, so the scan
+# implementation can change in one place.
+
+use std.math.bits;
+
+pub val FILE_A: u64 = 0x0101010101010101;
+pub val FILE_H: u64 = 0x8080808080808080;
+pub val RANK_1: u64 = 0x00000000000000FF;
+pub val RANK_2: u64 = 0x000000000000FF00;
+pub val RANK_7: u64 = 0x00FF000000000000;
+pub val RANK_8: u64 = 0xFF00000000000000;
+
+pub fun bit(sq: i64) u64 {
+    ret 1u64 << sq::u64;
+}
+
+pub fun has(b: u64, sq: i64) u8 {
+    ret (b & bit(sq)) != 0;
+}
+
+# the standard library's scans, which are portable software loops
+pub fun count_software(b: u64) i64 {
+    ret bits.popcount(b)::i64;
+}
+
+pub fun lsb_software(b: u64) i64 {
+    ret bits.ctz(b)::i64;
+}
+
+pub fun msb_software(b: u64) i64 {
+    ret 63 - bits.clz(b)::i64;
+}
+
+# Bit scans are the hottest operation in the engine, and std's are software:
+# popcount is the SWAR sequence and ctz calls it again. x86-64 has had all
+# three as single instructions for years, so on that target these use them.
+#
+# bsf and bsr are 386 instructions, available everywhere. popcnt is SSE4.2
+# (Intel Nehalem, AMD Barcelona, both 2007-2008), which the x86-64 baseline
+# does not formally include: a pre-2008 CPU would fault here. Every scan has
+# a *_software twin, and a test checks the two agree over millions of values.
+
+pub fun count(b: u64) i64 {
+    $if ($mach.build.arch == $mach.arch.x86_64) {
+        var r: u64 = 0;
+        asm x86_64 {
+            mov rax, {b}
+            # popcnt rax, rax - not in the assembler's mnemonic table, so raw
+            .byte 0xF3, 0x48, 0x0F, 0xB8, 0xC0 :: writes(rax)
+            mov {r}, rax
+        }
+        ret r::i64;
+    }
+    $or {
+        ret count_software(b);
+    }
+}
+
+# lowest set square; b must be non-empty
+pub fun lsb(b: u64) i64 {
+    $if ($mach.build.arch == $mach.arch.x86_64) {
+        var r: u64 = 0;
+        asm x86_64 {
+            mov rax, {b}
+            # bsf rax, rax - raw for the same reason
+            .byte 0x48, 0x0F, 0xBC, 0xC0 :: writes(rax)
+            mov {r}, rax
+        }
+        ret r::i64;
+    }
+    $or {
+        ret lsb_software(b);
+    }
+}
+
+# highest set square; b must be non-empty
+pub fun msb(b: u64) i64 {
+    $if ($mach.build.arch == $mach.arch.x86_64) {
+        var r: u64 = 0;
+        asm x86_64 {
+            mov rax, {b}
+            # bsr rax, rax - raw for the same reason
+            .byte 0x48, 0x0F, 0xBD, 0xC0 :: writes(rax)
+            mov {r}, rax
+        }
+        ret r::i64;
+    }
+    $or {
+        ret msb_software(b);
+    }
+}
+
+pub fun file_of(sq: i64) i64 {
+    ret sq & 7;
+}
+
+pub fun rank_of(sq: i64) i64 {
+    ret sq >> 3;
+}
+
+test "bitboard: hardware scans agree with the software ones" {
+    # a splitmix64 stream, so the values are the same on every run
+    var state: u64 = 0x1234567890ABCDEF;
+    var i:     i64 = 0;
+    for (i < 200000) {
+        state = state + 0x9E3779B97F4A7C15;
+        var z: u64 = state;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
+        val v: u64 = z ^ (z >> 31);
+        if (count(v) != count_software(v)) { ret 1; }
+        if (v != 0) {
+            if (lsb(v) != lsb_software(v)) { ret 2; }
+            if (msb(v) != msb_software(v)) { ret 3; }
+        }
+        # sparse values exercise the single-bit and empty-ish cases
+        val sparse: u64 = v & (v >> 17) & (v >> 33);
+        if (count(sparse) != count_software(sparse)) { ret 4; }
+        if (sparse != 0) {
+            if (lsb(sparse) != lsb_software(sparse)) { ret 5; }
+            if (msb(sparse) != msb_software(sparse)) { ret 6; }
+        }
+        i = i + 1;
+    }
+    # every single-bit value, both ends included
+    var sq: i64 = 0;
+    for (sq < 64) {
+        if (lsb(bit(sq)) != sq || msb(bit(sq)) != sq || count(bit(sq)) != 1) { ret 7; }
+        sq = sq + 1;
+    }
+    if (count(0) != 0) { ret 8; }
+    ret 0;
+}
+
+test "bitboard: scans find the extreme squares" {
+    val b: u64 = bit(3) | bit(17) | bit(60);
+    if (lsb(b) != 3)                            { ret 1; }
+    if (msb(b) != 60)                           { ret 2; }
+    if (count(b) != 3)                          { ret 3; }
+    if (lsb(bit(63)) != 63 || msb(bit(0)) != 0) { ret 4; }
+    ret 0;
+}
