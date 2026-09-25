@@ -10,7 +10,9 @@ actually open.
 `check.sh`, `fixtures/`. Two executables from one `mach.toml`:
 
 - `machete` (220 KB, the default artifact) plays chess. It speaks UCI and needs
-  nothing else at runtime; Arena loads it directly.
+  nothing else at runtime; Arena loads it directly, and it loads
+  `machete.nnue` from its own folder on start-up. Released as **machete 0.1**
+  (see *Releases* below).
 - `binpack` (171 KB, `src/tools/binpack.mach` over `src/binpack.mach`) decodes
   Leela Chess Zero's training data from Stockfish's binpack format into our
   training records, reusing the engine's own board and move generation. Its
@@ -38,7 +40,7 @@ on pipes, concurrent games, real clocks - which would work `std.process` and
 
 These are not style preferences. They came from being wrong.
 
-**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 27.
+**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 29.
 A new one is not finished until it has been made to fail on purpose and the
 failure recorded in the commit message. Two gates in this repo were green for
 days while being structurally incapable of failing - one held a stale node
@@ -138,13 +140,14 @@ conditioning are all unexplored.
 
 **Known small debts:** `MAX_THREADS` is duplicated rather than having one
 owner. `go ponder` still misbehaves and wants about ten lines to make safe.
-The network is loaded from a file at runtime; `#[embed]` would fold it into
-the binary.
+`Hash` is reported but fixed at 128 MB (2^23 slots). The network is loaded
+from a file at runtime - `machete.nnue` beside the executable, or `EvalFile` -
+and `#[embed]` would fold it into the binary so a release is one file.
 
 ## Running it
 
 ```bash
-bash check.sh                      # 27 gates
+bash check.sh                      # 29 gates
 bash ../../scripts/check.sh        # every product's gates
 
 mach build . --profile release     # build both executables
@@ -168,6 +171,37 @@ owns that path now, with `MACHETE_BIN` to override it.
 Note that `mach run` does **not** rebuild. A failed build leaves the previous
 binary in place, so `mach build` and `mach run` are two steps and the build's
 exit code is the one that matters.
+
+## Releases
+
+**machete 0.1** is tagged `machete-v0.1` (commit 20a6381) and published as a
+GitHub release on this repository, which is private: collaborators can
+download it, anyone else needs the zip sent to them. The release is network A
+(md5 `b9f0183b`), about 3100-3200 on the CCRL 40/15 scale at 3+2 on one
+thread (ladder 4: Spike 1.4 and Rybka 2.3.2a, 40 games each).
+
+A release is two files and two documents, all in `release/`:
+
+| file | from |
+|---|---|
+| `machete.exe` | `out/windows-x86_64/release/bin/`, after `bash check.sh` passes |
+| `machete.nnue` | `net/machete.nnue` - the promoted network |
+| `README.txt` | `release/README.txt`: Arena setup, options, strength, credits |
+| `SHA256SUMS.txt` | `sha256sum machete.exe machete.nnue` |
+
+`release/notes-0.1.md` is the GitHub release page. To cut the next one: update
+both documents (strength, options, what changed - and check every number
+against the code, as 0.1's notes caught a wrong thread limit and hash size),
+build and gate, assemble and zip the four files, tag `machete-vX.Y`, and
+`gh release create machete-vX.Y ZIP SHA256SUMS.txt --notes-file
+release/notes-X.Y.md`. The engine's UCI name is set in `src/uci.mach`
+(`id name machete 0.1`); bump it with the tag.
+
+Open before sharing more widely: there is **no licence**, so recipients have
+no stated right to redistribute, and the UCI author field reads
+`mach-portfolio`.
+
+## Python
 
 The harness needs Python 3.7 with python-chess for the game-playing scripts
 and 3.13 with PyTorch for the trainer. `MACHETE_ARENA` points at the folder
