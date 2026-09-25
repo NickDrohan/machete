@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  MACH_VERSION: v5.10.0
+  MACH_VERSION: v5.11.0
 
 jobs:
   plan:
@@ -36,12 +36,13 @@ jobs:
         env:
           HEAVY: ${{ github.base_ref == 'main' && 'all' || inputs.heavy || 'none' }}
           # the first leg is light and also checks formatting and every target
+          # no aarch64-darwin leg until briar-systems/mach#3888: machete does not link
+          # there (see mach.toml); restore it with the target when that lands
           LEGS: |
             [
               { "name": "x86_64-linux",   "runs-on": "ubuntu-latest",    "tier": "light" },
               { "name": "aarch64-linux",  "runs-on": "ubuntu-24.04-arm", "tier": "heavy" },
               { "name": "x86_64-windows", "runs-on": "windows-latest",   "tier": "heavy" },
-              { "name": "aarch64-darwin", "runs-on": "macos-15",         "tier": "heavy" },
               { "name": "x86_64-darwin",  "runs-on": "macos-15-intel",   "tier": "heavy" }
             ]
         run: |

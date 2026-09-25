@@ -1,0 +1,60 @@
+[Event "machete rating ladder vs Rybka 2.3.2a"]
+[Site "AMD Threadripper 2920X, Windows 10 - one search thread each"]
+[Date "2026.09.22"]
+[Round "LADDER-02, game 356 of the run"]
+[White "machete"]
+[Black "Rybka 2.3.2a"]
+[Result "1-0"]
+[BlackElo "3050"]
+[TimeControl "-"]
+[MoveTime "1000 ms per move"]
+[PlyCount "165"]
+[Annotator "Stockfish, depth 16, added 2026-09-22"]
+
+{ A steady squeeze: Stockfish's evaluation for machete rises at every 20-ply checkpoint from the opening to the mate, and Rybka's worst single move cost only 2.1 pawns. Rybka never blundered; it was outplayed. The first four plies are the ladder's random opening. At the mate machete had PQQ against PP. } 1. d3 Nh6 2. Bf4 a6 { End of the random opening. From here on, both engines play for themselves. } 3. e4 Nc6 4. Nc3 e5 5. Bxh6 gxh6 6. Nge2 d6 7. Ng3 Nd4 8. Nd5 c6 9. Ne3 Qf6 10. c3 Ne6 11. Nh5 Qg6 12. g3 Kd8 13. Bh3 { machete takes a clear advantage: Stockfish +2.40. } 13... Nc5 14. Bxc8 Rxc8 15. O-O Nxd3 16. Qxd3 Qxh5 17. Kg2 Kc7 18. Rad1 Kb8 19. c4 Rg8 20. b4 Qg6 21. Nf5 Qe6 22. b5 axb5 23. cxb5 cxb5 24. Qxb5 Rc5 25. Qb6 Rc6 26. Qb1 Rg6 27. Rd5 Qc8 28. Rfd1 h5 29. a4 Rc4 30. a5 Qc6 31. Ne3 Ra4 32. Rc1 Qa6 33. Qc2 Qc6 34. Qd1 { Decisive: Stockfish +5.10. } 34... Qd7 35. Nc4 Rxc4 36. Rxc4 h4 37. Rxe5 Rh6 38. Rf5 Bg7 39. Rb4 h3+ 40. Kh1 Ka7 41. Rfb5 Re6 42. Rxb7+ Qxb7 43. Rxb7+ Kxb7 44. Qb3+ Kc8 45. Qd5 Re7 46. Qa8+ Kd7 47. a6 Bd4 48. a7 Bxa7 49. Qxa7+ Kd8 50. Qb8+ Kd7 51. Qb7+ Kd8 52. Qb6+ Kd7 53. Qb5+ Kc7 54. f3 Re5 55. Qc4+ Rc5 56. Qxf7+ Kc6 57. Qf4 h5 58. Qd2 d5 59. exd5+ Rxd5 60. Qc2+ Rc5 61. Qa4+ Kc7 62. Qd1 Kc6 63. Kg1 Rd5 64. Qe2 Kd6 65. Kf2 Rc5 66. Qa6+ Kc7 67. Qa7+ Kd6 68. Qb6+ Kd5 69. Qb3+ Ke5 70. Ke3 Kd6 71. Qa3 Kd5 72. f4 Kc6 73. Kd4 Rd5+ 74. Ke4 Rc5 75. f5 Rc4+ 76. Ke5 Rg4 77. f6 Rxg3 78. Qxg3 Kb7 79. Qa3 Kc6 80. f7 Kc7 81. f8=Q Kc6 82. Qac5+ Kb7 83. Qfc8# { Checkmate. } 1-0
+
+[Event "machete rating ladder vs Rybka 2.3.2a"]
+[Site "AMD Threadripper 2920X, Windows 10 - one search thread each"]
+[Date "2026.09.22"]
+[Round "LADDER-02, game 351 of the run"]
+[White "Rybka 2.3.2a"]
+[Black "machete"]
+[Result "0-1"]
+[WhiteElo "3050"]
+[TimeControl "-"]
+[MoveTime "1000 ms per move"]
+[PlyCount "152"]
+[Annotator "Stockfish, depth 16, added 2026-09-22"]
+
+{ machete was ahead by ply 20 and never let go, climbing past +10. Rybka's worst single move cost only 2.3 pawns - no gift, just steady pressure. The first four plies are the ladder's random opening. At the mate machete had PPQR against a bare king. } 1. b4 h6 2. Ba3 d6 { End of the random opening. From here on, both engines play for themselves. } 3. e3 Nf6 4. Nc3 e5 5. Nf3 e4 6. Nd4 d5 7. Qc1 Bd6 8. Be2 O-O 9. O-O c6 10. Qb2 Re8 11. Qb3 Qe7 12. Rfb1 Qe5 { machete takes a clear advantage: Stockfish +2.24. } 13. g3 h5 14. Bb2 h4 15. f4 Qe7 16. gxh4 Ng4 17. Bxg4 Bxg4 18. h5 Qh4 19. Nce2 Nd7 20. Ng3 Nf6 21. b5 Qh3 22. Rf1 c5 23. Rf2 cxd4 24. Bxd4 Nxh5 25. Qxd5 Rad8 26. Nxe4 Bxf4 27. Qxb7 Be6 28. Nc3 Rxd4 { Decisive: Stockfish +5.32. } 29. exd4 Bxd2 30. Rxd2 Qxc3 31. Rad1 Qe3+ 32. Rf2 Nf4 33. Qf3 Nh3+ 34. Kf1 Bc4+ 35. Kg2 Bd5 36. Qxd5 Qxf2+ 37. Kxh3 Qe3+ 38. Kg2 Qe2+ 39. Kg3 Qxd1 40. Kf4 Qxc2 41. h3 Qh2+ 42. Kg4 Qg1+ 43. Kh4 Qe1+ 44. Kg4 Re4+ 45. Qxe4 Qxe4+ 46. Kg3 Qd3+ 47. Kg2 Qxd4 48. Kg3 Qe5+ 49. Kf2 Qxb5 50. h4 Kf8 51. Ke3 Qd5 52. a3 Qe6+ 53. Kd3 Qc6 54. Kd4 Qb5 55. Ke3 Qc5+ 56. Ke4 Qd6 57. a4 Qc5 58. Kf4 Qd4+ 59. Kf3 Qxa4 60. h5 Qd1+ 61. Ke3 Qxh5 62. Kd4 a6 63. Ke4 Qg6+ 64. Ke3 Qf6 65. Ke4 Qc6+ 66. Kd3 a5 67. Kd4 a4 68. Kd3 a3 69. Kd4 a2 70. Ke3 a1=R 71. Kd4 Ra4+ 72. Kd3 Qe4+ 73. Kd2 Ra2+ 74. Kc3 Rc2+ 75. Kb3 Qc4+ 76. Ka3 Ra2# { Checkmate. } 0-1
+
+[Event "machete rating ladder vs Rybka 2.3.2a"]
+[Site "AMD Threadripper 2920X, Windows 10 - one search thread each"]
+[Date "2026.09.22"]
+[Round "LADDER-02, game 344 of the run"]
+[White "Rybka 2.3.2a"]
+[Black "machete"]
+[Result "0-1"]
+[WhiteElo "3050"]
+[TimeControl "-"]
+[MoveTime "1000 ms per move"]
+[PlyCount "176"]
+[Annotator "Stockfish, depth 16, added 2026-09-22"]
+
+{ Level for the first sixty plies, then machete pulled away, and the advantage kept growing to the mate. The first four plies are the ladder's random opening. At the mate machete had QR against a bare king. } 1. a3 a5 2. d4 c6 { End of the random opening. From here on, both engines play for themselves. } 3. Nc3 d5 4. Bf4 Nf6 5. e3 g6 6. Nf3 Nh5 7. Bg5 Bg7 8. Bh4 Nd7 9. Bd3 O-O 10. O-O Qe8 11. g4 Nhf6 12. g5 Nh5 13. Kh1 e5 14. Be2 f6 15. Rg1 e4 16. Nd2 fxg5 17. Bxg5 Ndf6 18. Na4 Bh3 19. c4 b5 20. cxb5 cxb5 21. Nc5 Kh8 22. Rc1 h6 23. Bh4 a4 24. Nb1 Rc8 25. Nc3 Rb8 26. Na6 Rb7 27. Nxb5 Rb6 28. Nac7 Qf7 29. Rc5 Rfb8 30. Bg3 Nxg3+ 31. Rxg3 Bd7 32. Qxa4 Bf8 33. Rg2 Kh7 34. Qa5 Bh3 35. Rg3 Ng4 36. f4 exf3 { machete takes a clear advantage: Stockfish +2.85. } 37. Rxf3 Rf6 38. Nxd5 Rxf3 39. Rc7 Nf2+ 40. Kg1 Bd7 41. Rxd7 Nh3+ 42. Kg2 Rf2+ 43. Kxh3 Qxd7+ 44. Kg3 Rf7 45. e4 Bd6+ 46. Kg2 Rbf8 47. Qe1 Bb8 48. b4 Qd8 49. h4 g5 50. Nbc3 gxh4 51. e5 Rg7+ 52. Kh1 Qg5 53. Bd3+ Kh8 54. Be4 Qg3 55. Qxg3 Rxg3 56. a4 Rf1+ 57. Kh2 Rf2+ 58. Kh1 h3 59. Nd1 Rd2 60. N1e3 Rxd4 { Decisive: Stockfish +5.11. } 61. Nf5 Rxe4 62. Nxg3 Rxe5 63. Nf6 Re3 64. Nfh5 Bxg3 65. Nxg3 Rxg3 66. Kh2 Rg4 67. Kxh3 Rxb4 68. a5 Ra4 69. Kg3 Rxa5 70. Kf3 Rg5 71. Kf4 Rg8 72. Ke3 h5 73. Ke4 h4 74. Ke3 Rg3+ 75. Ke4 Rg2 76. Kf4 Rg7 77. Kf3 Rg5 78. Ke3 h3 79. Kf3 Rg8 80. Ke4 h2 81. Kd4 h1=Q 82. Kd3 Qh3+ 83. Kc4 Rg4+ 84. Kc5 Rg5+ 85. Kd4 Qh4+ 86. Kc3 Rg3+ 87. Kc2 Qh2+ 88. Kb1 Rg1# { Checkmate. } 0-1
+
+[Event "machete rating ladder vs Rybka 2.3.2a"]
+[Site "AMD Threadripper 2920X, Windows 10 - one search thread each"]
+[Date "2026.09.22"]
+[Round "LADDER-02, game 337 of the run"]
+[White "Rybka 2.3.2a"]
+[Black "machete"]
+[Result "0-1"]
+[WhiteElo "3050"]
+[TimeControl "-"]
+[MoveTime "1000 ms per move"]
+[PlyCount "118"]
+[Annotator "Stockfish, depth 16, added 2026-09-22"]
+
+{ machete took the initiative early - +2.6 by ply 20 - and built it to a crushing position before Rybka's position gave way. The first four plies are the ladder's random opening. At the mate machete had BNPPPQ against PR. } 1. b3 h6 2. b4 e5 { End of the random opening. From here on, both engines play for themselves. } 3. b5 a6 4. Nc3 axb5 5. Nxb5 c6 6. Nc3 d5 { machete takes a clear advantage: Stockfish +2.08. } 7. Nf3 Bd6 8. e3 Nf6 9. Be2 Bf5 10. Rb1 b5 11. a3 Nbd7 12. O-O O-O 13. d4 e4 14. Nh4 Bh7 15. g3 Nb6 16. Bb2 Qd7 17. Ng2 Nc4 18. Bxc4 bxc4 19. Qe2 Bf5 20. Rfc1 Bg4 21. Qf1 h5 22. a4 Nh7 23. h4 Nf6 24. Ra1 Bb4 25. Nf4 Bf3 26. Rcb1 Ng4 27. Nce2 Rfb8 28. Bc3 Bd6 29. a5 Rxb1 30. Rxb1 g6 31. Qc1 Bc7 32. Bb4 Qf5 33. Nc3 g5 34. hxg5 Qxg5 35. Nce2 h4 36. Nh3 Qh6 { Decisive: Stockfish +5.20. } 37. Qf1 hxg3 38. Nxg3 Qh4 39. Be7 Qxe7 40. Nf4 Bxf4 41. Qh3 Bxg3 42. Qxg3 Kg7 43. Kf1 Rh8 44. Qg1 Rh1 45. Qxh1 Bxh1 46. Ke2 Bf3+ 47. Ke1 Qh4 48. Kd2 Qxf2+ 49. Kc3 Qxe3+ 50. Kb2 Qxd4+ 51. Ka2 Qa7 52. a6 Qxa6+ 53. Kb2 Kf6 54. Re1 c3+ 55. Kb3 Qb5+ 56. Kxc3 d4+ 57. Kxd4 c5+ 58. Kd5 e3+ 59. Kd6 Qc6# { Checkmate. } 0-1
+

@@ -1,0 +1,15 @@
+[Event "machete rating ladder vs Koivisto 9.0"]
+[Site "AMD Threadripper 2920X, Windows 10 - one thread each"]
+[Date "2026.09.21"]
+[Round "ladder_v2, game 437 of the run"]
+[White "machete"]
+[Black "Koivisto 9.0"]
+[Result "1-0"]
+[WhiteElo "-"]
+[BlackElo "3300"]
+[TimeControl "-"]
+[MoveTime "200 ms per move"]
+[PlyCount "185"]
+[Annotator "Stockfish, depth 18, added 2026-09-22"]
+
+{ machete's cleanest win over Koivisto 9.0: the game in which Koivisto made no catastrophic mistake and still lost. The first four plies are the rating ladder's random opening; everything after that is the engines. Queens came off at move 11. machete won Black's passed e-pawn, the game reduced to rook against bishop - a drawn ending - and after twenty moves of holding it, Koivisto lost the bishop. machete then mated with king and rook. } 1. Nc3 b6 2. d3 e5 { End of the random opening. From here on, both engines play for themselves. } 3. Nf3 Nc6 4. e4 Nf6 5. d4 exd4 6. Nxd4 Nxd4 7. Qxd4 Bc5 8. Qe5+ Kf8 9. Bg5 h6 10. Bxf6 Qxf6 11. Qxf6 gxf6 12. O-O-O Bxf2 13. Bc4 c6 14. Rhf1 Bh4 15. Kb1 b5 16. Bb3 a5 17. g3 Bg5 18. h4 a4 19. Bxf7 Kxf7 20. hxg5 b4 21. Rxf6+ Ke7 22. Ne2 hxg5 23. Rg6 Ra5 24. Nd4 Re5 25. Nf5+ Kf7 26. Rxg5 Kf6 27. Rg4 d5 28. Rf4 Rxe4 29. Rxe4 dxe4 30. Nd6 e3 31. Rf1+ Kg6 32. Re1 Ba6 33. Kc1 e2 34. a3 bxa3 35. bxa3 Rh3 36. c4 Rh2 37. Kd2 Kf6 38. Kd3 Rg2 39. Ne4+ Kf5 40. Kd4 Kg4 41. Kd3 Rh2 42. Nc3 Kf3 43. Rxe2 { machete wins Black's dangerous passed e-pawn. Stockfish +1.62. } 43... Rh5 44. Re3+ Kg2 45. Nxa4 Ra5 46. Nc3 Rc5 47. Re4 Kxg3 48. Rd4 Rf5 49. Ne4+ Kf3 50. Nd2+ Kg3 51. Rd6 Rd5+ 52. Ke3 Ra5 53. Ne4+ Kg4 54. Rg6+ Kh5 55. Rxc6 Rxa3+ 56. Kf4 Bxc4 57. Ng3+ Rxg3 58. Kxg3 { Rook against bishop, no pawns left: a theoretical draw, and Stockfish agrees (+0.59). Koivisto holds it for the next twenty moves. } 58... Bb3 59. Rd6 Kg5 60. Rd2 Bc4 61. Kf3 Kf5 62. Rc2 Bd5+ 63. Ke3 Kf6 64. Rb2 Bc4 65. Rf2+ Kg5 66. Rc2 Bf1 67. Rc5+ Kg4 68. Kf2 Bd3 69. Rc7 Be4 70. Ke3 Bd5 71. Rd7 Bh1 72. Rg7+ Kf5 73. Rf7+ Kg5 74. Rc7 Kf5 75. Rc1 Bg2 76. Rg1 Bd5 77. Ra1 Be4 { The decisive slip. Stockfish goes from +0.41 to +5.33: after 78. Ra5+ the king has to leave the bishop, and 79. Kxe4 takes it. } 78. Ra5+ Ke6 79. Kxe4 { King and rook against a bare king - the ending machete could not always convert. Here it mates in fourteen moves. } 79... Kd7 80. Rd5+ Kc8 81. Rd2 Kb8 82. Rd8+ Kc7 83. Rd1 Kc8 84. Kf4 Kb7 85. Rd2 Kb6 86. Rc2 Ka7 87. Rb2 Ka8 88. Ke5 Ka7 89. Kd6 Ka6 90. Kc5 Ka7 91. Kc6 Ka8 92. Kc7 Ka7 93. Ra2# { Checkmate. } 1-0

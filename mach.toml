@@ -1,9 +1,14 @@
 [project]
-id = "example"
+id = "machete"
 version = "0.1.0"
-mach = "^5.10"
+mach = "^5.11"
 src = "src"
 out = "out/{target.name}/{profile.name}"
+
+[target.windows-x86_64]
+isa = "x86_64"
+os  = "windows"
+abi = "win64"
 
 [target.linux-x86_64]
 isa = "x86_64"
@@ -15,25 +20,29 @@ isa = "aarch64"
 os  = "linux"
 abi = "aapcs64"
 
-[target.windows-x86_64]
-isa = "x86_64"
-os  = "windows"
-abi = "win64"
-
 [target.darwin-x86_64]
 isa = "x86_64"
 os  = "darwin"
 abi = "sysv64"
 
-[target.darwin-aarch64]
-isa = "aarch64"
-os  = "darwin"
-abi = "aapcs64"
+# darwin-aarch64 is left out until briar-systems/mach#3888: the 128 MB
+# transposition table puts dynamic call stubs out of a 26-bit branch's reach.
+# Apple silicon runs the darwin-x86_64 build under Rosetta.
 
-[artifact.example]
+[artifact.machete]
+default = true
 kind = "bin"
-entry = "main.mach"
-out = "bin/example{artifact.suffix}"
+entry = "root.mach"
+out = "bin/machete{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# decodes Leela training data (binpack) into training records; see src/binpack.mach
+[artifact.binpack]
+kind = "bin"
+entry = "tools/binpack.mach"
+out = "bin/binpack{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -63,4 +72,4 @@ float_reassoc = false
 
 [dep.std]
 git = "https://github.com/briar-systems/mach-std"
-version = "^7.0.2"
+version = "^7.0"
