@@ -1,0 +1,190 @@
+# Lazy SMP: several threads search the same position and share one
+# transposition table
+#
+# there is no work splitting. each helper runs its own iterative deepening on
+# its own copy of the position, and the table is the only channel between
+# them: a helper that finishes a subtree first leaves the answer where the
+# others will find it. the win comes from that sharing plus the different
+# move orders the helpers drift into, not from dividing the tree.
+#
+# what the threads actually share is exactly two things:
+#
+#   - the transposition table, written without locks. a torn entry is
+#     possible and tolerated: the move field is only ever used to order moves
+#     that generation produced, so a wrong one is ignored rather than played,
+#     and score cutoffs are skipped in principal variation nodes. the cost of
+#     a rare torn entry is a worse search, never an illegal move.
+#   - the stop flag, read and written with std.sync.atomic.
+#
+# everything else - position, killers, history, the PV table - is per thread.
+
+use std.sync.atomic;
+use std.sync.thread;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
+use nn: machete.nnue;
+use machete.clock;
+use mv: machete.move;
+use machete.move.Move;
+use pos: machete.position;
+use machete.position.Position;
+use machete.search;
+
+pub val MAX_THREADS: i64 = 32;
+
+# a helper thread's own state; the arrays are large, so these live here rather
+# than on any stack
+rec Helper {
+    board:  Position;
+    engine: search.Search;
+    depth:  i64;
+    active: i64;
+}
+
+var HELPERS: [32]Helper;
+var THREADS: [32]thread.Thread;
+var LIMITS:  search.Limits;
+# how many helpers the current search started, for the node counter below
+var active_helpers: i64 = 0;
+
+# a helper needs room for MAX_PLY frames, each holding a move list
+val HELPER_STACK: usize = 8388608;
+
+use std.types.size.usize;
+
+fun helper_entry(arg: *u8) {
+    val index: i64     = arg::usize::i64;
+    val h:     *Helper = ?HELPERS[index];
+    search.reset(?h.engine);
+    h.engine.quiet = 1;
+    # helper 0 is the main thread, so helpers take stacks 1 and up
+    h.engine.thread_id = index;
+    # helpers never print and never own the clock: they run until stopped
+    var limits: search.Limits;
+    limits.depth    = search.MAX_PLY - 2;
+    limits.infinite = 1;
+    search.think(?h.engine, ?h.board, ?limits);
+    atomic.store(?h.active, 0);
+}
+
+# what search.POOL_NODES points at while a pooled search is running; racy by
+# design, since it only feeds an info line
+fun running_helper_nodes() i64 {
+    ret helper_nodes(active_helpers + 1);
+}
+
+# total nodes searched by the helpers of the last search
+pub fun helper_nodes(count: i64) i64 {
+    var total: i64 = 0;
+    var i:     i64 = 1;
+    for (i < count) {
+        total = total + HELPERS[i].engine.nodes;
+        i     = i + 1;
+    }
+    ret total;
+}
+
+# search with `threads` threads in total, one of them this one
+# ---
+# s:       the main thread's search state, which reports info lines
+# p:       position to search
+# limits:  the bounds the main search obeys
+# threads: total thread count, clamped to 1..MAX_THREADS
+# ret:     the best move
+pub fun think(s: *search.Search, p: *Position, limits: *search.Limits, threads: i64) Move {
+    var count: i64 = threads;
+    if (count < 1)           { count = 1; }
+    if (count > MAX_THREADS) { count = MAX_THREADS; }
+    if (count == 1)          { ret search.think(s, p, limits); }
+
+    search.clear_global_stop();
+    var started: i64 = 0;
+    active_helpers    = 0;
+    search.POOL_NODES = running_helper_nodes;
+    var i: i64 = 1;
+    for (i < count) {
+        HELPERS[i].board  = @p;
+        HELPERS[i].active = 1;
+        var config: thread.Config;
+        thread.config_default(?config);
+        config.stack_reserve = HELPER_STACK;
+        config.name          = "machete-helper";
+        val op: thread.Operation = thread.spawn_with_config(helper_entry, i::usize::*u8, ?config, ?THREADS[i]);
+        if (sel op.err) {
+            HELPERS[i].active = 0;
+            brk;
+        }
+        started        = i;
+        active_helpers = i;
+        i              = i + 1;
+    }
+
+    # the main thread searches under the real limits and decides when to stop
+    val best: Move = search.think(s, p, limits);
+
+    # tell the helpers to finish, then wait for each one that started
+    search.request_global_stop();
+    i = 1;
+    for (i <= started) {
+        thread.join(?THREADS[i]);
+        i = i + 1;
+    }
+    search.clear_global_stop();
+    search.POOL_NODES = nil;
+    ret best;
+}
+
+test "smp: every thread has an accumulator stack of its own" {
+    # nnue.mach sizes its stack array by a copy of this number, because it
+    # cannot import this module without a cycle. If they ever drift, a helper
+    # thread writes into another thread's accumulator and the only symptom is
+    # a search that evaluates slightly wrong positions.
+    if (nn.STACK_COUNT < MAX_THREADS + 1) { ret 1; }
+    ret 0;
+}
+
+test "smp: a parallel search returns the same mate as a single thread" {
+    pos.init();
+    var p: Position;
+    # a mate in one from fixtures/mate1.epd
+    if (!pos.set_fen(?p, "8/8/5K1k/8/R7/8/8/8 w - - 7 84")) { ret 1; }
+
+    var s: search.Search;
+    search.reset(?s);
+    s.quiet = 1;
+    var limits: search.Limits;
+    limits.depth = 4;
+
+    val best:    Move = think(?s, ?p, ?limits, 4);
+    var spelled: [6]u8;
+    mv.to_uci(best, ?spelled[0]);
+    if (spelled[0] != 'a' || spelled[1] != '4' || spelled[2] != 'h' || spelled[3] != '4') { ret 2; }
+    ret 0;
+}
+
+test "smp: helpers run and are joined" {
+    pos.init();
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+
+    var s: search.Search;
+    search.reset(?s);
+    s.quiet = 1;
+    var limits: search.Limits;
+    limits.movetime = 300;
+
+    val best: Move = think(?s, ?p, ?limits, 4);
+    if (best == mv.NONE) { ret 2; }
+    # the helpers searched something, and every one of them has stopped
+    if (helper_nodes(4) == 0) { ret 3; }
+    var i: i64 = 1;
+    for (i < 4) {
+        if (HELPERS[i].active != 0) { ret 4; }
+        i = i + 1;
+    }
+    # and a second search still works, so nothing was left in a bad state
+    if (think(?s, ?p, ?limits, 4) == mv.NONE) { ret 5; }
+    ret 0;
+}

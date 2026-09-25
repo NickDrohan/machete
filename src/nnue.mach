@@ -1,0 +1,334 @@
+# a quantized perspective network, evaluated incrementally
+#
+#   768 inputs -> 256 hidden per perspective (one shared weight matrix) -> 1
+#
+# a feature is (colour, piece kind, square), all three relative to whichever
+# side is looking. seen from black the colours swap and the squares flip
+# vertically, so "my pieces on my side of the board" always lands in the same
+# inputs and the network never learns the board twice.
+#
+# the hidden layer is only ever updated, never recomputed: a move touches at
+# most a handful of features, so make/unmake add and subtract columns instead
+# of walking 32 pieces. position.mach owns that bookkeeping; this file owns
+# the arithmetic.
+#
+# everything is integers. hidden values are on a scale where 1.0 is QA and
+# output weights on one where 1.0 is QB, so the dot product lands on QA*QB and
+# a single divide at the end turns it into centipawns. the float network that
+# produced these numbers lives in harness/nnue, which is also the reference
+# this implementation is checked against.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+
+use std.simd.reduce.hsum_i32x4;
+use std.simd.select.select_i16x8;
+use std.simd.shuffle.splat_i16x8;
+use std.simd.shuffle.splat_i32x4;
+
+use fs:       std.filesystem;
+use io_error: std.io.error;
+
+pub val INPUTS: i64 = 768;
+pub val HIDDEN: i64 = 256;
+
+val QA:     i64 = 255;   # a clipped-relu output of 1.0
+val QB:     i64 = 64;    # an output weight of 1.0
+val HEADER: i64 = 32;
+
+# how many centipawns a network output of 1.0 is worth. Unlike QA and QB this
+# does not change the arithmetic, only the units the answer comes back in, so
+# it is read from the file rather than fixed here: it is the one constant a
+# retrained network is likely to want to move, and nothing else depends on it.
+var SCALE: i64 = 400;
+
+# aligned because output() and the accumulator read these 128 bits at a time.
+# The alignment happens to hold without saying so; saying so keeps it true.
+#[align(16)]
+pub var FEATURE_WEIGHTS: [INPUTS * HIDDEN]i16;
+#[align(16)]
+pub var FEATURE_BIAS:    [HIDDEN]i16;
+#[align(16)]
+pub var OUTPUT_WEIGHTS:  [2 * HIDDEN]i16;
+pub var OUTPUT_BIAS:     i32 = 0;
+
+
+# whether a network file has been read; until it has, the engine uses the
+# hand-written evaluation
+pub var loaded: bool = false;
+
+# the most features one move can change: castling moves a king and a rook, and
+# each of those is a remove and a put. a capture is three (the captured piece,
+# the mover leaving, the mover arriving) and a promotion with capture is also
+# three, so four is the ceiling over every path through make().
+val CHANGES: i64 = 4;
+
+# one position's hidden layer, both perspectives. index 0 is white's view.
+#
+# `ready` is the whole point of the deferred scheme: a move records what it
+# changed and returns, and `v` is only built when something actually asks for
+# an evaluation. In a real search 64% of positions reached by make() are never
+# evaluated - they are illegal, or late move pruning throws them away - and
+# patching 512 int16 lanes for those was most of what the network cost.
+#[align(16)]
+pub rec Acc {
+    v:      [2][HIDDEN]i16;
+    ready:  i64;
+    count:  i64;
+    piece:  [CHANGES]u8;
+    square: [CHANGES]i64;
+    plus:   [CHANGES]i64;
+}
+
+# set when a move reports more changes than CHANGES allows, which the ceiling
+# above says cannot happen. a test asserts it stays zero rather than trusting
+# the argument.
+pub var OVERFLOW: i64 = 0;
+
+# a search never goes deeper than MAX_PLY, and quiescence is bounded by the
+# same ceiling, so a stack twice that plus headroom cannot be run off the end.
+# these are globals because a per-thread stack is 96 KB and helper threads
+# keep everything large off their own stacks.
+val SLOTS:   i64 = 160;
+# one stack per search thread, plus the main thread. smp.MAX_THREADS is 32;
+# this file cannot import smp without a cycle, so the number is repeated here
+# and the test below checks they still agree.
+pub val STACK_COUNT: i64 = 33;
+var STACKS: [STACK_COUNT][SLOTS]Acc;
+
+# the accumulator stack belonging to one thread; 0 is the main thread
+pub fun stack(id: i64) *Acc {
+    ret ?STACKS[id][0];
+}
+
+# where (piece, square) lands in the 768 inputs, seen from one side
+fun index(perspective: i64, pc: u8, sq: i64) i64 {
+    var colour: i64 = (pc / 6)::i64;
+    val kind:   i64 = (pc % 6)::i64;
+    var square: i64 = sq;
+    if (perspective == 1) {
+        colour = colour ^ 1;
+        square = square ^ 56;
+    }
+    ret (colour * 6 + kind) * 64 + square;
+}
+
+# 128 bits at a time: eight i16 lanes, which is what x86-64 gives us without
+# reaching for AVX. writing the vector out as a literal would be eight scalar
+# loads and seven inserts, so the pointer is reinterpreted instead and the
+# whole register arrives in one move.
+fun load8(p: *i16, at: i64) i16x8 {
+    ret @((?p[at]):~*i16x8);
+}
+
+fun store8(p: *i16, at: i64, v: i16x8) {
+    @((?p[at]):~*i16x8) = v;
+}
+
+# mark a slot as owing its contents to its parent plus the changes it records
+pub fun defer(a: *Acc) {
+    a.ready = 0;
+    a.count = 0;
+}
+
+# record one feature change, or apply it now if this slot is already built
+pub fun change(a: *Acc, pc: u8, sq: i64, plus: i64) {
+    if (a.ready != 0) {
+        if (plus != 0) { add(a, pc, sq); }
+        or             { sub(a, pc, sq); }
+        ret;
+    }
+    if (a.count >= CHANGES) {
+        OVERFLOW = OVERFLOW + 1;
+        ret;
+    }
+    a.piece[a.count]  = pc;
+    a.square[a.count] = sq;
+    a.plus[a.count]   = plus;
+    a.count           = a.count + 1;
+}
+
+# build every slot from the deepest one that is already built up to `top`
+pub fun materialise(accs: *Acc, top: i64) {
+    var first: i64 = top;
+    for (first > 0 && accs[first].ready == 0) { first = first - 1; }
+    var at: i64 = first + 1;
+    for (at <= top) {
+        val a: *Acc = ?accs[at];
+        carry(a, ?accs[at - 1]);
+        var k: i64 = 0;
+        for (k < a.count) {
+            if (a.plus[k] != 0) { add(a, a.piece[k], a.square[k]); }
+            or                  { sub(a, a.piece[k], a.square[k]); }
+            k = k + 1;
+        }
+        a.ready = 1;
+        at      = at + 1;
+    }
+}
+
+# start from the bias, with no pieces on the board
+pub fun reset(a: *Acc) {
+    a.ready = 1;
+    a.count = 0;
+    var side: i64 = 0;
+    for (side < 2) {
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            a.v[side][i] = FEATURE_BIAS[i];
+            i = i + 1;
+        }
+        side = side + 1;
+    }
+}
+
+pub fun add(a: *Acc, pc: u8, sq: i64) {
+    var side: i64 = 0;
+    for (side < 2) {
+        val base: i64 = index(side, pc, sq) * HIDDEN;
+        val into: *i16 = ?a.v[side][0];
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            store8(into, i, load8(into, i) + load8(?FEATURE_WEIGHTS[base], i));
+            i = i + 8;
+        }
+        side = side + 1;
+    }
+}
+
+pub fun sub(a: *Acc, pc: u8, sq: i64) {
+    var side: i64 = 0;
+    for (side < 2) {
+        val base: i64 = index(side, pc, sq) * HIDDEN;
+        val into: *i16 = ?a.v[side][0];
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            store8(into, i, load8(into, i) - load8(?FEATURE_WEIGHTS[base], i));
+            i = i + 8;
+        }
+        side = side + 1;
+    }
+}
+
+# a child position starts from its parent's hidden layer and is then patched
+pub fun carry(child: *Acc, parent: *Acc) {
+    var side: i64 = 0;
+    for (side < 2) {
+        val to:   *i16 = ?child.v[side][0];
+        val from: *i16 = ?parent.v[side][0];
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            store8(to, i, load8(from, i));
+            i = i + 8;
+        }
+        side = side + 1;
+    }
+}
+
+# one perspective's contribution to the output
+#
+# A clipped hidden value is 0..QA and an output weight is -127..127, so every
+# product fits an int16 exactly (255 * 127 = 32385); only the running sum needs
+# to be wider. So the multiply stays in i16x8, which SSE2 has as a single
+# instruction, and only the products are widened. Multiplying after widening
+# was tried and measured slower: SSE2 has no packed 32-bit multiply, and the
+# emulation cost more than it saved.
+#
+# The eight products are then widened to two i32x4 and summed. The widening
+# literal compiles to a packed unpack as of mach 5.11.0 (mach#3738); before
+# that it went lane by lane through memory, so this was written as a masking
+# trick over two overlapping loads - one of which read an element past the end
+# of the output weights, harmlessly masked away. One load, one clamp and one
+# multiply per eight lanes now, and nothing read out of bounds.
+fun accumulate(values: *i16, weights: *i16, running: i32x4) i32x4 {
+    val zero: i16x8 = splat_i16x8(0);
+    val high: i16x8 = splat_i16x8(QA::i16);
+    var acc:  i32x4 = running;
+    var i:    i64   = 0;
+    for (i < HIDDEN) {
+        var clipped: i16x8 = load8(values, i);
+        clipped = select_i16x8(clipped < zero, zero, clipped);
+        clipped = select_i16x8(high < clipped, high, clipped);
+        val product: i16x8 = clipped * load8(weights, i);
+        acc = acc + i32x4{product[0]::i32, product[1]::i32, product[2]::i32, product[3]::i32}
+                  + i32x4{product[4]::i32, product[5]::i32, product[6]::i32, product[7]::i32};
+        i = i + 8;
+    }
+    ret acc;
+}
+
+# centipawns from the side to move's point of view
+#
+# the side to move's half of the hidden layer is read first, so the network
+# can learn that having the move is worth something.
+pub fun output(a: *Acc, side: u8) i64 {
+    val us:  i64   = side::i64;
+    var acc: i32x4 = splat_i32x4(0);
+    acc = accumulate(?a.v[us][0], ?OUTPUT_WEIGHTS[0], acc);
+    acc = accumulate(?a.v[us ^ 1][0], ?OUTPUT_WEIGHTS[HIDDEN], acc);
+    val total: i64 = hsum_i32x4(acc)::i64;
+    ret (total + OUTPUT_BIAS::i64) * SCALE / (QA * QB);
+}
+
+fun u32_at(buf: *u8, at: i64) i64 {
+    ret (@((?buf[at]):~*u32))::i64;
+}
+
+fun read_exact(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val got: res[usize, io_error.Error] = fs.read(f, ?buf[at], (len - at)::usize);
+        if (sel got.err)    { ret false; }
+        if (got.ok::i64 == 0) { ret false; }
+        at = at + got.ok::i64;
+    }
+    ret true;
+}
+
+fun read_body(f: fs.File) bool {
+    var head: [32]u8;
+    if (!read_exact(f, ?head[0], HEADER)) { ret false; }
+
+    val magic: str = "MCHNNUE1";
+    var i: i64 = 0;
+    for (i < 8) {
+        if (head[i] != magic[i]) { ret false; }
+        i = i + 1;
+    }
+    # a file built for different dimensions or scales would evaluate to
+    # plausible nonsense, so refuse it rather than load it
+    if (u32_at(?head[0], 8)  != INPUTS) { ret false; }
+    if (u32_at(?head[0], 12) != HIDDEN) { ret false; }
+    if (u32_at(?head[0], 16) != QA)     { ret false; }
+    if (u32_at(?head[0], 20) != QB)     { ret false; }
+    val scale: i64 = u32_at(?head[0], 24);
+    if (scale < 1 || scale > 4000)      { ret false; }
+    SCALE = scale;
+
+    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2)) { ret false; }
+    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))             { ret false; }
+    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, 2 * HIDDEN * 2))       { ret false; }
+
+    var tail: [4]u8;
+    if (!read_exact(f, ?tail[0], 4)) { ret false; }
+    OUTPUT_BIAS = @((?tail[0]):~*i32);
+
+    ret true;
+}
+
+# read a network file; false leaves the engine on its hand-written evaluation
+pub fun load(path: str) bool {
+    loaded = false;
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f:  fs.File = opened.ok;
+    val ok: bool    = read_body(f);
+    val shut: err[io_error.Error] = fs.close(?f);
+    loaded = ok;
+    ret ok;
+}

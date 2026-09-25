@@ -1,0 +1,87 @@
+# moves packed into a u32: from in bits 0-5, to in 6-11, flag in 12-15
+#
+# flag values follow the common 4-bit scheme: bit 2 marks a capture and bit 3
+# a promotion, whose low two bits select knight, bishop, rook or queen.
+
+pub def Move: u32;
+
+pub val NONE: Move = 0;
+
+pub val QUIET:         u32 = 0;
+pub val DOUBLE_PUSH:   u32 = 1;
+pub val KING_CASTLE:   u32 = 2;
+pub val QUEEN_CASTLE:  u32 = 3;
+pub val CAPTURE:       u32 = 4;
+pub val EP_CAPTURE:    u32 = 5;
+pub val PROMO:         u32 = 8;
+pub val PROMO_CAPTURE: u32 = 12;
+
+pub fun make(from: i64, to: i64, flag: u32) Move {
+    ret from::u32 | (to::u32 << 6) | (flag << 12);
+}
+
+pub fun from(m: Move) i64 {
+    ret (m & 63)::i64;
+}
+
+pub fun to(m: Move) i64 {
+    ret ((m >> 6) & 63)::i64;
+}
+
+pub fun flag(m: Move) u32 {
+    ret (m >> 12) & 15;
+}
+
+pub fun is_capture(m: Move) u8 {
+    ret (flag(m) & 4) != 0;
+}
+
+pub fun is_promotion(m: Move) u8 {
+    ret (flag(m) & 8) != 0;
+}
+
+# piece type a promotion creates: 1 knight, 2 bishop, 3 rook, 4 queen
+pub fun promotion_type(m: Move) u8 {
+    ret ((flag(m) & 3) + 1)::u8;
+}
+
+# write the UCI spelling ("e2e4", "e7e8q") into out, which needs 6 bytes
+pub fun to_uci(m: Move, out: *u8) {
+    val f: i64 = from(m);
+    val t: i64 = to(m);
+    out[0] = ('a'::i64 + (f & 7))::u8;
+    out[1] = ('1'::i64 + (f >> 3))::u8;
+    out[2] = ('a'::i64 + (t & 7))::u8;
+    out[3] = ('1'::i64 + (t >> 3))::u8;
+    if (is_promotion(m)) {
+        val kind: u8 = promotion_type(m);
+        if (kind == 1) { out[4] = 'n'; }
+        or (kind == 2) { out[4] = 'b'; }
+        or (kind == 3) { out[4] = 'r'; }
+        or             { out[4] = 'q'; }
+        out[5] = 0;
+    }
+    or {
+        out[4] = 0;
+    }
+}
+
+test "move: fields round-trip" {
+    val m: Move = make(12, 28, DOUBLE_PUSH);
+    if (from(m) != 12 || to(m) != 28 || flag(m) != DOUBLE_PUSH) { ret 1; }
+    if (is_capture(m) || is_promotion(m))                       { ret 2; }
+    val p: Move = make(52, 61, PROMO_CAPTURE + 3);
+    if (!is_capture(p) || !is_promotion(p) || promotion_type(p) != 4)          { ret 3; }
+    if (!is_capture(make(1, 2, EP_CAPTURE)))                                   { ret 4; }
+    if (is_capture(make(4, 6, KING_CASTLE)) || is_capture(make(8, 16, PROMO))) { ret 5; }
+    ret 0;
+}
+
+test "move: uci spelling" {
+    var buf: [6]u8;
+    to_uci(make(12, 28, DOUBLE_PUSH), ?buf[0]);
+    if (buf[0] != 'e' || buf[1] != '2' || buf[2] != 'e' || buf[3] != '4' || buf[4] != 0) { ret 1; }
+    to_uci(make(52, 60, PROMO + 3), ?buf[0]);
+    if (buf[4] != 'q' || buf[5] != 0) { ret 2; }
+    ret 0;
+}

@@ -1,0 +1,851 @@
+# iterative deepening principal variation search
+#
+# the shape is conventional: a fail-soft alpha-beta with a transposition
+# table, null-move pruning, late-move reductions, and a quiescence search that
+# only looks at captures and promotions, so the evaluation is never called on
+# a position where something is hanging mid-exchange.
+#
+# nothing here allocates. the move lists, killers, history and the triangular
+# PV table are fixed arrays inside Search, which the caller owns.
+
+use std.print;
+use std.sync.atomic;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
+use machete.clock;
+use machete.eval;
+use mv: machete.move;
+use machete.move.Move;
+use machete.movegen;
+use machete.movegen.MoveList;
+use pos: machete.position;
+use machete.position.Position;
+use machete.see;
+use nn: machete.nnue;
+use machete.tt;
+
+pub val INFINITE: i64 = 31000;
+pub val MATE:     i64 = 30000;
+# scores at least this good mean a forced mate was found
+pub val MATE_FOUND: i64 = 29000;
+
+pub val MAX_PLY: i64 = 64;
+
+# no static evaluation: the node was in check
+val NO_EVAL: i64 = 0 - 32000;
+
+# How much to reduce the Nth quiet move at depth D.
+#
+# The old rule reduced by one, or two past the eighth move. That is far too
+# timid: it left an effective branching factor above 2.3, where the tree a
+# strong engine searches grows at about 1.5 per ply, and the difference is
+# what decides whether a second buys depth 10 or depth 16.
+#
+# The shape is the standard one - 0.75 + ln(depth) * ln(move) / 2.25 - which
+# reduces almost nothing early and up to five plies for the fiftieth move at
+# depth 30. std has no natural log, so the table is built at startup with a
+# bit-by-bit log2, which costs microseconds once.
+var REDUCTION: [64][64]i64;
+var table_ready: i64 = 0;
+
+fun log2_f64(x: f64) f64 {
+    var m:      f64 = x;
+    var result: f64 = 0.0;
+    for (m >= 2.0) {
+        m      = m / 2.0;
+        result = result + 1.0;
+    }
+    for (m < 1.0) {
+        m      = m * 2.0;
+        result = result - 1.0;
+    }
+    # each squaring decides one more bit of the fraction
+    var weight: f64 = 0.5;
+    var i:      i64 = 0;
+    for (i < 24) {
+        m = m * m;
+        if (m >= 2.0) {
+            m      = m / 2.0;
+            result = result + weight;
+        }
+        weight = weight / 2.0;
+        i      = i + 1;
+    }
+    ret result;
+}
+
+fun ln_f64(x: f64) f64 {
+    ret log2_f64(x) * 0.6931471805599453;
+}
+
+pub fun init_tables() {
+    if (table_ready != 0) { ret; }
+    var depth: i64 = 0;
+    for (depth < 64) {
+        var move: i64 = 0;
+        for (move < 64) {
+            var r: i64 = 0;
+            if (depth >= 3 && move >= 1) {
+                r = (0.75 + ln_f64(depth::f64) * ln_f64((move + 1)::f64) / 2.25)::i64;
+            }
+            if (r < 0) { r = 0; }
+            REDUCTION[depth][move] = r;
+            move = move + 1;
+        }
+        depth = depth + 1;
+    }
+    table_ready = 1;
+}
+
+# how many nodes the rest of a thread pool has searched
+#
+# the pool lives in machete.smp, which imports this module, so it cannot be asked
+# directly without a cycle. it leaves a function here instead, and info lines
+# report the whole pool's node count rather than one thread's.
+pub def NodeCounter: fun() i64;
+
+pub var POOL_NODES: NodeCounter = nil;
+
+fun reported_nodes(s: *Search) i64 {
+    if (POOL_NODES == nil) { ret s.nodes; }
+    ret s.nodes + POOL_NODES();
+}
+
+# how the caller bounds the search; zero means unset
+# ---
+# depth:    stop after this iteration
+# movetime: milliseconds for this move
+# wtime:    white's remaining clock, and so on
+# infinite: search until stopped
+pub rec Limits {
+    depth:    i64;
+    movetime: i64;
+    wtime:    i64;
+    btime:    i64;
+    winc:     i64;
+    binc:     i64;
+    infinite: u8;
+}
+
+# ---
+# nodes:    nodes visited, including quiescence
+# stop:     set from outside to abandon the search
+# deadline: monotonic millisecond after which to stop; 0 means no deadline
+# best:     best move of the last completed iteration
+# quiet:    suppress info lines (used by bench and tests)
+pub rec Search {
+    nodes:         i64;
+    stop:          i64;
+    deadline:      i64;
+    started:       i64;
+    best:          Move;
+    depth_reached: i64;
+    quiet:         u8;
+    # which accumulator stack this search owns; every thread needs its own
+    thread_id:     i64;
+    killers:       [64][2]Move;
+    history:       [12][64]i64;
+    # the quiet move that refuted the same reply last time, indexed by the
+    # piece the opponent just moved and where it landed
+    counter:       [12][64]Move;
+    played:        [64]Move;
+    mover:         [64]u8;
+    # each node's static evaluation, by ply, or NO_EVAL when it was in check
+    evals:         [64]i64;
+    pv:            [64][64]Move;
+    pv_len:        [64]i64;
+}
+
+pub fun reset(s: *Search) {
+    s.nodes     = 0;
+    s.thread_id = 0;
+    s.stop      = 0;
+    s.deadline = 0;
+    s.best     = mv.NONE;
+    var i: i64 = 0;
+    for (i < MAX_PLY) {
+        s.killers[i][0] = mv.NONE;
+        s.killers[i][1] = mv.NONE;
+        s.pv_len[i]     = 0;
+        i               = i + 1;
+    }
+    var pc: i64 = 0;
+    for (pc < 12) {
+        var sq: i64 = 0;
+        for (sq < 64) {
+            s.history[pc][sq] = 0;
+            s.counter[pc][sq] = mv.NONE;
+            sq                = sq + 1;
+        }
+        pc = pc + 1;
+    }
+    i = 0;
+    for (i < MAX_PLY) {
+        s.played[i] = mv.NONE;
+        s.mover[i]  = 0;
+        s.evals[i]  = NO_EVAL;
+        i           = i + 1;
+    }
+}
+
+# History with gravity: a cutoff raises a move's score and a quiet move that
+# failed lowers it, both scaled by depth, and each update pulls the value
+# towards zero in proportion to its size. That keeps the table bounded without
+# a hard cap and lets old information decay as new arrives.
+val HISTORY_MAX: i64 = 16384;
+
+fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
+    val piece: u8  = p.board[mv.from(m)];
+    val to:    i64 = mv.to(m);
+    var bonus: i64 = depth * depth;
+    if (bonus > 400)  { bonus = 400; }
+    if (!good)        { bonus = 0 - bonus; }
+    var magnitude: i64 = bonus;
+    if (magnitude < 0) { magnitude = 0 - magnitude; }
+    val current: i64 = s.history[piece][to];
+    s.history[piece][to] = current + bonus * 32 - current * magnitude / 512;
+}
+
+# the counter-move slot for whatever the opponent just played
+fun counter_slot(s: *Search, ply: i64) Move {
+    if (ply == 0)                 { ret mv.NONE; }
+    val prev: Move = s.played[ply - 1];
+    if (prev == mv.NONE)          { ret mv.NONE; }
+    ret s.counter[s.mover[ply - 1]][mv.to(prev)];
+}
+
+# set by any thread to end every search in flight; read on the same schedule
+# as the clock, so an idle helper still notices within a few thousand nodes
+var GLOBAL_STOP: i64 = 0;
+
+pub fun request_global_stop() {
+    atomic.store(?GLOBAL_STOP, 1);
+}
+
+pub fun clear_global_stop() {
+    atomic.store(?GLOBAL_STOP, 0);
+}
+
+fun out_of_time(s: *Search) bool {
+    if (s.stop != 0) { ret true; }
+    if ((s.nodes & 1023) == 0 && atomic.load(?GLOBAL_STOP) != 0) {
+        s.stop = 1;
+        ret true;
+    }
+    if (s.deadline == 0) { ret false; }
+    # the clock is read every 2048 nodes; reading it per node costs more than it saves
+    if ((s.nodes & 2047) != 0) { ret false; }
+    if (clock.now_ms() >= s.deadline) {
+        s.stop = 1;
+        ret true;
+    }
+    ret false;
+}
+
+# a draw that does not need searching: the fifty-move rule, a repetition, or
+# too little material left to mate with
+fun is_draw(p: *Position) bool {
+    if (p.halfmove >= 100)    { ret true; }
+    if (pos.is_repetition(p)) { ret true; }
+    ret eval.insufficient_material(p);
+}
+
+# most valuable victim, least valuable attacker
+fun capture_score(p: *Position, m: Move) i64 {
+    var victim: u8 = pos.PAWN;
+    if (mv.flag(m) != mv.EP_CAPTURE) { victim = pos.kind_of(p.board[mv.to(m)]); }
+    val attacker: u8 = pos.kind_of(p.board[mv.from(m)]);
+    ret victim::i64 * 100 - attacker::i64;
+}
+
+fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
+    if (m == tt_move)                                            { ret 1000000000; }
+    if (mv.is_promotion(m) && mv.promotion_type(m) == pos.QUEEN) { ret 900000000; }
+    if (mv.is_capture(m)) {
+        # a capture that survives the recapture sequence is worth trying early;
+        # one that loses material belongs below the quiet moves that might work
+        val gain: i64 = see.evaluate(p, m);
+        if (gain >= 0) { ret 800000000 + gain * 100 + capture_score(p, m); }
+        ret 50000000 + gain;
+    }
+    if (m == s.killers[ply][0])   { ret 700000000; }
+    if (m == s.killers[ply][1])   { ret 600000000; }
+    if (m == counter_slot(s, ply)) { ret 550000000; }
+    ret s.history[p.board[mv.from(m)]][mv.to(m)];
+}
+
+# selection sort one move at a time: most searches never look at the tail
+fun pick(list: *MoveList, scores: *i64, index: i64) {
+    var best: i64 = index;
+    var i:    i64 = index + 1;
+    for (i < list.count) {
+        if (scores[i] > scores[best]) { best = i; }
+        i = i + 1;
+    }
+    if (best != index) {
+        val m: Move = list.moves[index];
+        list.moves[index] = list.moves[best];
+        list.moves[best]  = m;
+        val v: i64 = scores[index];
+        scores[index] = scores[best];
+        scores[best]  = v;
+    }
+}
+
+fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
+    s.nodes = s.nodes + 1;
+    if (out_of_time(s)) { ret 0; }
+    var alpha: i64 = alpha_in;
+
+    # the transposition table, which quiescence used to ignore. Every stored
+    # depth is at least quiescence's own, so any entry that bounds the window
+    # ends the node, and a stored move is tried first. An entry from the main
+    # search (depth above zero) is never overwritten from here: this node's
+    # result is shallower than what is already known about the position.
+    var tt_move:   Move = mv.NONE;
+    var protected: bool = false;
+    var entry:     tt.Entry;
+    if (tt.probe(p.key, ?entry)) {
+        tt_move   = entry.move;
+        protected = entry.depth > 0;
+        var known: i64 = entry.score;
+        if (known > MATE_FOUND)                           { known = known - ply; }
+        or (known < 0 - MATE_FOUND)                       { known = known + ply; }
+        if (entry.flag == tt.EXACT)                       { ret known; }
+        if (entry.flag == tt.LOWER && known >= beta)      { ret known; }
+        if (entry.flag == tt.UPPER && known <= alpha)     { ret known; }
+    }
+
+    # A side in check may not stand pat - it is obliged to answer the check,
+    # and "do nothing" is not a legal answer. Quiescence used to stand pat
+    # regardless, so a capture that gave check was scored as if the checked
+    # side could ignore it. In check it now searches every evasion, prunes
+    # none of them, and scores no legal move as mate.
+    val in_check: bool = pos.in_check(p);
+    var stand:    i64  = 0 - INFINITE;
+    if (!in_check) {
+        # standing pat: the side to move is not obliged to capture
+        stand = eval.evaluate(p);
+        if (stand >= beta) {
+            if (!protected) { tt.store(p.key, mv.NONE, stand, 0, tt.LOWER); }
+            ret stand;
+        }
+        if (stand > alpha) { alpha = stand; }
+    }
+    if (ply >= MAX_PLY - 1) { ret eval.evaluate(p); }
+
+    var list: MoveList;
+    movegen.generate(p, ?list, !in_check);
+    var scores: [256]i64;
+    var i:      i64 = 0;
+    for (i < list.count) {
+        scores[i] = score_move(s, p, list.moves[i], tt_move, ply);
+        i         = i + 1;
+    }
+
+    var best:      i64  = stand;
+    var best_move: Move = mv.NONE;
+    var legal:     i64  = 0;
+    i = 0;
+    for (i < list.count) {
+        pick(?list, ?scores[0], i);
+        val m: Move = list.moves[i];
+        # losing captures do not improve a quiescence score, and searching them
+        # is most of the work in a noisy position
+        if (!in_check && mv.is_capture(m) && see.evaluate(p, m) < 0) {
+            i = i + 1;
+            cnt;
+        }
+        # delta pruning: even winning this piece outright would not reach alpha
+        if (!in_check && !mv.is_promotion(m) && p.board[mv.to(m)] != pos.EMPTY) {
+            val gain: i64 = see.piece_value(pos.kind_of(p.board[mv.to(m)]));
+            if (stand + gain + 200 < alpha) {
+                i = i + 1;
+                cnt;
+            }
+        }
+        pos.make(p, m);
+        if (pos.left_in_check(p)) {
+            pos.unmake(p);
+            i = i + 1;
+            cnt;
+        }
+        legal = legal + 1;
+        val score: i64 = 0 - quiesce(s, p, 0 - beta, 0 - alpha, ply + 1);
+        pos.unmake(p);
+        if (s.stop != 0) { ret 0; }
+        if (score > best) {
+            best      = score;
+            best_move = m;
+            if (score > alpha) { alpha = score; }
+            if (alpha >= beta) {
+                if (!protected) { tt.store(p.key, m, table_score(best, ply), 0, tt.LOWER); }
+                ret best;
+            }
+        }
+        i = i + 1;
+    }
+    if (in_check && legal == 0) { ret 0 - MATE + ply; }
+    if (!protected) {
+        var flag: u8 = tt.UPPER;
+        if (best > alpha_in) { flag = tt.EXACT; }
+        tt.store(p.key, best_move, table_score(best, ply), 0, flag);
+    }
+    ret best;
+}
+
+# a score as the table holds it: mates counted from the root, not from here
+fun table_score(score: i64, ply: i64) i64 {
+    if (score > MATE_FOUND)     { ret score + ply; }
+    if (score < 0 - MATE_FOUND) { ret score - ply; }
+    ret score;
+}
+
+fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i64, ply: i64, allow_null: bool) i64 {
+    s.pv_len[ply] = 0;
+    if (out_of_time(s))        { ret 0; }
+    if (ply > 0 && is_draw(p)) { ret 0; }
+    if (ply >= MAX_PLY - 1)    { ret eval.evaluate(p); }
+
+    val in_check: bool = pos.in_check(p);
+    var depth:    i64  = depth_in;
+    # a king in check is never quiesced: the position is not quiet by definition
+    if (in_check)   { depth = depth + 1; }
+    if (depth <= 0) { ret quiesce(s, p, alpha_in, beta, ply); }
+
+    s.nodes = s.nodes + 1;
+    var alpha: i64  = alpha_in;
+    val is_pv: bool = beta > alpha + 1;
+
+    var tt_move: Move = mv.NONE;
+    var entry:   tt.Entry;
+    if (tt.probe(p.key, ?entry)) {
+        tt_move = entry.move;
+        if (!is_pv && entry.depth >= depth) {
+            var score: i64 = entry.score;
+            # mate scores are stored relative to the root, read back relative to here
+            if (score > MATE_FOUND)                       { score = score - ply; }
+            or (score < 0 - MATE_FOUND)                   { score = score + ply; }
+            if (entry.flag == tt.EXACT)                   { ret score; }
+            if (entry.flag == tt.LOWER && score >= beta)  { ret score; }
+            if (entry.flag == tt.UPPER && score <= alpha) { ret score; }
+        }
+    }
+
+    # the static evaluation, once per node, remembered by ply. A node is
+    # improving when its side stands better than it did two plies earlier - on
+    # its own previous move - which says the position is going somewhere. An
+    # improving node is reduced less by late move reductions. A node in check has no static evaluation; the
+    # comparison then reaches back four plies, and gives the benefit of the
+    # doubt when there is nothing to compare with.
+    var static_eval: i64  = 0;
+    var improving:   bool = true;
+    if (in_check) {
+        s.evals[ply] = NO_EVAL;
+    }
+    or {
+        static_eval  = eval.evaluate(p);
+        s.evals[ply] = static_eval;
+        if (ply >= 2 && s.evals[ply - 2] != NO_EVAL)    { improving = static_eval > s.evals[ply - 2]; }
+        or (ply >= 4 && s.evals[ply - 4] != NO_EVAL)    { improving = static_eval > s.evals[ply - 4]; }
+    }
+
+    # reverse futility: if the position is already so far above beta that a
+    # whole piece of swing would not bring it back, take the score. the margin
+    # grows with depth because there is more time for the position to change.
+    # (Shrinking it for an improving position lost a mate in two in
+    # fixtures/mate2.epd at depth 4, so improving is used by reductions only.)
+    if (!is_pv && !in_check && depth <= 8) {
+        val margin: i64 = 85 * depth;
+        if (static_eval - margin >= beta && static_eval < MATE_FOUND) { ret static_eval - margin; }
+    }
+
+    # internal iterative reduction, but never in a principal variation node:
+    # losing a ply where the move actually gets chosen is not worth the
+    # ordering it saves
+    if (tt_move == mv.NONE && depth >= 6 && !in_check && !is_pv) { depth = depth - 1; }
+
+    # null-move pruning: if passing still leaves the opponent unable to reach
+    # beta, this position is good enough to cut. skipped in check, in pawn-only
+    # endgames (zugzwang), and when the previous move was already a pass.
+    if (allow_null && !is_pv && !in_check && depth >= 3 && has_pieces(p, p.side)) {
+        # a deeper null search still refutes almost everything it used to, and
+        # the plies saved compound: 2 + depth/6 was costing about a ply of
+        # final depth against 3 + depth/3
+        val reduction: i64 = 3 + depth / 3;
+        pos.make_null(p);
+        val score: i64 = 0 - search_node(s, p, depth - 1 - reduction, 0 - beta, 1 - beta, ply + 1, false);
+        pos.unmake_null(p);
+        if (s.stop != 0)   { ret 0; }
+        if (score >= beta) { ret beta; }
+    }
+
+    var list: MoveList;
+    movegen.generate(p, ?list, false);
+    var scores: [256]i64;
+    var i:      i64 = 0;
+    for (i < list.count) {
+        scores[i] = score_move(s, p, list.moves[i], tt_move, ply);
+        i         = i + 1;
+    }
+
+    var best:      i64  = 0 - INFINITE;
+    var best_move: Move = mv.NONE;
+    var legal:     i64  = 0;
+    var flag:      u8   = tt.UPPER;
+    var quiets:    [64]Move;
+    var quiet_n:   i64 = 0;
+
+    # futility: near the horizon, a quiet move that cannot lift a losing
+    # position to alpha is not worth a node. captures, promotions and checks
+    # are exempt, and the guard only applies once one legal move is in hand so
+    # a mate can still be found.
+    var futile: bool = false;
+    if (!is_pv && !in_check && depth <= 3) {
+        val margin: i64 = 120 + 110 * depth;
+        futile = static_eval + margin <= alpha;
+    }
+
+    i = 0;
+    for (i < list.count) {
+        pick(?list, ?scores[0], i);
+        val m: Move = list.moves[i];
+        pos.make(p, m);
+        if (pos.left_in_check(p)) {
+            pos.unmake(p);
+            i = i + 1;
+            cnt;
+        }
+        # A quiet move that gives check is never prunable: it can be mate, and
+        # that is only knowable after the move. Both prunes below therefore sit
+        # after make - pruning on the move alone lost a mate in two twice, once
+        # for futility and once for late move pruning.
+        val tactical: bool = mv.is_capture(m) || mv.is_promotion(m) || pos.in_check(p);
+        if (futile && legal > 0 && !tactical) {
+            pos.unmake(p);
+            i = i + 1;
+            cnt;
+        }
+        # late move pruning: near the horizon, once enough quiet moves have
+        # failed, the rest almost never rescue the position
+        if (!is_pv && !in_check && depth <= 4 && legal > 0 && !tactical
+            && best > 0 - MATE_FOUND && legal > 6 + depth * depth) {
+            pos.unmake(p);
+            i = i + 1;
+            cnt;
+        }
+        legal = legal + 1;
+        s.played[ply] = m;
+        s.mover[ply]  = p.board[mv.to(m)];
+        if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
+            quiets[quiet_n] = m;
+            quiet_n         = quiet_n + 1;
+        }
+        var score: i64 = 0;
+        if (legal == 1) {
+            score = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
+        }
+        or {
+            # late move reduction: quiet moves ordered last are searched
+            # shallower first, and re-searched only if they beat alpha.
+            #
+            # principal variation nodes are reduced one less. A reduced search
+            # that misses a tactic returns a score at or below alpha, which
+            # triggers no re-search, so the move is lost entirely: that is how
+            # a mate in two in fixtures/mate2.epd went unfound until depth 5.
+            #
+            # Excluding checks and killers from reduction as well also fixes
+            # that mate, and costs 41% more nodes instead of 33% - but it lost
+            # 43 +/- 40 Elo over 300 games, while this version measured
+            # +1 +/- 39 against the same opponent. The cheaper fix is the one
+            # that plays better, so the exclusions are not here.
+            var reduction: i64  = 0;
+            val quiet:     bool = !mv.is_capture(m) && !mv.is_promotion(m);
+            if (depth >= 3 && legal > 3 && !in_check && quiet) {
+                var d: i64 = depth;
+                if (d > 63) { d = 63; }
+                var n: i64 = legal;
+                if (n > 63) { n = 63; }
+                reduction = REDUCTION[d][n];
+                # a position that is not improving is reduced a ply further
+                if (!improving)             { reduction = reduction + 1; }
+                # a principal variation node is where being wrong is expensive
+                if (is_pv)                  { reduction = reduction - 1; }
+                if (reduction < 0)          { reduction = 0; }
+                # never reduce straight into quiescence: leave a ply to look
+                if (reduction > depth - 2)  { reduction = depth - 2; }
+            }
+            score = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
+            if (score > alpha && reduction > 0) {
+                score = 0 - search_node(s, p, depth - 1, 0 - alpha - 1, 0 - alpha, ply + 1, true);
+            }
+            if (score > alpha && score < beta) {
+                score = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
+            }
+        }
+        pos.unmake(p);
+        if (s.stop != 0) { ret 0; }
+
+        if (score > best) {
+            best      = score;
+            best_move = m;
+            if (score > alpha) {
+                alpha = score;
+                flag  = tt.EXACT;
+                copy_pv(s, m, ply);
+                if (alpha >= beta) {
+                    if (!mv.is_capture(m) && !mv.is_promotion(m)) {
+                        s.killers[ply][1] = s.killers[ply][0];
+                        s.killers[ply][0] = m;
+                        if (ply > 0 && s.played[ply - 1] != mv.NONE) {
+                            s.counter[s.mover[ply - 1]][mv.to(s.played[ply - 1])] = m;
+                        }
+                        history_update(s, p, m, depth, true);
+                        # every quiet move that was tried and did not cut gets
+                        # the matching penalty, which is what gives the table
+                        # its ordering signal rather than just a hit count
+                        var q: i64 = 0;
+                        for (q < quiet_n) {
+                            if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false); }
+                            q = q + 1;
+                        }
+                    }
+                    flag = tt.LOWER;
+                    brk;
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    if (legal == 0) {
+        if (in_check) { ret 0 - MATE + ply; }
+        ret 0;
+    }
+
+    var stored: i64 = best;
+    if (stored > MATE_FOUND)     { stored = stored + ply; }
+    or (stored < 0 - MATE_FOUND) { stored = stored - ply; }
+    tt.store(p.key, best_move, stored, depth, flag);
+    ret best;
+}
+
+# whether the side has anything but pawns, for the null-move zugzwang guard
+fun has_pieces(p: *Position, color: u8) bool {
+    ret (p.pieces[pos.code(color, pos.KNIGHT)] | p.pieces[pos.code(color, pos.BISHOP)]
+        | p.pieces[pos.code(color, pos.ROOK)] | p.pieces[pos.code(color, pos.QUEEN)]) != 0;
+}
+
+fun copy_pv(s: *Search, m: Move, ply: i64) {
+    s.pv[ply][0] = m;
+    var i: i64 = 0;
+    for (i < s.pv_len[ply + 1]) {
+        s.pv[ply][i + 1] = s.pv[ply + 1][i];
+        i                = i + 1;
+    }
+    s.pv_len[ply] = s.pv_len[ply + 1] + 1;
+}
+
+fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
+    if (s.quiet != 0) { ret; }
+    val nodes: i64 = reported_nodes(s);
+    var nps:   i64 = 0;
+    if (elapsed > 0) { nps = nodes * 1000 / elapsed; }
+    if (score > MATE_FOUND || score < 0 - MATE_FOUND) {
+        var mate_in: i64 = (MATE - score + 1) / 2;
+        if (score < 0) { mate_in = 0 - (MATE + score + 1) / 2; }
+        print.printf("info depth {} score mate {} nodes {} nps {} time {} pv", depth, mate_in, nodes, nps, elapsed);
+    }
+    or {
+        print.printf("info depth {} score cp {} nodes {} nps {} time {} pv", depth, score, nodes, nps, elapsed);
+    }
+    var spelled: [6]u8;
+    var i:       i64 = 0;
+    for (i < s.pv_len[0]) {
+        mv.to_uci(s.pv[0][i], ?spelled[0]);
+        print.printf(" {}", ?spelled[0]);
+        i = i + 1;
+    }
+    print.println("");
+}
+
+# how long to spend on this move, from the clock the GUI reported
+fun budget_ms(p: *Position, limits: *Limits) i64 {
+    if (limits.movetime > 0) { ret limits.movetime; }
+    var remaining: i64 = limits.wtime;
+    var increment: i64 = limits.winc;
+    if (p.side == pos.BLACK) {
+        remaining = limits.btime;
+        increment = limits.binc;
+    }
+    if (remaining <= 0) { ret 0; }
+    # a simple rule: a fraction of what is left, plus most of the increment,
+    # never more than a third of the clock
+    var budget: i64 = remaining / 30 + increment * 3 / 4;
+    if (budget > remaining / 3) { budget = remaining / 3; }
+    if (budget < 5)             { budget = 5; }
+    ret budget;
+}
+
+# search until the limits say stop; returns the best move and sets s.best
+pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
+    init_tables();
+    val start: i64 = clock.now_ms();
+    s.nodes         = 0;
+    s.stop          = 0;
+    s.started       = start;
+    s.best          = mv.NONE;
+    s.depth_reached = 0;
+    s.deadline      = 0;
+    val budget: i64 = budget_ms(p, limits);
+    if (budget > 0 && limits.infinite == 0) { s.deadline = start + budget; }
+
+    var max_depth: i64 = limits.depth;
+    if (max_depth <= 0 || max_depth > MAX_PLY - 2) { max_depth = MAX_PLY - 2; }
+
+    # a legal move is always available to return, even if depth 1 is cut short
+    var root: MoveList;
+    movegen.generate_legal(p, ?root);
+    if (root.count == 0) { ret mv.NONE; }
+    s.best = root.moves[0];
+
+    # the network follows the search from here, and is let go again at the end
+    # so that moves applied between searches cannot run the stack off its end
+    if (nn.loaded) { pos.attach(p, nn.stack(s.thread_id)); }
+
+    var depth:    i64 = 1;
+    var previous: i64 = 0;
+    for (depth <= max_depth) {
+        # aspiration window: the score rarely moves far between iterations, so
+        # search a narrow band around the last one and widen only on a fail.
+        # shallow iterations are cheap and unstable, so they stay full-width.
+        var window: i64 = 25;
+        var alpha:  i64 = 0 - INFINITE;
+        var beta:   i64 = INFINITE;
+        if (depth >= 4) {
+            alpha = previous - window;
+            beta  = previous + window;
+        }
+        var score: i64 = 0;
+        for {
+            score = search_node(s, p, depth, alpha, beta, 0, true);
+            if (s.stop != 0) { brk; }
+            if (score <= alpha) {
+                # fail low: the move is worse than believed, widen downwards
+                beta   = (alpha + beta) / 2;
+                alpha  = alpha - window;
+                window = window * 3;
+            }
+            or (score >= beta) {
+                beta   = beta + window;
+                window = window * 3;
+            }
+            or {
+                brk;
+            }
+            if (alpha < 0 - MATE_FOUND) { alpha = 0 - INFINITE; }
+            if (beta > MATE_FOUND)      { beta = INFINITE; }
+        }
+        if (s.stop != 0) { brk; }
+        previous = score;
+        if (s.pv_len[0] > 0) { s.best = s.pv[0][0]; }
+        s.depth_reached = depth;
+        val elapsed: i64 = clock.now_ms() - start;
+        print_info(s, depth, score, elapsed);
+        # stop early when a mate is proven or the next iteration cannot finish.
+        # A mate is proven only once the iteration is as deep as the mate is
+        # long. Shallower, the score is the table's word from an earlier move:
+        # stopping on it replayed the table's move for fifty moves and drew
+        # queen and bishop against a bare king (ladder 4, Rybka game 20).
+        var mate_plies: i64 = INFINITE;
+        if (score > MATE_FOUND)     { mate_plies = MATE - score; }
+        if (score < 0 - MATE_FOUND) { mate_plies = MATE + score; }
+        if (mate_plies <= depth)                                           { brk; }
+        if (s.deadline != 0 && clock.now_ms() + elapsed / 2 >= s.deadline) { brk; }
+        depth = depth + 1;
+    }
+    pos.detach(p);
+    ret s.best;
+}
+
+# search one position to a fixed depth, quietly; used by tests and bench
+pub fun search_depth(p: *Position, depth: i64, s: *Search) i64 {
+    reset(s);
+    s.quiet = 1;
+    var limits: Limits;
+    limits.depth = depth;
+    val m: Move = think(s, p, ?limits);
+    s.best = m;
+    ret s.nodes;
+}
+
+fun finds_move(fen: *u8, depth: i64, expected: *u8) bool {
+    var p: Position;
+    if (!pos.set_fen(?p, fen)) { ret false; }
+    var s: Search;
+    search_depth(?p, depth, ?s);
+    var spelled: [6]u8;
+    mv.to_uci(s.best, ?spelled[0]);
+    var i: i64 = 0;
+    for (expected[i] != 0) {
+        if (spelled[i] != expected[i]) { ret false; }
+        i = i + 1;
+    }
+    ret spelled[i] == 0;
+}
+
+test "search: finds a verified mate in one" {
+    tt.clear();
+    # positions from fixtures/mate1.epd, each proved by python-chess to have
+    # exactly one mating move
+    if (!finds_move("8/8/5K1k/8/R7/8/8/8 w - - 7 84", 2, "a4h4"))                            { ret 1; }
+    if (!finds_move("1n2k1n1/2ppbpp1/4p3/1p6/5P1P/8/1PPPP3/RNBQKBN1 b - - 0 11", 2, "e7h4")) { ret 2; }
+    ret 0;
+}
+
+test "search: finds a verified mate in two" {
+    tt.clear();
+    if (!finds_move("rnbqk3/ppppppr1/8/P7/4P3/1PB5/R1P2P2/1N2KBNR w Kq - 2 12", 4, "h1h8")) { ret 1; }
+    ret 0;
+}
+
+test "search: finds a verified mate in three" {
+    tt.clear();
+    if (!finds_move("4Q3/2k3P1/8/2p5/2P5/2PK4/8/8 w - - 1 62", 6, "g7g8q")) { ret 1; }
+    ret 0;
+}
+
+test "search: wins the hanging queen" {
+    tt.clear();
+    if (!finds_move("q3k3/8/8/8/8/8/8/R3K3 w - - 0 1", 4, "a1a8")) { ret 1; }
+    ret 0;
+}
+
+test "search: sees a stalemate as a draw, not a loss" {
+    tt.clear();
+    var p: Position;
+    # black to move, stalemated
+    if (!pos.set_fen(?p, "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")) { ret 1; }
+    var s: Search;
+    reset(?s);
+    s.quiet = 1;
+    var limits: Limits;
+    limits.depth = 2;
+    think(?s, ?p, ?limits);
+    # no legal move exists, so think returns none
+    if (s.best != mv.NONE) { ret 2; }
+    ret 0;
+}
+
+test "search: a deeper search still returns a move" {
+    tt.clear();
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    var s:     Search;
+    val nodes: i64 = search_depth(?p, 5, ?s);
+    if (nodes < 100)       { ret 2; }
+    if (s.best == mv.NONE) { ret 3; }
+    ret 0;
+}

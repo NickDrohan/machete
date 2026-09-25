@@ -1,0 +1,302 @@
+# static evaluation: material, piece-square tables, and a few pawn and bishop terms
+#
+# scores are centipawns from the side to move's point of view. piece-square
+# tables are written rank 8 first so they read like a board, which means a
+# white piece on square sq indexes them at sq ^ 56 and a black piece at sq.
+#
+# the game phase interpolates between middlegame and endgame king tables: a
+# king that belongs behind pawns early belongs in the centre once the queens
+# are gone.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
+use bb:  machete.bitboard;
+use nn:  machete.nnue;
+use pos: machete.position;
+use machete.position.Position;
+
+pub val PAWN_VALUE:   i64 = 100;
+pub val KNIGHT_VALUE: i64 = 320;
+pub val BISHOP_VALUE: i64 = 330;
+pub val ROOK_VALUE:   i64 = 500;
+pub val QUEEN_VALUE:  i64 = 900;
+
+val VALUES: [6]i64 = [6]i64{100, 320, 330, 500, 900, 0};
+
+# phase weights: the queens and rooks decide when the endgame has arrived
+val PHASE_WEIGHT: [6]i64 = [6]i64{0, 1, 1, 2, 4, 0};
+val PHASE_TOTAL:  i64    = 24;
+
+val BISHOP_PAIR:   i64 = 30;
+val DOUBLED_PAWN:  i64 = -12;
+val ISOLATED_PAWN: i64 = -18;
+# by rank from the pawn's own side: a passer on the seventh is nearly a queen
+val PASSED_PAWN: [8]i64 = [8]i64{0, 10, 20, 35, 60, 100, 160, 0};
+
+val PAWN_PST: [64]i64 = [64]i64{
+    0, 0, 0, 0, 0, 0, 0, 0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5, 5, 10, 25, 25, 10, 5, 5,
+    0, 0, 0, 20, 20, 0, 0, 0,
+    5, -5, -10, 0, 0, -10, -5, 5,
+    5, 10, 10, -20, -20, 10, 10, 5,
+    0, 0, 0, 0, 0, 0, 0, 0
+};
+
+val KNIGHT_PST: [64]i64 = [64]i64{
+    -50, -40, -30, -30, -30, -30, -40, -50,
+    -40, -20, 0, 0, 0, 0, -20, -40,
+    -30, 0, 10, 15, 15, 10, 0, -30,
+    -30, 5, 15, 20, 20, 15, 5, -30,
+    -30, 0, 15, 20, 20, 15, 0, -30,
+    -30, 5, 10, 15, 15, 10, 5, -30,
+    -40, -20, 0, 5, 5, 0, -20, -40,
+    -50, -40, -30, -30, -30, -30, -40, -50
+};
+
+val BISHOP_PST: [64]i64 = [64]i64{
+    -20, -10, -10, -10, -10, -10, -10, -20,
+    -10, 0, 0, 0, 0, 0, 0, -10,
+    -10, 0, 5, 10, 10, 5, 0, -10,
+    -10, 5, 5, 10, 10, 5, 5, -10,
+    -10, 0, 10, 10, 10, 10, 0, -10,
+    -10, 10, 10, 10, 10, 10, 10, -10,
+    -10, 5, 0, 0, 0, 0, 5, -10,
+    -20, -10, -10, -10, -10, -10, -10, -20
+};
+
+val ROOK_PST: [64]i64 = [64]i64{
+    0, 0, 0, 0, 0, 0, 0, 0,
+    5, 10, 10, 10, 10, 10, 10, 5,
+    -5, 0, 0, 0, 0, 0, 0, -5,
+    -5, 0, 0, 0, 0, 0, 0, -5,
+    -5, 0, 0, 0, 0, 0, 0, -5,
+    -5, 0, 0, 0, 0, 0, 0, -5,
+    -5, 0, 0, 0, 0, 0, 0, -5,
+    0, 0, 0, 5, 5, 0, 0, 0
+};
+
+val QUEEN_PST: [64]i64 = [64]i64{
+    -20, -10, -10, -5, -5, -10, -10, -20,
+    -10, 0, 0, 0, 0, 0, 0, -10,
+    -10, 0, 5, 5, 5, 5, 0, -10,
+    -5, 0, 5, 5, 5, 5, 0, -5,
+    0, 0, 5, 5, 5, 5, 0, -5,
+    -10, 5, 5, 5, 5, 5, 0, -10,
+    -10, 0, 5, 0, 0, 0, 0, -10,
+    -20, -10, -10, -5, -5, -10, -10, -20
+};
+
+val KING_MG_PST: [64]i64 = [64]i64{
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -20, -30, -30, -40, -40, -30, -30, -20,
+    -10, -20, -20, -20, -20, -20, -20, -10,
+    20, 20, 0, 0, 0, 0, 20, 20,
+    20, 30, 10, 0, 0, 10, 30, 20
+};
+
+val KING_EG_PST: [64]i64 = [64]i64{
+    -50, -40, -30, -20, -20, -30, -40, -50,
+    -30, -20, -10, 0, 0, -10, -20, -30,
+    -30, -10, 20, 30, 30, 20, -10, -30,
+    -30, -10, 30, 40, 40, 30, -10, -30,
+    -30, -10, 30, 40, 40, 30, -10, -30,
+    -30, -10, 20, 30, 30, 20, -10, -30,
+    -30, -30, 0, 0, 0, 0, -30, -30,
+    -50, -30, -30, -30, -30, -30, -30, -50
+};
+
+# files adjacent to each file, as a mask over all ranks
+var NEIGHBOUR_FILES: [8]u64;
+# squares ahead of a square for each colour, on its file and the two beside it
+var PASSED_MASK: [2][64]u64;
+var FILE_MASK:   [8]u64;
+var ready:       i64 = 0;
+
+pub fun init() {
+    if (ready != 0) { ret; }
+    var f: i64 = 0;
+    for (f < 8) {
+        FILE_MASK[f] = bb.FILE_A << f::u64;
+        f            = f + 1;
+    }
+    f = 0;
+    for (f < 8) {
+        var mask: u64 = 0;
+        if (f > 0) { mask = mask | FILE_MASK[f - 1]; }
+        if (f < 7) { mask = mask | FILE_MASK[f + 1]; }
+        NEIGHBOUR_FILES[f] = mask;
+        f                  = f + 1;
+    }
+    var sq: i64 = 0;
+    for (sq < 64) {
+        val file:        i64 = bb.file_of(sq);
+        val rank:        i64 = bb.rank_of(sq);
+        val span:        u64 = FILE_MASK[file] | NEIGHBOUR_FILES[file];
+        var ahead_white: u64 = 0;
+        var ahead_black: u64 = 0;
+        var r:           i64 = rank + 1;
+        for (r < 8) {
+            ahead_white = ahead_white | (span & (0xFFu64 << (r * 8)::u64));
+            r           = r + 1;
+        }
+        r = rank - 1;
+        for (r >= 0) {
+            ahead_black = ahead_black | (span & (0xFFu64 << (r * 8)::u64));
+            r           = r - 1;
+        }
+        PASSED_MASK[0][sq] = ahead_white;
+        PASSED_MASK[1][sq] = ahead_black;
+        sq                 = sq + 1;
+    }
+    ready = 1;
+}
+
+fun pst_value(kind: u8, sq: i64, phase: i64) i64 {
+    if (kind == pos.PAWN)   { ret PAWN_PST[sq]; }
+    if (kind == pos.KNIGHT) { ret KNIGHT_PST[sq]; }
+    if (kind == pos.BISHOP) { ret BISHOP_PST[sq]; }
+    if (kind == pos.ROOK)   { ret ROOK_PST[sq]; }
+    if (kind == pos.QUEEN)  { ret QUEEN_PST[sq]; }
+    ret (KING_MG_PST[sq] * phase + KING_EG_PST[sq] * (PHASE_TOTAL - phase)) / PHASE_TOTAL;
+}
+
+fun phase_of(p: *Position) i64 {
+    var phase: i64 = 0;
+    var kind:  u8  = pos.KNIGHT;
+    for (kind < pos.KING) {
+        val n: i64 = bb.count(p.pieces[pos.code(pos.WHITE, kind)] | p.pieces[pos.code(pos.BLACK, kind)]);
+        phase = phase + n * PHASE_WEIGHT[kind];
+        kind  = kind + 1;
+    }
+    if (phase > PHASE_TOTAL) { ret PHASE_TOTAL; }
+    ret phase;
+}
+
+# pawn structure for one colour, from that colour's point of view
+fun pawn_terms(p: *Position, color: u8) i64 {
+    val ours:   u64 = p.pieces[pos.code(color, pos.PAWN)];
+    val theirs: u64 = p.pieces[pos.code(color ^ 1, pos.PAWN)];
+    var score:  i64 = 0;
+    var pawns:  u64 = ours;
+    for (pawns != 0) {
+        val sq:   i64 = bb.lsb(pawns);
+        val file: i64 = bb.file_of(sq);
+        if (bb.count(ours & FILE_MASK[file]) > 1) { score = score + DOUBLED_PAWN; }
+        if ((ours & NEIGHBOUR_FILES[file]) == 0)  { score = score + ISOLATED_PAWN; }
+        if ((theirs & PASSED_MASK[color][sq]) == 0) {
+            var rank: i64 = bb.rank_of(sq);
+            if (color == pos.BLACK) { rank = 7 - rank; }
+            score = score + PASSED_PAWN[rank];
+        }
+        pawns = pawns & (pawns - 1);
+    }
+    ret score;
+}
+
+fun side_score(p: *Position, color: u8, phase: i64) i64 {
+    var score: i64 = 0;
+    var kind:  u8  = pos.PAWN;
+    for (kind <= pos.KING) {
+        var pieces: u64 = p.pieces[pos.code(color, kind)];
+        for (pieces != 0) {
+            val sq:    i64 = bb.lsb(pieces);
+            var index: i64 = sq;
+            if (color == pos.WHITE) { index = sq ^ 56; }
+            score  = score + VALUES[kind] + pst_value(kind, index, phase);
+            pieces = pieces & (pieces - 1);
+        }
+        kind = kind + 1;
+    }
+    if (bb.count(p.pieces[pos.code(color, pos.BISHOP)]) >= 2) { score = score + BISHOP_PAIR; }
+    ret score + pawn_terms(p, color);
+}
+
+# centipawns from the side to move's point of view
+#
+# with a network loaded and an accumulator attached this is the network's
+# answer; otherwise it is the hand-written one below. the two disagree by
+# design, so nothing may compare scores across the boundary.
+pub fun evaluate(p: *Position) i64 {
+    if (nn.loaded && p.accs != nil) {
+        nn.materialise(p.accs, p.acc_top);
+        ret nn.output(?p.accs[p.acc_top], p.side);
+    }
+    ret classical(p);
+}
+
+# material, piece-square tables and a few pawn terms
+pub fun classical(p: *Position) i64 {
+    init();
+    val phase: i64 = phase_of(p);
+    val white: i64 = side_score(p, pos.WHITE, phase);
+    val black: i64 = side_score(p, pos.BLACK, phase);
+    if (p.side == pos.WHITE) { ret white - black; }
+    ret black - white;
+}
+
+# whether only kings and at most one minor piece per side remain, so no
+# sequence of legal moves can mate
+pub fun insufficient_material(p: *Position) bool {
+    if (p.pieces[pos.code(pos.WHITE, pos.PAWN)] != 0 || p.pieces[pos.code(pos.BLACK, pos.PAWN)] != 0)   { ret false; }
+    if (p.pieces[pos.code(pos.WHITE, pos.ROOK)] != 0 || p.pieces[pos.code(pos.BLACK, pos.ROOK)] != 0)   { ret false; }
+    if (p.pieces[pos.code(pos.WHITE, pos.QUEEN)] != 0 || p.pieces[pos.code(pos.BLACK, pos.QUEEN)] != 0) { ret false; }
+    var color: u8 = pos.WHITE;
+    for (color < 2) {
+        val minors: i64 = bb.count(p.pieces[pos.code(color, pos.KNIGHT)] | p.pieces[pos.code(color, pos.BISHOP)]);
+        if (minors > 1) { ret false; }
+        color = color + 1;
+    }
+    ret true;
+}
+
+test "eval: the start position is balanced and mirrors are equal" {
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    if (evaluate(?p) != 0)               { ret 2; }
+
+    # the same position with colours and ranks swapped must score the same
+    var w: Position;
+    var b: Position;
+    if (!pos.set_fen(?w, "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 0 1")) { ret 3; }
+    if (!pos.set_fen(?b, "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq - 0 1")) { ret 4; }
+    if (evaluate(?w) != evaluate(?b))                                                               { ret 5; }
+    ret 0;
+}
+
+test "eval: material dominates" {
+    var p: Position;
+    # white is a queen up, white to move
+    if (!pos.set_fen(?p, "4k3/8/8/8/8/8/8/3QK3 w - - 0 1")) { ret 1; }
+    if (evaluate(?p) < QUEEN_VALUE - 100)                   { ret 2; }
+    # same position, black to move: the score flips sign
+    if (!pos.set_fen(?p, "4k3/8/8/8/8/8/8/3QK3 b - - 0 1")) { ret 3; }
+    if (evaluate(?p) > 100 - QUEEN_VALUE)                   { ret 4; }
+    ret 0;
+}
+
+test "eval: passed and isolated pawns are recognised" {
+    var p: Position;
+    # a lone white pawn on the sixth with no black pawn to stop it
+    if (!pos.set_fen(?p, "4k3/8/4P3/8/8/8/8/4K3 w - - 0 1")) { ret 1; }
+    val passed: i64 = evaluate(?p);
+    # the same pawn with a black pawn directly in front: no longer passed
+    if (!pos.set_fen(?p, "4k3/8/4P3/4p3/8/8/8/4K3 w - - 0 1")) { ret 2; }
+    if (evaluate(?p) >= passed)                                { ret 3; }
+    ret 0;
+}
+
+test "eval: insufficient material is spotted" {
+    var p: Position;
+    if (!pos.set_fen(?p, "4k3/8/8/8/8/8/8/4KB2 w - - 0 1"))  { ret 1; }
+    if (!insufficient_material(?p))                          { ret 2; }
+    if (!pos.set_fen(?p, "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")) { ret 3; }
+    if (insufficient_material(?p))                           { ret 4; }
+    ret 0;
+}

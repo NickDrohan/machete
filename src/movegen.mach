@@ -1,0 +1,307 @@
+# pseudo-legal move generation, and a legal filter on top of it
+#
+# pseudo-legal moves obey piece movement but may leave the mover's king in
+# check; callers make each move and test left_in_check, which is the one
+# legality rule this module does not apply. castling is the exception: the
+# king's start and transit squares are checked here, because an attacked
+# transit square is not visible after the move.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.string.str;
+
+use machete.attacks;
+use bb: machete.bitboard;
+use machete.magic;
+use mv: machete.move;
+use machete.move.Move;
+use nn: machete.nnue;
+use pos: machete.position;
+use machete.position.Position;
+use rng: machete.rng;
+
+pub val MAX_MOVES: i64 = 256;
+
+pub rec MoveList {
+    count: i64;
+    moves: [256]Move;
+}
+
+fun add(list: *MoveList, m: Move) {
+    list.moves[list.count] = m;
+    list.count             = list.count + 1;
+}
+
+fun add_pawn(list: *MoveList, from: i64, to: i64, capture: bool) {
+    val last_rank: i64 = bb.rank_of(to);
+    if (last_rank == 7 || last_rank == 0) {
+        var base: u32 = mv.PROMO;
+        if (capture) { base = mv.PROMO_CAPTURE; }
+        add(list, mv.make(from, to, base + 3));
+        add(list, mv.make(from, to, base));
+        add(list, mv.make(from, to, base + 2));
+        add(list, mv.make(from, to, base + 1));
+        ret;
+    }
+    if (capture) { add(list, mv.make(from, to, mv.CAPTURE)); }
+    or           { add(list, mv.make(from, to, mv.QUIET)); }
+}
+
+fun add_targets(list: *MoveList, from: i64, targets: u64, enemy: u64) {
+    var t: u64 = targets;
+    for (t != 0) {
+        val to: i64 = bb.lsb(t);
+        if (bb.has(enemy, to)) { add(list, mv.make(from, to, mv.CAPTURE)); }
+        or                     { add(list, mv.make(from, to, mv.QUIET)); }
+        t = t & (t - 1);
+    }
+}
+
+fun add_castling(p: *Position, list: *MoveList, us: u8) {
+    val them: u8  = us ^ 1;
+    var king: i64 = 4;
+    var k_rt: u8  = pos.CASTLE_WK;
+    var q_rt: u8  = pos.CASTLE_WQ;
+    if (us == pos.BLACK) {
+        king = 60;
+        k_rt = pos.CASTLE_BK;
+        q_rt = pos.CASTLE_BQ;
+    }
+    val rook: u8 = pos.code(us, pos.ROOK);
+    if ((p.castling & k_rt) != 0
+        && p.board[king + 3] == rook
+        && p.board[king + 1] == pos.EMPTY && p.board[king + 2] == pos.EMPTY
+        && !pos.attacked(p, king, them) && !pos.attacked(p, king + 1, them)) {
+        add(list, mv.make(king, king + 2, mv.KING_CASTLE));
+    }
+    if ((p.castling & q_rt) != 0
+        && p.board[king - 4] == rook
+        && p.board[king - 1] == pos.EMPTY && p.board[king - 2] == pos.EMPTY && p.board[king - 3] == pos.EMPTY
+        && !pos.attacked(p, king, them) && !pos.attacked(p, king - 1, them)) {
+        add(list, mv.make(king, king - 2, mv.QUEEN_CASTLE));
+    }
+}
+
+# every pseudo-legal move, or with tactical_only just captures and promotions
+# ---
+# p:             position to move in
+# list:          receives the moves, replacing its contents
+# tactical_only: restrict to captures, en passant and promotions (for quiescence)
+pub fun generate(p: *Position, list: *MoveList, tactical_only: bool) {
+    list.count = 0;
+    val us:     u8  = p.side;
+    val them:   u8  = us ^ 1;
+    val own:    u64 = p.occ[us];
+    val enemy:  u64 = p.occ[them];
+    val occ:    u64 = own | enemy;
+    var target: u64 = ~own;
+    if (tactical_only) { target = enemy; }
+
+    var forward:    i64 = 8;
+    var start_rank: u64 = bb.RANK_2;
+    if (us == pos.BLACK) {
+        forward    = -8;
+        start_rank = bb.RANK_7;
+    }
+
+    var pawns: u64 = p.pieces[pos.code(us, pos.PAWN)];
+    for (pawns != 0) {
+        val from:     i64  = bb.lsb(pawns);
+        val to:       i64  = from + forward;
+        val promotes: bool = bb.rank_of(to) == 7 || bb.rank_of(to) == 0;
+        if (p.board[to] == pos.EMPTY && (!tactical_only || promotes)) {
+            add_pawn(list, from, to, false);
+            if (!tactical_only && bb.has(start_rank, from) && p.board[to + forward] == pos.EMPTY) {
+                add(list, mv.make(from, to + forward, mv.DOUBLE_PUSH));
+            }
+        }
+        var hits: u64 = attacks.PAWN[us][from] & enemy;
+        for (hits != 0) {
+            add_pawn(list, from, bb.lsb(hits), true);
+            hits = hits & (hits - 1);
+        }
+        if (p.ep != pos.NO_SQ && bb.has(attacks.PAWN[us][from], p.ep)) {
+            add(list, mv.make(from, p.ep, mv.EP_CAPTURE));
+        }
+        pawns = pawns & (pawns - 1);
+    }
+
+    var knights: u64 = p.pieces[pos.code(us, pos.KNIGHT)];
+    for (knights != 0) {
+        val from: i64 = bb.lsb(knights);
+        add_targets(list, from, attacks.KNIGHT[from] & target, enemy);
+        knights = knights & (knights - 1);
+    }
+
+    var diagonal: u64 = p.pieces[pos.code(us, pos.BISHOP)] | p.pieces[pos.code(us, pos.QUEEN)];
+    for (diagonal != 0) {
+        val from: i64 = bb.lsb(diagonal);
+        add_targets(list, from, magic.bishop(from, occ) & target, enemy);
+        diagonal = diagonal & (diagonal - 1);
+    }
+
+    var straight: u64 = p.pieces[pos.code(us, pos.ROOK)] | p.pieces[pos.code(us, pos.QUEEN)];
+    for (straight != 0) {
+        val from: i64 = bb.lsb(straight);
+        add_targets(list, from, magic.rook(from, occ) & target, enemy);
+        straight = straight & (straight - 1);
+    }
+
+    val king: i64 = pos.king_square(p, us);
+    add_targets(list, king, attacks.KING[king] & target, enemy);
+    if (!tactical_only) { add_castling(p, list, us); }
+}
+
+# every legal move
+pub fun generate_legal(p: *Position, list: *MoveList) {
+    var pseudo: MoveList;
+    generate(p, ?pseudo, false);
+    list.count = 0;
+    var i: i64 = 0;
+    for (i < pseudo.count) {
+        pos.make(p, pseudo.moves[i]);
+        if (!pos.left_in_check(p)) { add(list, pseudo.moves[i]); }
+        pos.unmake(p);
+        i = i + 1;
+    }
+}
+
+# the legal move spelled `text` in UCI notation, or mv.NONE
+pub fun parse_uci(p: *Position, text: str) Move {
+    var list: MoveList;
+    generate_legal(p, ?list);
+    var spelled: [6]u8;
+    var i:       i64 = 0;
+    for (i < list.count) {
+        mv.to_uci(list.moves[i], ?spelled[0]);
+        var j: i64 = 0;
+        for (spelled[j] != 0 && spelled[j] == text[j]) { j = j + 1; }
+        if (spelled[j] == 0 && text[j] == 0) { ret list.moves[i]; }
+        i = i + 1;
+    }
+    ret mv.NONE;
+}
+
+test "movegen: twenty moves from the start" {
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    var list: MoveList;
+    generate_legal(?p, ?list);
+    if (list.count != 20) { ret 2; }
+    generate(?p, ?list, true);
+    if (list.count != 0) { ret 3; }
+    ret 0;
+}
+
+test "movegen: castling is refused through an attacked square" {
+    var p: Position;
+    # black rook on f8 covers f1, so white may castle queenside only
+    if (!pos.set_fen(?p, "4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1")) { ret 1; }
+    var list: MoveList;
+    generate_legal(?p, ?list);
+    var king_side:  i64 = 0;
+    var queen_side: i64 = 0;
+    var i:          i64 = 0;
+    for (i < list.count) {
+        if (mv.flag(list.moves[i]) == mv.KING_CASTLE)  { king_side = king_side + 1; }
+        if (mv.flag(list.moves[i]) == mv.QUEEN_CASTLE) { queen_side = queen_side + 1; }
+        i = i + 1;
+    }
+    if (king_side != 0 || queen_side != 1) { ret 2; }
+    ret 0;
+}
+
+test "movegen: parse_uci finds legal moves only" {
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    val m: Move = parse_uci(?p, "e2e4");
+    if (m == mv.NONE || mv.flag(m) != mv.DOUBLE_PUSH) { ret 2; }
+    if (parse_uci(?p, "e2e5") != mv.NONE)             { ret 3; }
+    if (parse_uci(?p, "e2e") != mv.NONE)              { ret 4; }
+    ret 0;
+}
+
+# whether two accumulators hold the same hidden layer
+fun accs_equal(a: *nn.Acc, b: *nn.Acc) bool {
+    var side: i64 = 0;
+    for (side < 2) {
+        var i: i64 = 0;
+        for (i < nn.HIDDEN) {
+            if (a.v[side][i] != b.v[side][i]) { ret false; }
+            i = i + 1;
+        }
+        side = side + 1;
+    }
+    ret true;
+}
+
+test "nnue: the incremental accumulator matches a fresh one, move by move" {
+    pos.init();
+
+    # weights spread over a wide range, so a wrong feature index or a missed
+    # update cannot cancel out. no network file is needed: this checks the
+    # bookkeeping in make/unmake, not any particular set of numbers.
+    var r: rng.Rng = rng.seeded(0xD1B54A32D192ED03);
+    var i: i64 = 0;
+    for (i < nn.INPUTS * nn.HIDDEN) {
+        nn.FEATURE_WEIGHTS[i] = (rng.below(?r, 601)::i64 - 300)::i16;
+        i                     = i + 1;
+    }
+    i = 0;
+    for (i < nn.HIDDEN) {
+        nn.FEATURE_BIAS[i] = (rng.below(?r, 601)::i64 - 300)::i16;
+        i                  = i + 1;
+    }
+
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    pos.attach(?p, nn.stack(0));
+
+    # the same board accumulated on two stacks must agree, or nothing below
+    # this line means anything
+    var twin: Position = p;
+    pos.attach(?twin, nn.stack(1));
+    if (!accs_equal(?p.accs[0], ?twin.accs[0])) { ret 2; }
+
+    # a random game: captures, promotions, castling and en passant all turn up.
+    # generate_legal makes and unmakes every pseudo-legal move on the way, so
+    # this also covers a slot being reused by one sibling after another.
+    var played: i64 = 0;
+    for (played < 140) {
+        var list: MoveList;
+        generate_legal(?p, ?list);
+        if (list.count == 0) { brk; }
+        pos.make(?p, list.moves[rng.below(?r, list.count::u64)::i64]);
+
+        # the same position, accumulated from the board with no history.
+        # materialise() is what the evaluation calls, so building the deferred
+        # chain is part of what is under test: half these moves are checked
+        # without ever being evaluated, which leaves a run of deferred slots
+        # behind for a later move to build through.
+        var fresh: Position = p;
+        pos.attach(?fresh, nn.stack(2));
+        if (played % 2 == 0) {
+            nn.materialise(p.accs, p.acc_top);
+            if (!accs_equal(?p.accs[p.acc_top], ?fresh.accs[0])) { ret 3; }
+        }
+        played = played + 1;
+    }
+    if (played < 20) { ret 4; }
+
+    # and taking the whole game back lands on the start position again
+    for (played > 0) {
+        pos.unmake(?p);
+        played = played - 1;
+    }
+    var start: Position;
+    if (!pos.set_fen(?start, pos.START_FEN)) { ret 5; }
+    pos.attach(?start, nn.stack(1));
+    nn.materialise(p.accs, p.acc_top);
+    if (!accs_equal(?p.accs[p.acc_top], ?start.accs[0])) { ret 6; }
+    if (p.acc_top != 0)                                  { ret 7; }
+    # four recorded changes is the ceiling nnue.mach argues for; this is the
+    # argument being checked rather than believed
+    if (nn.OVERFLOW != 0)                                { ret 8; }
+    ret 0;
+}
