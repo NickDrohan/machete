@@ -21,7 +21,7 @@
 
 ## ⬇️ Install in 30 seconds
 
-1. Download **`machete-0.1-windows-x86_64.zip`** below and unzip it anywhere, e.g. `Arena\Engines\machete\`.
+1. Download **`machete-0.1.0-windows-x86_64-complete.zip`** below and unzip it anywhere, e.g. `Arena\Engines\machete\`.
 2. In Arena: **Engines → Install New Engine →** pick `machete.exe` **→ UCI**.
 3. Play. The engine loads `machete.nnue` from its own folder on start-up, and the `EvalFile` option shows the path it found.
 
@@ -30,12 +30,16 @@
 
 ## 📦 What's in the box
 
+The **`-complete.zip`** is the one to play with:
+
 | file | what it is |
 |---|---|
 | `machete.exe` | the engine: one static 220 KB binary, no installer, no runtime |
 | `machete.nnue` | its evaluation network (768 → 256 → 1, int16) |
 | `README.txt` | setup, options, strength notes |
 | `SHA256SUMS.txt` | checksums for the two files above |
+
+The other archives are what CI builds for every platform - `machete` and `binpack`, the Leela training-data decoder, for Windows (x86-64), Linux (x86-64 and aarch64) and macOS (x86-64; Apple silicon runs it under Rosetta, as the native build waits on briar-systems/mach#3888) - executables only. The engine needs **`machete.nnue`** (attached separately) in the same folder; only the Windows build has been played and gated.
 
 ## 💪 How strong
 
