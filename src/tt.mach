@@ -23,7 +23,7 @@ pub val LOWER: u8 = 1;
 pub val UPPER: u8 = 2;
 
 pub val ENTRIES: i64 = 8388608;
-# what the UCI Hash option reports: 2^21 slots of 16 bytes, a fixed size
+# what the UCI Hash option reports: ENTRIES (2^23) slots of 16 bytes, a fixed size
 pub val MEGABYTES: i64 = 128;
 
 pub rec Entry {

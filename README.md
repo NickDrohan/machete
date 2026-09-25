@@ -128,7 +128,7 @@ scans. Neither is executed here, so the claim is "it compiles", not "it works".
 
 ## Search
 
-Iterative deepening principal variation search: fail-soft alpha-beta, a 32 MB transposition
+Iterative deepening principal variation search: fail-soft alpha-beta, a 128 MB transposition
 table, null-move pruning, late-move reductions (reduced less at an *improving* node), futility
 and reverse futility pruning, aspiration windows, and a quiescence search over captures and
 promotions that reads the transposition table and, in check, searches every evasion and scores
