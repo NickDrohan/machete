@@ -43,12 +43,20 @@ The output is a flat array of fixed-size records; see RECORD. Each worker fills
 its own shard and the shards are joined at the end, so an interrupted run still
 leaves usable data behind.
 
+A teacher that stops answering costs one game, not a shard. Obsidian has
+ignored its node limit and stalled a worker for good; now, after HUNG_AFTER
+seconds without a bestmove, the teacher is killed and restarted, the game it
+was playing is thrown away, and what it had been sent is appended to
+OUT.NN.hung as UCI commands that replay it - something to hand its author.
+
 Workers are processes, not threads. python-chess drives every engine it owns
 from one asyncio loop on one thread, so twenty threads take turns through a
 single interpreter and the whole box does the work of about one core.
 """
 
 import argparse
+import asyncio
+import concurrent.futures
 import multiprocessing
 import os
 import random
@@ -76,8 +84,78 @@ MAX_PLIES = 300
 OPENING_BALANCE = 150   # a game starting further from equal than this is skipped
 ADJUDICATE_AT = 1500    # once one side is this far ahead for a while, stop
 ADJUDICATE_PLIES = 6
+HUNG_AFTER = 60         # seconds without a bestmove before a teacher is given up for dead
 
 TEACHERS = "Stockfish,PlentyChess,Reckless,Obsidian,Caissa"
+
+
+class Hung(Exception):
+    """A teacher did not answer a search it should have finished long ago."""
+
+
+class Teacher(object):
+    """A panel engine whose searches cannot stall the worker that asks for them.
+
+    SimpleEngine waits as long as a search takes unless the search has a time
+    limit, and these have none. A time limit is the wrong fix: it would label
+    some positions with a smaller budget than the rest. So these are the calls
+    SimpleEngine makes, with a limit on the wait rather than on the search.
+    HUNG_AFTER is not part of the budget; it is how long a search at this
+    budget can run before it has certainly failed.
+    """
+
+    def __init__(self, name, hash_mb):
+        self.name = name
+        self.hash_mb = hash_mb
+        self.engine = panel.open_engine(name, hash_mb)
+
+    def analyse(self, board, limit, multipv=None):
+        search = self.engine.protocol.analyse(board, limit, multipv=multipv)
+        return self.wait(search, board, limit)
+
+    def play(self, board, limit):
+        return self.wait(self.engine.protocol.play(board, limit), board, limit)
+
+    def wait(self, search, board, limit):
+        future = asyncio.run_coroutine_threadsafe(search, self.engine.protocol.loop)
+        try:
+            return future.result(HUNG_AFTER)
+        except concurrent.futures.TimeoutError:
+            raise Hung(self.replay(board, limit))
+
+    def replay(self, board, limit):
+        """What the teacher was sent, as commands that repeat it on a fresh one.
+
+        The position line is built as python-chess builds the one it sends, so
+        it is the line the engine received, move history included.
+        """
+        protocol = self.engine.protocol
+        lines = [
+            "# {}  {} ({})".format(time.strftime("%Y-%m-%d %H:%M:%S"),
+                                   protocol.id.get("name", self.name), panel.path_of(self.name)),
+            "# no bestmove within {} s; killed and restarted, the game thrown away".format(HUNG_AFTER),
+            "# fen " + board.fen(),
+        ]
+        for name, value in protocol.config.items():
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            lines.append("setoption name {} value {}".format(name, value))
+        lines.append("ucinewgame")
+        root = board.root().fen(en_passant="fen")
+        position = "position startpos" if root == chess.STARTING_FEN else "position fen " + root
+        if board.move_stack:
+            position += " moves " + " ".join(move.uci() for move in board.move_stack)
+        lines.append(position)
+        lines.append("go nodes {}".format(limit.nodes) if limit.nodes else "go depth {}".format(limit.depth))
+        return "\n".join(lines) + "\n\n"
+
+    def restart(self):
+        # killed rather than asked to quit: an engine lost in a search may not be reading its input
+        self.engine.close()
+        self.engine = panel.open_engine(self.name, self.hash_mb)
+
+    def quit(self):
+        panel.quiet_quit(self.engine)
 
 
 def encode(board, score, result, engine_id=0):
@@ -208,6 +286,10 @@ def shard_path(out, index):
     return "{}.{:02d}.part".format(out, index)
 
 
+def hang_path(out, index):
+    return "{}.{:02d}.hung".format(out, index)
+
+
 def worker(index, args, counter):
     # every worker plays and labels with one engine for its lifetime, and the
     # workers are spread across the panel. Rotating per game would mean each
@@ -218,7 +300,7 @@ def worker(index, args, counter):
     names = [n.strip() for n in args.engines.split(",") if n.strip()]
     engine_name = names[index % len(names)]
     engine_id = index % len(names)
-    engine = panel.open_engine(engine_name, args.hash)
+    teacher = Teacher(engine_name, args.hash)
     with open(args.book) as handle:
         book = [line.strip() for line in handle if line.strip()]
     if args.nodes > 0:
@@ -235,7 +317,18 @@ def worker(index, args, counter):
     try:
         with open(shard_path(args.out, index), "wb") as handle:
             while mine < share:
-                seen, outcome = play_game(engine, limit, ending_limit, rng, book, engine_id)
+                try:
+                    seen, outcome = play_game(teacher, limit, ending_limit, rng, book, engine_id)
+                except Hung as hang:
+                    # the whole game goes, not only the search: every row carries
+                    # the game's result, and this game will never have one
+                    with open(hang_path(args.out, index), "a") as log:
+                        log.write(str(hang))
+                    print("\nworker {}: {} sent no bestmove within {} s; restarted it and threw the "
+                          "game away, the position is in {}".format(
+                              index, engine_name, HUNG_AFTER, hang_path(args.out, index)))
+                    teacher.restart()
+                    continue
                 if not seen:
                     continue
                 rows = np.zeros(len(seen), dtype=RECORD)
@@ -254,7 +347,7 @@ def worker(index, args, counter):
     except KeyboardInterrupt:
         pass
     finally:
-        panel.quiet_quit(engine)
+        teacher.quit()
 
 
 def join_shards(out, workers):
