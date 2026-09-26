@@ -189,7 +189,28 @@ pub rec Search {
     pv_len:     [64]i64;
 }
 
+# everything a search starts from, and the history tables cleared: a new
+# game, a test, bench
 pub fun reset(s: *Search) {
+    next_search(s);
+    var pc: i64 = 0;
+    for (pc < 12) {
+        var sq: i64 = 0;
+        for (sq < 64) {
+            s.history[pc][sq] = 0;
+            s.counter[pc][sq] = mv.NONE;
+            sq                = sq + 1;
+        }
+        pc = pc + 1;
+    }
+}
+
+# the state the next move's search starts from within one game. The history
+# tables are kept, halved: what the last search learned about quiet moves
+# orders this one's first iterations, where the table used to be empty, and
+# still gives way to what this search finds. Counter moves are kept as they
+# are; killers are by ply and belong to one search.
+pub fun next_search(s: *Search) {
     s.nodes      = 0;
     s.thread_id  = 0;
     s.stop       = 0;
@@ -206,6 +227,9 @@ pub fun reset(s: *Search) {
         s.killers[i][1] = mv.NONE;
         s.excluded[i]   = mv.NONE;
         s.pv_len[i]     = 0;
+        s.played[i]     = mv.NONE;
+        s.mover[i]      = 0;
+        s.evals[i]      = NO_EVAL;
         i               = i + 1;
     }
     var slot: i64 = 0;
@@ -218,18 +242,10 @@ pub fun reset(s: *Search) {
     for (pc < 12) {
         var sq: i64 = 0;
         for (sq < 64) {
-            s.history[pc][sq] = 0;
-            s.counter[pc][sq] = mv.NONE;
+            s.history[pc][sq] = s.history[pc][sq] / 2;
             sq                = sq + 1;
         }
         pc = pc + 1;
-    }
-    i = 0;
-    for (i < MAX_PLY) {
-        s.played[i] = mv.NONE;
-        s.mover[i]  = 0;
-        s.evals[i]  = NO_EVAL;
-        i           = i + 1;
     }
 }
 

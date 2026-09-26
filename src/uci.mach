@@ -114,7 +114,7 @@ fun halt() {
 
 fun start_search() {
     halt();
-    search.reset(?ENGINE);
+    search.next_search(?ENGINE);
     tt.new_search();
     # both decided here, before the search thread exists: see search.ponderhit
     var none: search.Budget;
@@ -300,6 +300,7 @@ pub fun loop(exe: str) i64 {
         or (str_equals(command, "ucinewgame")) {
             halt();
             tt.clear();
+            search.reset(?ENGINE);
             pos.set_fen(?GAME, pos.START_FEN);
         }
         or (str_equals(command, "position")) {
