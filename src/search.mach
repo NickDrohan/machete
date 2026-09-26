@@ -395,6 +395,7 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
     var best:      i64  = stand;
     var best_move: Move = mv.NONE;
     var legal:     i64  = 0;
+    val pins:      u64  = pos.pinned(p, p.side);
     i = 0;
     for (i < list.count) {
         pick(?list, ?scores[0], i);
@@ -420,8 +421,9 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
                 cnt;
             }
         }
+        val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
-        if (pos.left_in_check(p)) {
+        if (test && pos.left_in_check(p)) {
             pos.unmake(p);
             i = i + 1;
             cnt;
@@ -568,12 +570,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         futile = static_eval + margin <= alpha;
     }
 
+    val pins: u64 = pos.pinned(p, p.side);
     i = 0;
     for (i < list.count) {
         pick(?list, ?scores[0], i);
-        val m: Move = list.moves[i];
+        val m:    Move = list.moves[i];
+        val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
-        if (pos.left_in_check(p)) {
+        if (test && pos.left_in_check(p)) {
             pos.unmake(p);
             i = i + 1;
             cnt;
