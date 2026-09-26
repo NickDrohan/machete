@@ -140,6 +140,8 @@ pub rec Limits {
 # nodes:      nodes visited, including quiescence
 # stop:       set from outside to abandon the search
 # deadline:   monotonic millisecond after which to stop; 0 means no deadline
+# soft:       the clock's soft aim in milliseconds (see Budget); 0 without a clock
+# soft_start: when the soft aim started running: think's start, or ponderhit
 # node_limit: stop at this many nodes; 0 means none. Counted on this thread
 #             only, so a node-limited search is deterministic on one thread
 #             and merely bounded on several.
@@ -154,6 +156,8 @@ pub rec Search {
     nodes:         i64;
     stop:          i64;
     deadline:      i64;
+    soft:          i64;
+    soft_start:    i64;
     node_limit:    i64;
     started:       i64;
     best:          Move;
@@ -181,6 +185,8 @@ pub fun reset(s: *Search) {
     s.thread_id  = 0;
     s.stop       = 0;
     s.deadline   = 0;
+    s.soft       = 0;
+    s.soft_start = 0;
     s.node_limit = 0;
     s.pondering  = 0;
     s.best       = mv.NONE;
@@ -712,39 +718,91 @@ fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
     print.println("");
 }
 
-# how long to spend on this move, from the clock the GUI reported
-pub fun budget_ms(p: *Position, limits: *Limits) i64 {
-    if (limits.movetime > 0) { ret limits.movetime; }
+# milliseconds held back from every clock reading for the pipe and the GUI;
+# a game is lost for overrunning, and ten seconds a game leaves little slack
+val MOVE_OVERHEAD: i64 = 20;
+
+# how long to spend on one move
+# ---
+# soft:  what the search aims for. Scaled after each iteration by how settled
+#        the best move is and whether the score is falling (see think)
+# hard:  when a running iteration is abandoned
+# fixed: 1 for movetime, where both are the time given and nothing scales
+pub rec Budget {
+    soft:  i64;
+    hard:  i64;
+    fixed: u8;
+}
+
+# the budget for this move, from the clock the GUI reported; all zero when
+# there is no clock
+pub fun budget(p: *Position, limits: *Limits) Budget {
+    var b: Budget;
+    if (limits.movetime > 0) {
+        b.soft  = limits.movetime;
+        b.hard  = limits.movetime;
+        b.fixed = 1;
+        ret b;
+    }
     var remaining: i64 = limits.wtime;
     var increment: i64 = limits.winc;
     if (p.side == pos.BLACK) {
         remaining = limits.btime;
         increment = limits.binc;
     }
-    if (remaining <= 0) { ret 0; }
-    # a simple rule: a fraction of what is left, plus most of the increment,
-    # never more than a third of the clock. With movestogo the fraction is
-    # the moves actually left, not a guess of thirty; the cap still holds
-    # back a reserve on the last move or two before the control.
-    var moves: i64 = 30;
+    if (remaining <= 0) { ret b; }
+    remaining = remaining - MOVE_OVERHEAD;
+    if (remaining < 1) { remaining = 1; }
+    # the soft aim: a share of what is left plus most of the increment. With
+    # movestogo the share is the moves actually left, not a guess of 25.
+    var moves: i64 = 25;
     if (limits.movestogo > 0) {
         moves = limits.movestogo;
         if (moves < 2) { moves = 2; }
     }
-    var budget: i64 = remaining / moves + increment * 3 / 4;
-    if (budget > remaining / 3) { budget = remaining / 3; }
-    if (budget < 5)             { budget = 5; }
-    ret budget;
+    b.soft = remaining / moves + increment * 3 / 4;
+    # the hard stop lets an unsettled move run to five times the aim, but never
+    # past a quarter of the clock, so a reserve always survives
+    b.hard = b.soft * 5;
+    if (b.hard > remaining / 4) { b.hard = remaining / 4; }
+    if (b.soft > b.hard)        { b.soft = b.hard; }
+    if (b.hard < 1)             { b.hard = 1; }
+    if (b.soft < 1)             { b.soft = 1; }
+    ret b;
+}
+
+# how much of the soft aim to use, in thousandths, after `stable` iterations
+# in a row agreed on the best move and the score fell by `drop` centipawns
+# since the last one. A move that keeps changing gets up to twice the aim; one
+# settled for four iterations, three quarters. A falling score buys time to
+# find something better.
+fun time_scale(stable: i64, drop: i64) i64 {
+    var scale: i64 = 750;
+    if (stable == 0) { scale = 2000; }
+    or (stable == 1) { scale = 1400; }
+    or (stable == 2) { scale = 1100; }
+    or (stable == 3) { scale = 900; }
+    if (drop > 0) {
+        var extra: i64 = drop;
+        if (extra > 100) { extra = 100; }
+        scale = scale * (1000 + extra * 5) / 1000;
+    }
+    ret scale;
 }
 
 # the opponent played the move being pondered: from now on this is a normal
-# search, with `budget` milliseconds on the clock (0 for no deadline).
+# search on budget `b` (b.hard 0 for no deadline).
 # Called from the UCI thread while the search runs, so the budget must have
 # been worked out before the search started - the search thread is making
 # and unmaking moves on the position, and its side to move is not stable.
-pub fun ponderhit(s: *Search, budget: i64) {
+pub fun ponderhit(s: *Search, b: *Budget) {
     if (atomic.load(?s.pondering) == 0) { ret; }
-    if (budget > 0)                     { atomic.store(?s.deadline, clock.now_ms() + budget); }
+    if (b.hard > 0) {
+        val now: i64 = clock.now_ms();
+        atomic.store(?s.soft_start, now);
+        atomic.store(?s.soft, b.soft);
+        atomic.store(?s.deadline, now + b.hard);
+    }
     atomic.store(?s.pondering, 0);
 }
 
@@ -764,11 +822,14 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     s.depth_reached = 0;
     s.deadline      = 0;
     s.node_limit    = limits.nodes;
-    val budget: i64 = budget_ms(p, limits);
+    s.soft          = 0;
+    s.soft_start    = start;
+    val b: Budget = budget(p, limits);
     # read after the deadline was cleared, so a ponderhit that lands in between
     # is seen here rather than overwritten
-    if (budget > 0 && limits.infinite == 0 && atomic.load(?s.pondering) == 0) {
-        s.deadline = start + budget;
+    if (b.hard > 0 && limits.infinite == 0 && atomic.load(?s.pondering) == 0) {
+        s.deadline = start + b.hard;
+        s.soft     = b.soft;
     }
 
     var max_depth: i64 = limits.depth;
@@ -786,6 +847,8 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
 
     var depth:    i64 = 1;
     var previous: i64 = 0;
+    # iterations in a row that kept the same best move
+    var stable: i64 = 0;
     for (depth <= max_depth) {
         # aspiration window: the score rarely moves far between iterations, so
         # search a narrow band around the last one and widen only on a fail.
@@ -818,10 +881,13 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
             if (beta > MATE_FOUND)      { beta = INFINITE; }
         }
         if (s.stop != 0) { brk; }
+        val drop: i64 = previous - score;
         previous = score;
         # the ponder move comes from the same completed iteration as the best
         # move; an aborted iteration can leave pv[0] half overwritten
         if (s.pv_len[0] > 0) {
+            if (s.pv[0][0] == s.best) { stable = stable + 1; }
+            or                        { stable = 0; }
             s.best   = s.pv[0][0];
             s.ponder = mv.NONE;
             if (s.pv_len[0] > 1) { s.ponder = s.pv[0][1]; }
@@ -842,7 +908,20 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
             if (score < 0 - MATE_FOUND) { mate_plies = MATE + score; }
             if (mate_plies <= depth)    { brk; }
             val deadline: i64 = atomic.load(?s.deadline);
-            if (deadline != 0 && clock.now_ms() + elapsed / 2 >= deadline) { brk; }
+            val soft:     i64 = atomic.load(?s.soft);
+            if (b.fixed != 0) {
+                # movetime: stop when the next iteration cannot finish
+                if (deadline != 0 && clock.now_ms() + elapsed / 2 >= deadline) { brk; }
+            }
+            or (soft > 0) {
+                # a clock: stop once the scaled aim is half spent, since the
+                # next iteration usually costs more than all before it. The
+                # aim runs from ponderhit when there was one.
+                val spent: i64 = clock.now_ms() - atomic.load(?s.soft_start);
+                var aim:   i64 = soft;
+                if (depth >= 4)       { aim = soft * time_scale(stable, drop) / 1000; }
+                if (spent * 2 >= aim) { brk; }
+            }
         }
         depth = depth + 1;
     }
@@ -960,18 +1039,46 @@ test "search: a node limit stops exactly there, and repeats exactly" {
     ret 0;
 }
 
-test "search: movestogo divides the clock by the moves left" {
+test "search: the clock budget" {
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
     var limits: Limits;
-    limits.wtime = 60000;
-    limits.btime = 60000;
-    # no movestogo: a thirtieth
-    if (budget_ms(?p, ?limits) != 2000) { ret 2; }
+    limits.wtime = 60020;
+    limits.btime = 60020;
+    # no movestogo: a twenty-fifth of the clock after the overhead, and the
+    # hard stop at five times that
+    var b: Budget = budget(?p, ?limits);
+    if (b.soft != 2400 || b.hard != 12000 || b.fixed != 0) { ret 2; }
+    # a tenth would be 6000, which fits under the hard stop's quarter
     limits.movestogo = 10;
-    if (budget_ms(?p, ?limits) != 6000) { ret 3; }
-    # one move to go still keeps the cap of a third in reserve
+    b                = budget(?p, ?limits);
+    if (b.soft != 6000 || b.hard != 15000) { ret 3; }
+    # one move to go: the quarter caps both
     limits.movestogo = 1;
-    if (budget_ms(?p, ?limits) != 20000) { ret 4; }
+    b                = budget(?p, ?limits);
+    if (b.soft != 15000 || b.hard != 15000) { ret 4; }
+    # movetime is exact and never scaled
+    limits.movetime = 500;
+    b               = budget(?p, ?limits);
+    if (b.soft != 500 || b.hard != 500 || b.fixed != 1) { ret 5; }
+    # most of the increment is spent on the move it arrives with
+    limits.movetime  = 0;
+    limits.movestogo = 0;
+    limits.winc      = 1000;
+    b                = budget(?p, ?limits);
+    if (b.soft != 3150 || b.hard != 15000) { ret 6; }
+    # a clock nearly out still gives a positive budget
+    limits.movetime  = 0;
+    limits.movestogo = 0;
+    limits.wtime     = 25;
+    b                = budget(?p, ?limits);
+    if (b.soft < 1 || b.hard < b.soft) { ret 7; }
+    ret 0;
+}
+
+test "search: an unsettled move gets more time than a settled one" {
+    if (time_scale(0, 0) <= time_scale(4, 0))      { ret 1; }
+    if (time_scale(4, 50) <= time_scale(4, 0))     { ret 2; }
+    if (time_scale(4, 0 - 50) != time_scale(4, 0)) { ret 3; }
     ret 0;
 }
