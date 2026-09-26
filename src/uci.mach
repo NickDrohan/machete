@@ -286,6 +286,7 @@ pub fun loop(exe: str) i64 {
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
             # tells the GUI it may send go ponder; nothing in the engine changes with it
             print.println("option name Ponder type check default false");
+            search.print_tunables();
             if (DEFAULT_NET[0] != 0) {
                 print.printlnf("option name EvalFile type string default {}", ?DEFAULT_NET[0]);
             }
@@ -326,6 +327,9 @@ pub fun loop(exe: str) i64 {
                 if (wanted > smp.MAX_THREADS) { wanted = smp.MAX_THREADS; }
                 threads = wanted;
                 print.printlnf("info string threads set to {}", threads);
+            }
+            or (t.count >= 5 && search.set_tunable(t.item[2], token_i64(?t, 4, 0))) {
+                print.printlnf("info string {} set", t.item[2]);
             }
             or (t.count >= 3 && str_equals(t.item[2], "Hash")) {
                 print.printlnf("info string hash is fixed at {} MB", tt.MEGABYTES);
