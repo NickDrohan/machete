@@ -297,6 +297,13 @@ fun correction_update(s: *Search, p: *Position, raw: i64, found: i64, depth: i64
     s.correction[p.side][slot] = next;
 }
 
+# how much quiet history is worth one ply of late move reduction. The table
+# settles at +/-16384 for a move that always or never cuts (a bonus of b adds
+# 32b and decays b/512 of the value); history is cleared before every search,
+# so a ply per quarter of that lets a record built within this search count.
+# The adjustment is held to two plies either way.
+val HISTORY_PER_PLY: i64 = 4096;
+
 fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
     val piece: u8  = p.board[mv.from(m)];
     val to:    i64 = mv.to(m);
@@ -734,7 +741,15 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 # a position that is not improving is reduced a ply further
                 if (!improving) { reduction = reduction + 1; }
                 # a principal variation node is where being wrong is expensive
-                if (is_pv)         { reduction = reduction - 1; }
+                if (is_pv) { reduction = reduction - 1; }
+                # the history of this move says how often it has refuted
+                # something before: a good record buys back up to two plies,
+                # a bad one costs up to two more. s.mover holds the piece on
+                # its new square, which is the piece that moved.
+                var credit: i64 = s.history[s.mover[ply]][mv.to(m)] / HISTORY_PER_PLY;
+                if (credit > 2)     { credit = 2; }
+                if (credit < 0 - 2) { credit = 0 - 2; }
+                reduction = reduction - credit;
                 if (reduction < 0) { reduction = 0; }
                 # never reduce straight into quiescence: leave a ply to look
                 if (reduction > depth - 2) { reduction = depth - 2; }
