@@ -167,8 +167,10 @@ pub rec Search {
     best:          Move;
     ponder:        Move;
     depth_reached: i64;
-    quiet:         u8;
-    pondering:     i64;
+    # the depth of the iteration being searched, for the extension limit
+    root_depth: i64;
+    quiet:      u8;
+    pondering:  i64;
     # which accumulator stack this search owns; every thread needs its own
     thread_id: i64;
     killers:   [64][2]Move;
@@ -650,7 +652,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # and some other move reaches it too, two moves already beat beta and the
     # node is cut (multi-cut).
     var extension: i64 = 0;
-    if (ply > 0 && excluded == mv.NONE && tt_hit && tt_move != mv.NONE && depth >= SINGULAR_DEPTH
+    # A singular extension keeps a line at its depth, so a run of them could
+    # carry it to the ply ceiling; no line is extended past twice the depth
+    # the iteration set out to search.
+    if (ply > 0 && ply < 2 * s.root_depth && excluded == mv.NONE && tt_hit && tt_move != mv.NONE && depth >= SINGULAR_DEPTH
         && entry.depth >= depth - 3 && entry.flag != tt.UPPER
         && entry.score < MATE_FOUND && entry.score > 0 - MATE_FOUND) {
         val bar: i64 = entry.score - 2 * depth;
@@ -1030,7 +1035,8 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         }
         var score: i64 = 0;
         for {
-            score = search_node(s, p, depth, alpha, beta, 0, true);
+            s.root_depth = depth;
+            score        = search_node(s, p, depth, alpha, beta, 0, true);
             if (s.stop != 0) { brk; }
             if (score <= alpha) {
                 # fail low: the move is worse than believed, widen downwards
