@@ -227,6 +227,7 @@ def main():
     order = rng.permutation(total)
     held_out, training = order[:args.validation], order[args.validation:]
 
+    partial = args.out + ".partial"
     corpus = Corpus(sources, device)
     model = Net().to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -264,8 +265,13 @@ def main():
                 count += len(target)
         print("\repoch {} done: training loss {:.5f}, validation {:.5f}      ".format(
             epoch + 1, float(running) / max(1, seen), error / max(1, count)))
-        worst = export(model, args.out)
-        print("  wrote {} (worst accumulator {:.0f} of 32767)".format(args.out, worst))
+        # every epoch goes to a .partial file and only the last is renamed to
+        # --out, so a job that --requires the network never starts on a
+        # network still training
+        worst = export(model, partial)
+        print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
+    os.replace(partial, args.out)
+    print("finished: {}".format(args.out))
     return 0
 
 
