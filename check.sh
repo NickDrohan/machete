@@ -76,6 +76,22 @@ if [[ -n "$python" ]]; then
     done
 fi
 
+# Training builds features and targets on the GPU, not with reference.py; the
+# two must agree, or every network is trained on something agree.py never saw.
+# PyTorch lives on a different Python than python-chess here.
+torch_python=""
+for candidate in "${TORCH_PYTHON:-}" py python python3; do
+    if [[ -n "$candidate" ]] && "$candidate" -c 'import torch' 2>/dev/null; then
+        torch_python="$candidate"
+        break
+    fi
+done
+gate "PyTorch available (set TORCH_PYTHON to override)" 0 test -n "$torch_python"
+if [[ -n "$torch_python" ]]; then
+    gate "training features and targets match the reference" 0 \
+        "$torch_python" "$here/harness/nnue/train_check.py"
+fi
+
 # Parallel search: it must find the same move as one thread, and it must
 # actually use the cores it was given.
 gate "8 threads finds the mate in one" 0 bash -c '
