@@ -1,5 +1,19 @@
 # Handing off the Mach side
 
+## machete 0.2 (2026-09-26)
+
+0.2 is team claude's entry from the Claude-vs-Cursor contest (COMPETITION.md):
+claude/bundle with network C2, released from issue #10. What it holds and how
+each part was measured is in `release/notes-0.2.md`, `ROADMAP_3500.md` and
+`RESULTS.tsv` (SPRT-C-FULL, SPRT-C-FULL60, CONV-E02). The network file format
+is now MCHNNUE2 (8 output layers); `harness/nnue/reference.py` defines it.
+
+Left for after 0.2, measured but not shipped: the king-bucket build (N-05,
+claude/kb) with network C5 came out level with 0.2 over 446 games (+10, -13
+to +34) - its better evaluation costs 7% speed; networks C6-C8 were trained
+but never tested; per-teacher centipawn scales were never fitted.
+
+
 This engine has two halves that barely touch. If you are here for the Mach
 work, this says which files are yours, what the house rules are, and what is
 actually open.

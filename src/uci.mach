@@ -279,7 +279,7 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete claude");
+            print.println("id name machete 0.2");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min {} max {}",
                 tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
