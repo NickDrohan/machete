@@ -4,8 +4,11 @@
 
 reference.feature_indices is what agree.py already holds the engine to, so the
 device path is checked against it exactly, on random records of every legal
-shape: either side to move, 0 to 32 pieces, every piece code and square. The
-targets are checked against the same formula in numpy, within float rounding.
+shape: either side to move, 0 to 32 pieces on distinct squares, every piece
+code and square. The device packs a record and lists its pieces in square
+order, the reference in slot order; the network sums them, so each position's
+features are compared as a set. The targets are checked against the same
+formula in numpy, within float rounding.
 """
 
 import argparse
@@ -27,7 +30,7 @@ def random_records(count, seed):
     rows["stm"] = rng.randint(0, 2, count)
     rows["count"] = rng.randint(0, 33, count)
     rows["pieces"] = rng.randint(0, 12, (count, 32))
-    rows["squares"] = rng.randint(0, 64, (count, 32))
+    rows["squares"] = np.argsort(rng.rand(count, 64), axis=1)[:, :32]
     rows["score"] = rng.randint(-32000, 32001, count)
     rows["result"] = rng.randint(0, 3, count)
     return rows
@@ -47,14 +50,15 @@ def main():
     args = parser.parse_args()
 
     rows = random_records(args.records, args.seed)
-    corpus = train.Corpus(rows, args.device)
+    corpus = train.Corpus([(rows, len(rows))], args.device)
     order = np.random.RandomState(args.seed).permutation(len(rows))
     index = np.sort(order[:len(rows) // 2])
 
     us, them = corpus.features(torch.from_numpy(index).to(args.device))
-    want_us, want_them = reference.feature_indices(rows[index])
-    if not (np.array_equal(us.cpu().numpy(), want_us) and np.array_equal(them.cpu().numpy(), want_them)):
-        bad = np.nonzero((us.cpu().numpy() != want_us).any(axis=1))[0]
+    us, them = np.sort(us.cpu().numpy(), axis=1), np.sort(them.cpu().numpy(), axis=1)
+    want_us, want_them = (np.sort(side, axis=1) for side in reference.feature_indices(rows[index]))
+    if not (np.array_equal(us, want_us) and np.array_equal(them, want_them)):
+        bad = np.nonzero((us != want_us).any(axis=1) | (them != want_them).any(axis=1))[0]
         raise SystemExit("features differ from the reference on {} of {} records".format(
             len(bad), len(index)))
 

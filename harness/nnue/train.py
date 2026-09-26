@@ -66,38 +66,55 @@ class Net(nn.Module):
 
 
 class Corpus(object):
-    """The whole corpus on the device, as the columns training reads.
+    """The whole corpus on the device, packed, as the columns training reads.
 
     Gathering rows from a memmap and building features with numpy kept the GPU
     two-thirds idle: gen5 trained at ~110-330k positions/s with the card at
     26-41%. Held on the card, a batch is an index gather and a few integer ops,
-    and the CPU leaves the loop. 55M positions take 3.85 GB.
+    and the CPU leaves the loop.
+
+    A record is 70 bytes on disk; here it is 28. The occupied squares are one
+    64-bit board and the pieces on them are 4-bit codes in square order, so
+    the count is the board's population and the squares are its set bits.
+    That puts about 190M positions on an 8 GB card rather than 80M.
     """
 
     CHUNK = 1 << 22
+    BYTES = 28
 
-    def __init__(self, data, device):
+    def __init__(self, sources, device):
+        """`sources` is a list of (records, how many to take from the front)."""
         self.device = device
-        count = len(data)
+        count = sum(take for _, take in sources)
+        self.occupied = torch.empty(count, dtype=torch.int64, device=device)
+        self.codes = torch.empty((count, 16), dtype=torch.uint8, device=device)
         self.stm = torch.empty(count, dtype=torch.uint8, device=device)
-        self.count = torch.empty(count, dtype=torch.uint8, device=device)
-        self.pieces = torch.empty((count, 32), dtype=torch.uint8, device=device)
-        self.squares = torch.empty((count, 32), dtype=torch.uint8, device=device)
         self.score = torch.empty(count, dtype=torch.int16, device=device)
         self.result = torch.empty(count, dtype=torch.uint8, device=device)
-        for at in range(0, count, self.CHUNK):
-            rows = np.asarray(data[at:at + self.CHUNK])
-            end = at + len(rows)
-            for name in ("stm", "count", "pieces", "squares", "score", "result"):
-                column = torch.from_numpy(np.ascontiguousarray(rows[name]))
-                getattr(self, name)[at:end] = column.to(device)
+        at = 0
+        for data, take in sources:
+            for first in range(0, take, self.CHUNK):
+                rows = np.asarray(data[first:min(take, first + self.CHUNK)])
+                occupied, codes = pack(rows)
+                end = at + len(rows)
+                self.occupied[at:end] = torch.from_numpy(occupied.view(np.int64)).to(device)
+                self.codes[at:end] = torch.from_numpy(codes).to(device)
+                for name in ("stm", "score", "result"):
+                    column = torch.from_numpy(np.ascontiguousarray(rows[name]))
+                    getattr(self, name)[at:end] = column.to(device)
+                at = end
+        self.count = count
+        self.squares = torch.arange(64, device=device)[None, :]
         self.slots = torch.arange(32, device=device)[None, :]
 
     def features(self, index):
-        """reference.feature_indices, on the device."""
-        pieces = self.pieces[index].long()
-        squares = self.squares[index].long()
-        live = self.slots < self.count[index].long()[:, None]
+        """reference.feature_indices, on the device, with the pieces in square order."""
+        bits = (self.occupied[index][:, None] >> self.squares) & 1
+        # occupied squares first, each group in ascending order
+        squares = torch.argsort(1 - bits, dim=1, stable=True)[:, :32]
+        live = self.slots < bits.sum(dim=1)[:, None]
+        codes = self.codes[index]
+        pieces = torch.stack([codes & 15, codes >> 4], dim=2).reshape(-1, 32).long()
         white = pieces * 64 + squares
         black = ((pieces + 6) % 12) * 64 + (squares ^ 56)
         black_to_move = (self.stm[index] == 1)[:, None]
@@ -117,6 +134,35 @@ class Corpus(object):
             index = torch.from_numpy(np.sort(order[at:at + size])).to(self.device)
             us, them = self.features(index)
             yield us, them, self.targets(index)
+
+
+def pack(rows):
+    """Records to (occupied board as uint64, 16 bytes of 4-bit piece codes in square order)."""
+    count = rows["count"].astype(np.int64)
+    live = np.arange(32)[None, :] < count[:, None]
+    squares = np.where(live, rows["squares"], 64).astype(np.int16)
+    order = np.argsort(squares, axis=1, kind="stable")
+    pieces = np.take_along_axis(rows["pieces"], order, axis=1)
+    pieces = np.where(live, pieces, 0).astype(np.uint8)
+    codes = pieces[:, 0::2] | (pieces[:, 1::2] << 4)
+    bits = np.left_shift(np.uint64(1), np.minimum(squares, 63).astype(np.uint64))
+    occupied = np.bitwise_or.reduce(np.where(live, bits, np.uint64(0)), axis=1)
+    return occupied.astype(np.uint64), np.ascontiguousarray(codes)
+
+
+def open_sources(specs):
+    """`path` or `path@N` (the first N records) for each corpus."""
+    sources = []
+    for spec in specs:
+        path, take = spec, ""
+        if "@" in os.path.basename(spec):
+            path, take = spec.rsplit("@", 1)
+        data = np.memmap(path, dtype=RECORD, mode="r")
+        take = int(take) if take else len(data)
+        if take > len(data):
+            raise SystemExit("{} holds {:,} records, not {:,}".format(path, len(data), take))
+        sources.append((data, take))
+    return sources
 
 
 def export(model, path):
@@ -146,7 +192,7 @@ def export(model, path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("data")
+    parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
     parser.add_argument("--out", default="machete.nnue")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch", type=int, default=16384)
@@ -170,16 +216,18 @@ def main():
             args.blend, round(1.0 - args.blend, 2)))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    data = np.memmap(args.data, dtype=RECORD, mode="r")
-    print("{:,} positions, training on {}".format(len(data), device))
-    if len(data) < args.validation * 4:
+    sources = open_sources(args.data)
+    total = sum(take for _, take in sources)
+    print("{:,} positions ({:.2f} GB packed), training on {}".format(
+        total, total * Corpus.BYTES / 1e9, device))
+    if total < args.validation * 4:
         raise SystemExit("not enough positions to hold out a validation set")
 
     rng = np.random.RandomState(args.seed)
-    order = rng.permutation(len(data))
+    order = rng.permutation(total)
     held_out, training = order[:args.validation], order[args.validation:]
 
-    corpus = Corpus(data, device)
+    corpus = Corpus(sources, device)
     model = Net().to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
