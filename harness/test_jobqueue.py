@@ -11,6 +11,7 @@ and the prediction attached. Exits non-zero on the first failure, naming it.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -124,7 +125,9 @@ def main():
     if failures:
         print("runner output:\n" + "\n---\n".join(outputs))
         print("left in {}".format(work))
-    return 1 if failures else 0
+        return 1
+    shutil.rmtree(work, ignore_errors=True)
+    return 0
 
 
 if __name__ == "__main__":
