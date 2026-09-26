@@ -7,8 +7,13 @@ right by construction and the engine is wrong.
 
 The network is a perspective net:
 
-    768 inputs -> 256 hidden (per perspective, shared weights)
-    concat[side-to-move, other side] = 512 -> 1
+    768 inputs -> HIDDEN (per perspective, shared weights)
+    concat[side-to-move, other side] = 2 * HIDDEN -> 1, through one of BUCKETS
+    output layers chosen by the number of pieces on the board
+
+The engine fixes HIDDEN at compile time and refuses a file of another width;
+this reader takes the width from the file, so one reference serves every
+build.
 
 A feature is (colour relative to the perspective, piece kind, square relative to
 the perspective). Seen from black, colours swap and squares flip vertically, so
@@ -22,6 +27,7 @@ QA*QB and one divide at the end turns it into centipawns.
     python reference.py random out.nnue --seed 1     # a random net, for gates
     python reference.py eval net.nnue "FEN"          # centipawns, side to move
     python reference.py dump net.nnue                # header fields
+    python reference.py upgrade old.nnue new.nnue    # a first-format file, rewritten
 """
 
 import argparse
@@ -30,9 +36,10 @@ import sys
 
 import numpy as np
 
-MAGIC = b"MCHNNUE1"
+MAGIC = b"MCHNNUE2"
 INPUTS = 768
-HIDDEN = 256
+HIDDEN = 256       # the width a new file gets unless told otherwise
+BUCKETS = 8        # output layers, by (pieces - 2) // 4
 QA = 255           # hidden-layer scale: a clipped-relu output of 1.0 is QA
 QB = 64            # output-weight scale
 SCALE = 400        # network output of 1.0 is SCALE centipawns; see set_scale
@@ -101,44 +108,86 @@ def feature_indices(rows):
     return np.where(live, us, INPUTS), np.where(live, them, INPUTS)
 
 
+def bucket(pieces):
+    """Which output layer a position with `pieces` pieces (kings included) uses."""
+    return min(BUCKETS - 1, max(0, (pieces - 2) // 4))
+
+
 def save(path, feature_weights, feature_bias, output_weights, output_bias):
-    """Write the file the engine reads. Layout is fixed; see the header below."""
-    assert feature_weights.shape == (INPUTS, HIDDEN)
-    assert feature_bias.shape == (HIDDEN,)
-    assert output_weights.shape == (2 * HIDDEN,)
-    header = MAGIC + struct.pack("<IIiii", INPUTS, HIDDEN, QA, QB, SCALE)
+    """Write the file the engine reads.
+
+    Header (32 bytes): magic, then u32 inputs, hidden, qa, qb, scale, buckets.
+    Body: feature weights [inputs][hidden] i16, feature bias [hidden] i16,
+    output weights [buckets][2 * hidden] i16, output bias [buckets] i32.
+    """
+    hidden = feature_weights.shape[1]
+    assert feature_weights.shape == (INPUTS, hidden)
+    assert feature_bias.shape == (hidden,)
+    assert output_weights.shape == (BUCKETS, 2 * hidden)
+    assert len(output_bias) == BUCKETS
+    header = MAGIC + struct.pack("<IIiiiI", INPUTS, hidden, QA, QB, SCALE, BUCKETS)
+    assert len(header) <= HEADER
     header = header + b"\0" * (HEADER - len(header))
     with open(path, "wb") as handle:
         handle.write(header)
         handle.write(feature_weights.astype("<i2").tobytes())
         handle.write(feature_bias.astype("<i2").tobytes())
         handle.write(output_weights.astype("<i2").tobytes())
-        handle.write(struct.pack("<i", int(output_bias)))
+        handle.write(np.asarray(output_bias, dtype=np.int64).astype("<i4").tobytes())
 
 
 def load(path):
     with open(path, "rb") as handle:
         blob = handle.read()
     if blob[:8] != MAGIC:
-        raise ValueError("not a machete network: bad magic")
-    inputs, hidden, qa, qb, scale = struct.unpack("<IIiii", blob[8:28])
-    if (inputs, hidden) != (INPUTS, HIDDEN):
-        raise ValueError("network is {}x{}, this reader is {}x{}".format(
-            inputs, hidden, INPUTS, HIDDEN))
+        raise ValueError("not a machete network of this format: bad magic")
+    inputs, hidden, qa, qb, scale, buckets = struct.unpack("<IIiiiI", blob[8:32])
+    if (inputs, buckets) != (INPUTS, BUCKETS):
+        raise ValueError("network has {} inputs and {} buckets, this reader {} and {}".format(
+            inputs, buckets, INPUTS, BUCKETS))
     at = HEADER
     count = inputs * hidden
     feature_weights = np.frombuffer(blob, "<i2", count, at).reshape(inputs, hidden)
     at = at + count * 2
     feature_bias = np.frombuffer(blob, "<i2", hidden, at)
     at = at + hidden * 2
-    output_weights = np.frombuffer(blob, "<i2", 2 * hidden, at)
-    at = at + 2 * hidden * 2
-    output_bias = struct.unpack("<i", blob[at:at + 4])[0]
+    output_weights = np.frombuffer(blob, "<i2", buckets * 2 * hidden, at).reshape(buckets, 2 * hidden)
+    at = at + buckets * 2 * hidden * 2
+    output_bias = np.frombuffer(blob, "<i4", buckets, at)
+    at = at + buckets * 4
+    if at != len(blob):
+        raise ValueError("network file is {} bytes, its header says {}".format(len(blob), at))
     return {"feature_weights": feature_weights.astype(np.int32),
             "feature_bias": feature_bias.astype(np.int32),
             "output_weights": output_weights.astype(np.int32),
-            "output_bias": output_bias,
-            "qa": qa, "qb": qb, "scale": scale}
+            "output_bias": [int(b) for b in output_bias],
+            "hidden": hidden, "qa": qa, "qb": qb, "scale": scale}
+
+
+def upgrade(old_path, new_path):
+    """Rewrite a first-format network (MCHNNUE1, one output layer) in this format.
+
+    The one output layer is copied into every bucket, so the network evaluates
+    exactly as before; network A crossed over this way, and bench did not move.
+    """
+    with open(old_path, "rb") as handle:
+        blob = handle.read()
+    if blob[:8] != b"MCHNNUE1":
+        raise ValueError("{} is not a first-format network".format(old_path))
+    inputs, hidden, qa, qb, scale = struct.unpack("<IIiii", blob[8:28])
+    if (inputs, qa, qb) != (INPUTS, QA, QB):
+        raise ValueError("unexpected dimensions or scales in {}".format(old_path))
+    at = HEADER
+    feature_weights = np.frombuffer(blob, "<i2", inputs * hidden, at).reshape(inputs, hidden)
+    at = at + inputs * hidden * 2
+    feature_bias = np.frombuffer(blob, "<i2", hidden, at)
+    at = at + hidden * 2
+    output_weights = np.frombuffer(blob, "<i2", 2 * hidden, at)
+    at = at + 2 * hidden * 2
+    output_bias = struct.unpack("<i", blob[at:at + 4])[0]
+    set_scale(scale)
+    save(new_path, feature_weights, feature_bias,
+         np.tile(output_weights, (BUCKETS, 1)), [output_bias] * BUCKETS)
 
 
 def accumulate(net, pieces):
@@ -151,17 +200,19 @@ def accumulate(net, pieces):
     return acc
 
 
-def forward(net, acc, side_to_move):
+def forward(net, acc, side_to_move, pieces):
     """Centipawns from the side to move's point of view, integer arithmetic only."""
-    qa, qb, scale = net["qa"], net["qb"], net["scale"]
+    qa, qb, scale, hidden = net["qa"], net["qb"], net["scale"], net["hidden"]
+    layer = bucket(pieces)
+    weights = net["output_weights"][layer]
     ours = np.clip(acc[side_to_move], 0, qa)
     theirs = np.clip(acc[side_to_move ^ 1], 0, qa)
-    total = int(np.dot(ours, net["output_weights"][:HIDDEN]))
-    total += int(np.dot(theirs, net["output_weights"][HIDDEN:]))
+    total = int(np.dot(ours, weights[:hidden]))
+    total += int(np.dot(theirs, weights[hidden:]))
     # truncate toward zero, which is what Mach's `/` does and what Python's
     # `//` does not: floor division would round a negative score the wrong way
     # and put the two implementations one centipawn apart.
-    numerator = (total + net["output_bias"]) * scale
+    numerator = (total + net["output_bias"][layer]) * scale
     denominator = qa * qb
     quotient = abs(numerator) // denominator
     return -quotient if numerator < 0 else quotient
@@ -181,10 +232,11 @@ def evaluate_fen(net, fen):
     import chess
     board = chess.Board(fen)
     side = WHITE if board.turn == chess.WHITE else BLACK
-    return forward(net, accumulate(net, pieces_of(board)), side)
+    pieces = pieces_of(board)
+    return forward(net, accumulate(net, pieces), side, len(pieces))
 
 
-def random_net(seed):
+def random_net(seed, hidden=HIDDEN):
     """A net with no training in it, for checking that two implementations agree.
 
     The weights are spread across most of the int16 range on purpose: a net of
@@ -192,14 +244,14 @@ def random_net(seed):
     look correct.
     """
     rng = np.random.RandomState(seed)
-    feature_weights = rng.randint(-96, 97, size=(INPUTS, HIDDEN)).astype(np.int16)
-    feature_bias = rng.randint(-QA, QA + 1, size=HIDDEN).astype(np.int16)
-    output_weights = rng.randint(-QB, QB + 1, size=2 * HIDDEN).astype(np.int16)
-    output_bias = int(rng.randint(-QA * QB, QA * QB))
+    feature_weights = rng.randint(-96, 97, size=(INPUTS, hidden)).astype(np.int16)
+    feature_bias = rng.randint(-QA, QA + 1, size=hidden).astype(np.int16)
+    output_weights = rng.randint(-QB, QB + 1, size=(BUCKETS, 2 * hidden)).astype(np.int16)
+    output_bias = [int(b) for b in rng.randint(-QA * QB, QA * QB, size=BUCKETS)]
     return feature_weights, feature_bias, output_weights, output_bias
 
 
-def extreme_net(sign):
+def extreme_net(sign, hidden=HIDDEN):
     """The arithmetic worst case, for a gate rather than for play.
 
     Every activation clipped to QA, every output weight at the quantization
@@ -212,10 +264,10 @@ def extreme_net(sign):
     Feature weights of 8 are chosen so a full 32-piece board sums to 256 and
     clips to 255: the maximum an activation can contribute.
     """
-    feature_weights = np.full((INPUTS, HIDDEN), 8, dtype=np.int16)
-    feature_bias = np.zeros(HIDDEN, dtype=np.int16)
-    output_weights = np.full(2 * HIDDEN, sign * 127, dtype=np.int16)
-    return feature_weights, feature_bias, output_weights, sign * 2000000000
+    feature_weights = np.full((INPUTS, hidden), 8, dtype=np.int16)
+    feature_bias = np.zeros(hidden, dtype=np.int16)
+    output_weights = np.full((BUCKETS, 2 * hidden), sign * 127, dtype=np.int16)
+    return feature_weights, feature_bias, output_weights, [sign * 2000000000] * BUCKETS
 
 
 def main():
@@ -224,28 +276,36 @@ def main():
     make = sub.add_parser("random")
     make.add_argument("out")
     make.add_argument("--seed", type=int, default=1)
+    make.add_argument("--hidden", type=int, default=HIDDEN)
     worst = sub.add_parser("extreme")
     worst.add_argument("out")
     worst.add_argument("--sign", type=int, default=1)
+    worst.add_argument("--hidden", type=int, default=HIDDEN)
     one = sub.add_parser("eval")
     one.add_argument("net")
     one.add_argument("fen")
     show = sub.add_parser("dump")
     show.add_argument("net")
+    cross = sub.add_parser("upgrade")
+    cross.add_argument("old")
+    cross.add_argument("new")
     args = parser.parse_args()
 
     if args.command == "random":
-        save(args.out, *random_net(args.seed))
-        print("wrote {} ({}x{}, seed {})".format(args.out, INPUTS, HIDDEN, args.seed))
+        save(args.out, *random_net(args.seed, args.hidden))
+        print("wrote {} ({}x{}, seed {})".format(args.out, INPUTS, args.hidden, args.seed))
     elif args.command == "extreme":
-        save(args.out, *extreme_net(1 if args.sign >= 0 else -1))
+        save(args.out, *extreme_net(1 if args.sign >= 0 else -1, args.hidden))
         print("wrote {} (arithmetic worst case, sign {})".format(args.out, args.sign))
     elif args.command == "eval":
         print(evaluate_fen(load(args.net), args.fen))
+    elif args.command == "upgrade":
+        upgrade(args.old, args.new)
+        print("wrote {} from {}, every bucket a copy of its one output layer".format(args.new, args.old))
     elif args.command == "dump":
         net = load(args.net)
-        print("inputs {} hidden {} qa {} qb {} scale {}".format(
-            INPUTS, HIDDEN, net["qa"], net["qb"], net["scale"]))
+        print("inputs {} hidden {} buckets {} qa {} qb {} scale {}".format(
+            INPUTS, net["hidden"], BUCKETS, net["qa"], net["qb"], net["scale"]))
         print("output bias {}".format(net["output_bias"]))
     else:
         parser.print_help()

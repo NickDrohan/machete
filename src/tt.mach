@@ -5,6 +5,13 @@
 # changes it is one less thing that can fail mid-search. The UCI Hash option
 # is therefore reported but not honoured.
 #
+# Slots come in buckets of four, one 64-byte cache line, and a position may
+# live in any slot of its bucket. A store that finds no slot of its own
+# replaces the one worth least: the shallowest, counting an entry from an
+# earlier search as four plies shallower per search since. With one slot per
+# position, every quiescence store (depth 0) evicted whatever deep entry
+# shared its slot, and entries from moves long past were never cleared out.
+#
 # a stored mate score counts from the root, so it must be converted to and
 # from "distance from this node" as it crosses the table; search does that.
 
@@ -26,6 +33,10 @@ pub val ENTRIES: i64 = 8388608;
 # what the UCI Hash option reports: ENTRIES (2^23) slots of 16 bytes, a fixed size
 pub val MEGABYTES: i64 = 128;
 
+# slots per bucket, and buckets in the table
+val WAYS:    i64 = 4;
+val BUCKETS: i64 = 2097152;
+
 pub rec Entry {
     key:   u64;
     move:  Move;
@@ -46,10 +57,19 @@ rec Slot {
 
 var TABLE: [8388608]Slot;
 
-# move in the low 32 bits, then score (16, biased), depth (8) and flag (2)
+# which search wrote an entry, counted modulo 64; new_search moves it on
+var GENERATION: u64 = 0;
+
+# a new search from the UCI thread: entries written before it start to age
+pub fun new_search() {
+    GENERATION = (GENERATION + 1) & 63;
+}
+
+# move in the low 32 bits, then score (16, biased), depth (8), flag (2) and
+# the generation that wrote it (6)
 fun pack(move: Move, score: i64, depth: i64, flag: u8) u64 {
     val biased: u64 = (score + 32768)::u64 & 0xFFFF;
-    ret move::u64 | (biased << 32) | ((depth::u64 & 0xFF) << 48) | ((flag::u64 & 3) << 56);
+    ret move::u64 | (biased << 32) | ((depth::u64 & 0xFF) << 48) | ((flag::u64 & 3) << 56) | (GENERATION << 58);
 }
 
 fun unpack(data: u64, out: *Entry) {
@@ -59,6 +79,15 @@ fun unpack(data: u64, out: *Entry) {
     out.flag  = ((data >> 56) & 3)::u8;
 }
 
+# how much an entry is worth keeping: its depth, less four per search since
+# it was written; an empty slot is worth nothing at all
+fun worth(e: *Slot) i64 {
+    val data: u64 = e.data;
+    if (data == 0 && e.guard == 0) { ret 0 - 1000; }
+    val age: i64 = ((GENERATION - (data >> 58)) & 63)::i64;
+    ret ((data >> 48) & 0xFF)::i64 - 4 * age;
+}
+
 pub fun clear() {
     var i: i64 = 0;
     for (i < ENTRIES) {
@@ -66,35 +95,57 @@ pub fun clear() {
         TABLE[i].data  = 0;
         i              = i + 1;
     }
+    GENERATION = 0;
 }
 
-fun slot(key: u64) i64 {
-    ret (key & (ENTRIES - 1)::u64)::i64;
+# the first slot of the bucket a key belongs to
+fun bucket(key: u64) i64 {
+    ret (key & (BUCKETS - 1)::u64)::i64 * WAYS;
 }
 
 # copy the entry for key into out; false when this position is not stored, or
-# when the slot was caught mid-write by another thread
+# when its slot was caught mid-write by another thread
 pub fun probe(key: u64, out: *Entry) bool {
-    val e:    *Slot = ?TABLE[slot(key)];
-    val data: u64   = e.data;
-    if ((e.guard ^ data) != key) { ret false; }
-    out.key = key;
-    unpack(data, out);
-    ret true;
+    val first: i64 = bucket(key);
+    var way:   i64 = 0;
+    for (way < WAYS) {
+        val e:    *Slot = ?TABLE[first + way];
+        val data: u64   = e.data;
+        if ((e.guard ^ data) == key) {
+            out.key = key;
+            unpack(data, out);
+            ret true;
+        }
+        way = way + 1;
+    }
+    ret false;
 }
 
-# keep the entry that searched deeper; a new position always replaces an old one
+# the position's own slot keeps the deeper search unless this one is exact;
+# a position new to the bucket takes the slot worth least
 pub fun store(key: u64, move: Move, score: i64, depth: i64, flag: u8) {
-    val e:       *Slot = ?TABLE[slot(key)];
-    val current: u64   = e.data;
-    if ((e.guard ^ current) == key && flag != EXACT) {
-        var existing: Entry;
-        unpack(current, ?existing);
-        if (depth < existing.depth) { ret; }
+    val first:  i64 = bucket(key);
+    var victim: i64 = first;
+    var least:  i64 = 1000000;
+    var way:    i64 = 0;
+    for (way < WAYS) {
+        val e:       *Slot = ?TABLE[first + way];
+        val current: u64   = e.data;
+        if ((e.guard ^ current) == key) {
+            if (flag != EXACT && depth < ((current >> 48) & 0xFF)::i64) { ret; }
+            victim = first + way;
+            brk;
+        }
+        val value: i64 = worth(e);
+        if (value < least) {
+            least  = value;
+            victim = first + way;
+        }
+        way = way + 1;
     }
     val data: u64 = pack(move, score, depth, flag);
-    e.data  = data;
-    e.guard = key ^ data;
+    TABLE[victim].data  = data;
+    TABLE[victim].guard = key ^ data;
 }
 
 test "tt: stores, probes and prefers depth" {
@@ -110,10 +161,30 @@ test "tt: stores, probes and prefers depth" {
     if (!probe(12345, ?out)) { ret 4; }
     if (out.score != 42)     { ret 5; }
 
-    # a different position in the same slot replaces it
-    store(12345 + ENTRIES::u64, mv.make(3, 4, mv.QUIET), 7, 1, UPPER);
-    if (probe(12345, ?out))                                   { ret 6; }
-    if (!probe(12345 + ENTRIES::u64, ?out) || out.score != 7) { ret 7; }
+    # four positions share a bucket without evicting one another
+    clear();
+    val step: u64 = BUCKETS::u64;
+    store(5, mv.make(1, 2, mv.QUIET), 10, 9, EXACT);
+    store(5 + step, mv.make(1, 3, mv.QUIET), 11, 0, LOWER);
+    store(5 + step * 2, mv.make(1, 4, mv.QUIET), 12, 6, EXACT);
+    store(5 + step * 3, mv.make(1, 5, mv.QUIET), 13, 3, UPPER);
+    if (!probe(5, ?out) || !probe(5 + step, ?out) || !probe(5 + step * 2, ?out) || !probe(5 + step * 3, ?out)) { ret 6; }
+    # a fifth takes the shallowest slot, the depth-0 one, and nothing deeper
+    store(5 + step * 4, mv.make(1, 6, mv.QUIET), 14, 4, EXACT);
+    if (!probe(5 + step * 4, ?out) || out.score != 14) { ret 7; }
+    if (probe(5 + step, ?out))                         { ret 11; }
+    if (!probe(5, ?out) || out.depth != 9)             { ret 12; }
+    # three searches later the untouched entries are worth their depth less
+    # twelve, and the depth-3 entry, stored again now, its full 3: a new
+    # position takes the depth-4 slot (4 - 12), not the fresh shallow one
+    new_search();
+    new_search();
+    new_search();
+    store(5 + step * 3, mv.make(1, 5, mv.QUIET), 13, 3, EXACT);
+    store(5 + step * 5, mv.make(1, 7, mv.QUIET), 15, 1, EXACT);
+    if (!probe(5 + step * 5, ?out))                   { ret 13; }
+    if (!probe(5 + step * 3, ?out) || out.depth != 3) { ret 14; }
+    if (probe(5 + step * 4, ?out))                    { ret 15; }
 
     # negative and mate-range scores survive the packing
     clear();
@@ -124,7 +195,11 @@ test "tt: stores, probes and prefers depth" {
 
     # a slot corrupted the way a torn write would corrupt it is rejected, not
     # returned: this is the property the guard word exists for
-    TABLE[slot(78)].data = TABLE[slot(78)].data ^ 0x1234;
+    var way: i64 = 0;
+    for (way < WAYS) {
+        TABLE[bucket(78) + way].data = TABLE[bucket(78) + way].data ^ 0x1234;
+        way                          = way + 1;
+    }
     if (probe(78, ?out)) { ret 10; }
     ret 0;
 }

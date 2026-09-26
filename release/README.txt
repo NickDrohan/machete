@@ -1,10 +1,10 @@
-machete 0.1
+machete 0.2
 ===========
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
 a low-level, explicitly typed systems language. Windows x86-64.
 
-  machete.exe     the engine (220 KB, no runtime or installer needed)
+  machete.exe     the engine (no runtime or installer needed)
   machete.nnue    its evaluation network; keep it in the same folder
 
 
@@ -18,36 +18,49 @@ Using it in Arena (or any UCI GUI)
    fallback evaluation - check the file is beside machete.exe.
 
 Options:
-  Threads   1 to 32 (default 1). Lazy SMP; 8 threads measured +144 Elo over 1.
+  Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
+            0.2 reads network format 2 only; a 0.1 network will not load.
+  Ponder    supported: go ponder, ponderhit and stop.
 
-Not supported yet: pondering (leave "ponder" off in the GUI), opening books,
-endgame tablebases, Chess960.
+Not supported yet: opening books, endgame tablebases, Chess960.
 
 
 How strong
 ----------
-Roughly 3100-3200 on the CCRL 40/15 scale, single thread, at 3 minutes + 2
-seconds - measured against Spike 1.4 and Rybka 2.3.2a (40 games each, openings
-chosen by the engines themselves, no books). That is an estimate with a wide
-error bar, not a rating list entry. It loses clearly to modern top engines
-(0 wins in 40 games against Koivisto 9.0). It still converts some won endings
-slowly: queen against knight, queen against rook and two bishops against a
-lone king are sometimes drawn by the fifty-move rule.
+Against machete 0.1's engine, head to head, one thread each:
+  +209 +/- 94 Elo at 10+0.1 and +179 +/- 91 at 60+0.6 (SPRT, both accepted),
+  and +246 +/- 67 over 100 games at 10+0.1 in a later control match.
+Against Rybka 2.3.2a (CCRL 40/15 about 3050) at 3 minutes + 2 seconds, from
+balanced openings with no books: 10 wins in 10 games.
+Its rating on an external list has not been re-measured; 0.1 was estimated at
+3100-3200 on the CCRL 40/15 scale. It still loses clearly to today's strongest
+engines.
 
 
-Under the hood
---------------
-Search: iterative deepening principal variation search with a transposition
-table, null-move pruning, late-move reductions, futility and reverse futility
-pruning, aspiration windows, and quiescence with check evasions. Magic
-bitboards, hardware bit scans.
+What changed since 0.1
+----------------------
+Search: time management for real clocks (a soft target scaled by how settled
+the best move is, and a hard stop); singular extensions and multi-cut;
+correction history by pawn structure; a transposition table of 4-way buckets
+replaced by depth and age; quiet history kept between moves; null move only
+at or above beta; late-move reductions adjusted by history.
 
-Evaluation: a 768 -> 256 -> 1 NNUE, int16, trained on 63.6 million positions
-from self-play games of five engines - Stockfish, Berserk, Alexandria,
-Obsidian and Caissa - each position scored by that engine's own search at
-1,500 nodes.
+Speed, with the search unchanged: about 25% faster - the network's output
+layer through SSE2 multiply-add, piece colour and kind looked up rather than
+divided, legality tested only for moves that can expose the king, and fewer
+repeated computations.
+
+Endgames: against a bare king the engine drives it to the edge (and, with
+bishop and knight, to the right corner): hard endings converted 6 of 12
+against 1 of 12 before.
+
+Evaluation: a new network - 768 -> 256 -> 1 with 8 output layers chosen by the
+number of pieces left - trained on 118.6 million positions: 0.1's 63.6
+million plus 55 million from a newer generator whose teachers (Stockfish,
+PlentyChess, Reckless, Obsidian, Caissa) were chosen by how well their labels
+track deep evaluations.
 
 
 Credits

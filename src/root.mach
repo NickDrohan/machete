@@ -17,6 +17,7 @@ use std.types.result.res;
 use std.types.string.str;
 use std.types.string.str_equals;
 
+use bb: machete.bitboard;
 use machete.clock;
 use machete.magic;
 use mv: machete.move;
@@ -236,7 +237,7 @@ fun nnue_of(argc: i64, argv: **u8) i64 {
         ret EXIT_USAGE;
     }
     pos.attach(?p, nn.stack(0));
-    print.printlnf("{}", nn.output(?p.accs[p.acc_top], p.side));
+    print.printlnf("{}", nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])));
     ret 0;
 }
 

@@ -42,7 +42,22 @@ Nothing allocates: the position, its 1024-ply history and each move list are fix
 work packages for agents. [HANDOFF.md](HANDOFF.md) is the entry point for the Mach side: which files are
 the engine and which are the harness, the house rules and where they came
 from, and what is genuinely open. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the
-evidence behind it.
+evidence behind it. [CLAUDE.md](CLAUDE.md) is the short version for agents: the job queue,
+the documentation rule, and this machine's practicalities.
+
+Measurements go through one queue, never started by hand: two at once
+contaminate each other. `harness/jobqueue.py submit --team ... --id ... --predicted ... -- <command>`
+adds a job to the machine-wide queue in `E:/machete/queue`; one runner
+(`harness/jobqueue.py run`, started with `harness/detach.ps1`) plays jobs one at a time
+in submission order, waits until no engine, match driver, data generator or Arena is
+running outside it, and writes every result, pass or fail, to the submitting worktree's
+`RESULTS.tsv` with the prediction beside it. Training runs in a separate GPU lane.
+`jobqueue.py status` shows the queue, each team's hours, and what is keeping the machine
+busy.
+
+Two agents are competing to make the strongest machete from the same start - see
+[COMPETITION.md](COMPETITION.md). `harness/referee.py` plays their final: real clocks,
+the balanced book, forfeits for crashes and hangs, pentanomial statistics.
 
 ## What the numbers rest on
 
@@ -254,6 +269,20 @@ parts a normal game never reaches: `stop` returns a move in well under 500 ms, `
 answered mid-search, malformed FENs and illegal moves in a `position` command do not take the
 engine down, and mates are reported as `score mate` rather than centipawns.
 
+`go` understands `depth`, `nodes`, `movetime`, `wtime`/`btime`/`winc`/`binc`, `movestogo`,
+`infinite` and `ponder`. `go nodes N` stops at exactly N nodes and, on one thread after
+`ucinewgame`, gives the same move every time, so a fixed-node test does not depend on what else
+the machine is doing; with more threads only the main thread is counted. `movestogo` divides the
+remaining clock by the moves left instead of a fixed thirty.
+
+Pondering works. `bestmove` names the reply the engine expects (`bestmove e2e4 ponder e7e5`,
+taken from the same completed iteration as the move), and `go ponder` searches that reply with
+no deadline and never answers on its own - not even on running out of depth - until `ponderhit`
+turns it into a normal search with the clock starting then, or `stop` ends it. The budget and the
+pondering flag are both set before the search thread starts, so a `ponderhit` that arrives
+straight after `go ponder` is not lost. `protocol.py` checks each of those claims, and each check
+was seen to fail against an engine broken on purpose.
+
 `harness/match.py` plays engine against engine through python-chess, alternating colours and
 playing each opening from both sides. With one engine it is a self-play soak test where any
 illegal move, crash or hang fails the run; with two it prints an Elo difference with an error
@@ -264,7 +293,7 @@ bar.
 [`games/vs-qwen3.8-27b.pgn`](games/vs-qwen3.8-27b.pgn): the engine won a pawn on move 3. Cloud
 models are refused so positions never leave this machine.
 
-The `Hash` option is reported but fixed at 64 MB: the table is a static array, so the engine
+The `Hash` option is reported but fixed at 128 MB: the table is a static array, so the engine
 allocates nothing at all, at startup or during search.
 
 ## Watching it play
@@ -496,7 +525,7 @@ Leela's scores through the teachers' own medians (`leela_scale.json`) rather tha
 
 ## Deliberately not built
 
-No opening book, endgame tablebases or pondering. Gated on windows-x86_64 only.
+No opening book or endgame tablebases. Gated on windows-x86_64 only.
 
 ## Working on this repository
 

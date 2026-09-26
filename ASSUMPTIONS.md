@@ -285,7 +285,8 @@ that counts. Its predecessor's commit had also left the bench fixture stale,
 so the gate meant to notice a search change was silent until it was found.
 
 ### open - the corpus rebalance
-Measured +23 +/- 34. SPRT-02 is queued in `harness/longqueue.sh`.
+Measured +23 +/- 34. SPRT-02 was queued in `harness/longqueue.sh` and has no
+ledger line; it should be resubmitted as a `harness/jobqueue.py` job.
 
 ### open - every pruning constant
 NMP 3 + depth/3, LMR 0.75 + ln(d)ln(m+1)/2.25, LMP 6 + depth^2, RFP 85*depth,

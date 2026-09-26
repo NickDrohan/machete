@@ -1,5 +1,19 @@
 # Handing off the Mach side
 
+## machete 0.2 (2026-09-26)
+
+0.2 is team claude's entry from the Claude-vs-Cursor contest (COMPETITION.md):
+claude/bundle with network C2, released from issue #10. What it holds and how
+each part was measured is in `release/notes-0.2.md`, `ROADMAP_3500.md` and
+`RESULTS.tsv` (SPRT-C-FULL, SPRT-C-FULL60, CONV-E02). The network file format
+is now MCHNNUE2 (8 output layers); `harness/nnue/reference.py` defines it.
+
+Left for after 0.2, measured but not shipped: the king-bucket build (N-05,
+claude/kb) with network C5 came out level with 0.2 over 446 games (+10, -13
+to +34) - its better evaluation costs 7% speed; networks C6-C8 were trained
+but never tested; per-teacher centipawn scales were never fitted.
+
+
 This engine has two halves that barely touch. If you are here for the Mach
 work, this says which files are yours, what the house rules are, and what is
 actually open.
@@ -41,12 +55,17 @@ on pipes, concurrent games, real clocks - which would work `std.process` and
 
 These are not style preferences. They came from being wrong.
 
-**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 29.
+**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 31.
 A new one is not finished until it has been made to fail on purpose and the
 failure recorded in the commit message. Two gates in this repo were green for
 days while being structurally incapable of failing - one held a stale node
 count, one had a literal `\n` where a line continuation belonged and had never
 executed once.
+
+**Documentation moves with the code.** Every change that measures, finishes,
+or alters something updates the ledger and the docs in the same commit, before
+the turn ends (ROADMAP rule 20; the checklist is
+`.cursor/rules/docs-stay-current.mdc`, which Cursor agents load automatically).
 
 **No performance claim without a measurement next to it.** Not "this should be
 faster". A `bench` number, or nothing. Node rates are only comparable across
@@ -58,8 +77,13 @@ executable in place. That has produced a phantom regression, a passing gate on
 an unbuilt exe, and two identical files presented as an A/B pair. Hash the
 binary or check the exit code.
 
-**Measure on a quiet machine.** An orphaned match process once held four cores
-and put every nps figure 20% low.
+**Measure on a quiet machine, through the queue.** An orphaned match process
+once held four cores and put every nps figure 20% low, and the owner runs
+tournaments here. Every match, SPRT, ladder or data-generation run is a job
+for `harness/jobqueue.py` (ROADMAP P0-5), never started by hand; its single
+runner waits for a quiet machine and writes the ledger line. Before running
+anything directly, `py -3.7 harness/jobqueue.py status` says what else is on
+the machine.
 
 ## The Mach language, briefly
 
@@ -140,7 +164,7 @@ data. Wider accumulator, piece-count output buckets and mirrored king
 conditioning are all unexplored.
 
 **Known small debts:** `MAX_THREADS` is duplicated rather than having one
-owner. `go ponder` still misbehaves and wants about ten lines to make safe.
+owner. (`go ponder` is fixed - ROADMAP X-04.)
 `Hash` is reported but fixed at 128 MB (2^23 slots). The network is loaded
 from a file at runtime - `machete.nnue` beside the executable, or `EvalFile` -
 and `#[embed]` would fold it into the binary so a release is one file.
@@ -148,7 +172,7 @@ and `#[embed]` would fold it into the binary so a release is one file.
 ## Running it
 
 ```bash
-bash check.sh                      # 29 gates; MACH=<path> to use a particular compiler
+bash check.sh                      # 31 gates; MACH=<path> to use a particular compiler
 
 mach build . --profile release     # build both executables
 mach run   . --profile release -- bench    # run the built engine
@@ -172,11 +196,38 @@ Note that `mach run` does **not** rebuild. A failed build leaves the previous
 binary in place, so `mach build` and `mach run` are two steps and the build's
 exit code is the one that matters.
 
+### Measuring: the job queue
+
+```bash
+py -3.7 harness/jobqueue.py status                 # queue, runner, team hours, what is busy
+py -3.7 harness/jobqueue.py submit --team cursor --id SPRT-S06 \
+    --change "S-06: mate distance pruning" --predicted +3 --against "cursor/main (abc1234)" \
+    --tc "movetime 200" --requires E:/machete/cursor/ab/s06.exe -- py -3.7 -u harness/match.py ...
+powershell -File harness/detach.ps1 "py -3.7 -u harness/jobqueue.py run"   # the one runner
+```
+
+One queue serves every worktree: `E:/machete/queue` (override with
+`MACHETE_QUEUE`), with pending, running, done, failed and logs folders and the
+runner's log `runner.log`. A job runs in the worktree it was submitted from
+and writes that worktree's `RESULTS.tsv`. `--team` is required
+(cursor, claude or owner - see COMPETITION.md). `--kind` is `measure` (the
+default) or `data`, which share the cpu lane and wait for a quiet machine, or
+`train`, which runs in a separate gpu lane beside them, one training at a
+time. `data` jobs are charged to the team's budget (`budget.json`, 48 h) and
+stopped at it.
+
+Copy both binaries of an A/B out of `out/` and hash them before submitting:
+the job runs later, and a rebuild in between would otherwise change what it
+measures. `--requires` holds a job until its input exists, so a job can be
+submitted before the network it tests has finished training - as long as it
+points at the finished copy.
+
 ## Releases
 
 **machete 0.1** is network A (md5 `b9f0183b`), about 3100-3200 on the CCRL
 40/15 scale at 3+2 on one thread (ladder 4: Spike 1.4 and Rybka 2.3.2a, 40
-games each). It was first released from mach-portfolio as `machete-v0.1`;
+games each; ladder 4 has no line in `RESULTS.tsv`, so treat the range as
+unverified until P0-8). It was first released from mach-portfolio as `machete-v0.1`;
 here it is `v0.1.0`.
 
 Releases follow the template's flow (see *Releases* in the README): set
