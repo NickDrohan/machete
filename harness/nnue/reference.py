@@ -7,9 +7,13 @@ right by construction and the engine is wrong.
 
 The network is a perspective net:
 
-    768 inputs -> HIDDEN (per perspective, shared weights)
+    KING_BUCKETS x 768 inputs -> HIDDEN (per perspective, shared weights)
     concat[side-to-move, other side] = 2 * HIDDEN -> 1, through one of BUCKETS
     output layers chosen by the number of pieces on the board
+
+Each side reads the 768 inputs of its own king's zone (see orient): the
+board is mirrored left-right to put that king on files a-d, and its square
+then picks one of KING_BUCKETS zones.
 
 The engine fixes HIDDEN at compile time and refuses a file of another width;
 this reader takes the width from the file, so one reference serves every
@@ -27,7 +31,6 @@ QA*QB and one divide at the end turns it into centipawns.
     python reference.py random out.nnue --seed 1     # a random net, for gates
     python reference.py eval net.nnue "FEN"          # centipawns, side to move
     python reference.py dump net.nnue                # header fields
-    python reference.py upgrade old.nnue new.nnue    # a first-format file, rewritten
 """
 
 import argparse
@@ -36,8 +39,9 @@ import sys
 
 import numpy as np
 
-MAGIC = b"MCHNNUE2"
-INPUTS = 768
+MAGIC = b"MCHNNUE3"
+INPUTS = 768       # per king zone
+KING_BUCKETS = 8   # king zones per side; the file holds KING_BUCKETS * INPUTS rows
 HIDDEN = 256       # the width a new file gets unless told otherwise
 BUCKETS = 8        # output layers, by (pieces - 2) // 4
 QA = 255           # hidden-layer scale: a clipped-relu output of 1.0 is QA
@@ -75,17 +79,52 @@ def set_scale(value):
     SCALE = int(value)
 
 
-def feature_index(perspective, colour, kind, square):
-    """Where (colour, kind, square) lands in the 768 inputs, seen from one side.
+def orient(perspective, king):
+    """How one side reads the board with its own king on `king`.
+
+    Returns zone * 2 + mirror. Seen from that side (black's view flipped
+    vertically), the board is mirrored left-right when the king is on files
+    e-h, and the king's square then falls in one of eight zones:
+
+        rank 1: a-b 0, c-d 1      rank 2: a-b 2, c-d 3
+        ranks 3-4: a-b 4, c-d 5   ranks 5-8: a-b 6, c-d 7
+    """
+    rel = king ^ 56 if perspective == BLACK else king
+    mirror = 1 if rel & 7 >= 4 else 0
+    if mirror:
+        rel ^= 7
+    rank = rel >> 3
+    zone = 1 if rel & 7 >= 2 else 0
+    if rank == 1:
+        zone += 2
+    elif rank in (2, 3):
+        zone += 4
+    elif rank >= 4:
+        zone += 6
+    return zone * 2 + mirror
+
+
+# orient() for every (perspective, king square), for the vectorised paths
+ORIENT = np.array([[orient(side, square) for square in range(64)] for side in (WHITE, BLACK)])
+
+
+def feature_index(perspective, colour, kind, square, king):
+    """Where (colour, kind, square) lands in the inputs, seen from one side
+    whose own king stands on `king`.
 
     From black's perspective the board is turned around: colours swap so that
-    "my pieces" always occupy the first 384 inputs, and squares flip vertically
-    so that "my back rank" is always rank 1.
+    "my pieces" always occupy the first 384 of a zone's inputs, and squares flip
+    vertically so that "my back rank" is always rank 1. Then the board is
+    mirrored if that side's king is on files e-h, and the zone picks which
+    block of 768 inputs is read.
     """
+    o = orient(perspective, king)
     if perspective == BLACK:
         colour = colour ^ 1
         square = square ^ 56
-    return (colour * 6 + kind) * 64 + square
+    if o & 1:
+        square ^= 7
+    return (o >> 1) * INPUTS + (colour * 6 + kind) * 64 + square
 
 
 def feature_indices(rows):
@@ -99,13 +138,22 @@ def feature_indices(rows):
     counts = rows["count"].astype(np.int64)
     live = np.arange(32)[None, :] < counts[:, None]
 
-    white = pieces * 64 + squares
-    black = ((pieces + 6) % 12) * 64 + (squares ^ 56)
+    # each side's king, found among the live slots (code 5 white, 11 black)
+    kings = []
+    for code in (5, 11):
+        slot = np.argmax(live & (pieces == code), axis=1)
+        kings.append(np.take_along_axis(squares, slot[:, None], axis=1)[:, 0])
+    ow = ORIENT[WHITE][kings[0]][:, None]
+    ob = ORIENT[BLACK][kings[1]][:, None]
+
+    white = (ow >> 1) * INPUTS + pieces * 64 + (squares ^ ((ow & 1) * 7))
+    black = (ob >> 1) * INPUTS + ((pieces + 6) % 12) * 64 + (squares ^ 56 ^ ((ob & 1) * 7))
 
     black_to_move = (rows["stm"] == 1)[:, None]
     us = np.where(black_to_move, black, white)
     them = np.where(black_to_move, white, black)
-    return np.where(live, us, INPUTS), np.where(live, them, INPUTS)
+    pad = KING_BUCKETS * INPUTS
+    return np.where(live, us, pad), np.where(live, them, pad)
 
 
 def bucket(pieces):
@@ -121,11 +169,11 @@ def save(path, feature_weights, feature_bias, output_weights, output_bias):
     output weights [buckets][2 * hidden] i16, output bias [buckets] i32.
     """
     hidden = feature_weights.shape[1]
-    assert feature_weights.shape == (INPUTS, hidden)
+    assert feature_weights.shape == (KING_BUCKETS * INPUTS, hidden)
     assert feature_bias.shape == (hidden,)
     assert output_weights.shape == (BUCKETS, 2 * hidden)
     assert len(output_bias) == BUCKETS
-    header = MAGIC + struct.pack("<IIiiiI", INPUTS, hidden, QA, QB, SCALE, BUCKETS)
+    header = MAGIC + struct.pack("<IIiiiI", KING_BUCKETS * INPUTS, hidden, QA, QB, SCALE, BUCKETS)
     assert len(header) <= HEADER
     header = header + b"\0" * (HEADER - len(header))
     with open(path, "wb") as handle:
@@ -142,9 +190,9 @@ def load(path):
     if blob[:8] != MAGIC:
         raise ValueError("not a machete network of this format: bad magic")
     inputs, hidden, qa, qb, scale, buckets = struct.unpack("<IIiiiI", blob[8:32])
-    if (inputs, buckets) != (INPUTS, BUCKETS):
+    if (inputs, buckets) != (KING_BUCKETS * INPUTS, BUCKETS):
         raise ValueError("network has {} inputs and {} buckets, this reader {} and {}".format(
-            inputs, buckets, INPUTS, BUCKETS))
+            inputs, buckets, KING_BUCKETS * INPUTS, BUCKETS))
     at = HEADER
     count = inputs * hidden
     feature_weights = np.frombuffer(blob, "<i2", count, at).reshape(inputs, hidden)
@@ -164,39 +212,14 @@ def load(path):
             "hidden": hidden, "qa": qa, "qb": qb, "scale": scale}
 
 
-def upgrade(old_path, new_path):
-    """Rewrite a first-format network (MCHNNUE1, one output layer) in this format.
-
-    The one output layer is copied into every bucket, so the network evaluates
-    exactly as before; network A crossed over this way, and bench did not move.
-    """
-    with open(old_path, "rb") as handle:
-        blob = handle.read()
-    if blob[:8] != b"MCHNNUE1":
-        raise ValueError("{} is not a first-format network".format(old_path))
-    inputs, hidden, qa, qb, scale = struct.unpack("<IIiii", blob[8:28])
-    if (inputs, qa, qb) != (INPUTS, QA, QB):
-        raise ValueError("unexpected dimensions or scales in {}".format(old_path))
-    at = HEADER
-    feature_weights = np.frombuffer(blob, "<i2", inputs * hidden, at).reshape(inputs, hidden)
-    at = at + inputs * hidden * 2
-    feature_bias = np.frombuffer(blob, "<i2", hidden, at)
-    at = at + hidden * 2
-    output_weights = np.frombuffer(blob, "<i2", 2 * hidden, at)
-    at = at + 2 * hidden * 2
-    output_bias = struct.unpack("<i", blob[at:at + 4])[0]
-    set_scale(scale)
-    save(new_path, feature_weights, feature_bias,
-         np.tile(output_weights, (BUCKETS, 1)), [output_bias] * BUCKETS)
-
-
 def accumulate(net, pieces):
     """Both perspectives, from scratch. `pieces` is a list of (colour, kind, square)."""
+    kings = {colour: square for colour, kind, square in pieces if kind == 5}
     acc = np.stack([net["feature_bias"].copy(), net["feature_bias"].copy()])
     for colour, kind, square in pieces:
         for perspective in (WHITE, BLACK):
             acc[perspective] += net["feature_weights"][
-                feature_index(perspective, colour, kind, square)]
+                feature_index(perspective, colour, kind, square, kings[perspective])]
     return acc
 
 
@@ -244,7 +267,7 @@ def random_net(seed, hidden=HIDDEN):
     look correct.
     """
     rng = np.random.RandomState(seed)
-    feature_weights = rng.randint(-96, 97, size=(INPUTS, hidden)).astype(np.int16)
+    feature_weights = rng.randint(-96, 97, size=(KING_BUCKETS * INPUTS, hidden)).astype(np.int16)
     feature_bias = rng.randint(-QA, QA + 1, size=hidden).astype(np.int16)
     output_weights = rng.randint(-QB, QB + 1, size=(BUCKETS, 2 * hidden)).astype(np.int16)
     output_bias = [int(b) for b in rng.randint(-QA * QB, QA * QB, size=BUCKETS)]
@@ -264,7 +287,7 @@ def extreme_net(sign, hidden=HIDDEN):
     Feature weights of 8 are chosen so a full 32-piece board sums to 256 and
     clips to 255: the maximum an activation can contribute.
     """
-    feature_weights = np.full((INPUTS, hidden), 8, dtype=np.int16)
+    feature_weights = np.full((KING_BUCKETS * INPUTS, hidden), 8, dtype=np.int16)
     feature_bias = np.zeros(hidden, dtype=np.int16)
     output_weights = np.full((BUCKETS, 2 * hidden), sign * 127, dtype=np.int16)
     return feature_weights, feature_bias, output_weights, [sign * 2000000000] * BUCKETS
@@ -286,9 +309,6 @@ def main():
     one.add_argument("fen")
     show = sub.add_parser("dump")
     show.add_argument("net")
-    cross = sub.add_parser("upgrade")
-    cross.add_argument("old")
-    cross.add_argument("new")
     args = parser.parse_args()
 
     if args.command == "random":
@@ -299,9 +319,6 @@ def main():
         print("wrote {} (arithmetic worst case, sign {})".format(args.out, args.sign))
     elif args.command == "eval":
         print(evaluate_fen(load(args.net), args.fen))
-    elif args.command == "upgrade":
-        upgrade(args.old, args.new)
-        print("wrote {} from {}, every bucket a copy of its one output layer".format(args.new, args.old))
     elif args.command == "dump":
         net = load(args.net)
         print("inputs {} hidden {} buckets {} qa {} qb {} scale {}".format(

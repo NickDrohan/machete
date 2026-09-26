@@ -1,12 +1,21 @@
 # a quantized perspective network, evaluated incrementally
 #
-#   768 inputs -> HIDDEN per perspective (one shared weight matrix) -> 1,
-#   through one of BUCKETS output layers chosen by how many pieces are left
+#   KING_BUCKETS x 768 inputs -> HIDDEN per perspective (one shared weight
+#   matrix) -> 1, through one of BUCKETS output layers chosen by how many
+#   pieces are left
 #
 # a feature is (colour, piece kind, square), all three relative to whichever
 # side is looking. seen from black the colours swap and the squares flip
 # vertically, so "my pieces on my side of the board" always lands in the same
 # inputs and the network never learns the board twice.
+#
+# each side also reads a different set of 768 inputs depending on where its
+# own king stands: the board is mirrored left-right so that king is always on
+# files a-d, and its square picks one of KING_BUCKETS zones. A pawn storm
+# means one thing against a castled king and another against one in the
+# centre, and now the network can tell. When a king moves into another zone,
+# or across the d/e line, its side's half is rebuilt from the board (see
+# position.make); every other move stays incremental.
 #
 # the hidden layer is only ever updated, never recomputed: a move touches at
 # most a handful of features, so make/unmake add and subtract columns instead
@@ -40,6 +49,11 @@ use io_error: std.io.error;
 pub val INPUTS: i64 = 768;
 pub val HIDDEN: i64 = 256;
 
+# king zones, per side, after mirroring the king onto files a-d:
+#   rank 1: a-b, c-d     rank 2: a-b, c-d
+#   ranks 3-4: a-b, c-d  ranks 5-8: a-b, c-d
+pub val KING_BUCKETS: i64 = 8;
+
 # output layers, one per band of piece counts: an opening and a rook ending
 # want different things from the same hidden layer, and eight small output
 # layers cost nothing but a lookup. The band is (pieces - 2) / 4, kings
@@ -59,7 +73,7 @@ var SCALE: i64 = 400;
 # aligned because output() and the accumulator read these 128 bits at a time.
 # The alignment happens to hold without saying so; saying so keeps it true.
 #[align(16)]
-pub var FEATURE_WEIGHTS: [INPUTS * HIDDEN]i16;
+pub var FEATURE_WEIGHTS: [KING_BUCKETS * INPUTS * HIDDEN]i16;
 #[align(16)]
 pub var FEATURE_BIAS: [HIDDEN]i16;
 #[align(16)]
@@ -83,14 +97,25 @@ val CHANGES: i64 = 4;
 # an evaluation. In a real search 64% of positions reached by make() are never
 # evaluated - they are illegal, or late move pruning throws them away - and
 # patching 512 int16 lanes for those was most of what the network cost.
+#
+# Each half is ready on its own, because a king move changes how only its
+# own side reads the board. `refresh` marks the slot whose move took that
+# king into another zone: nothing below it can be carried up for that half,
+# which is instead rebuilt from the board when it is next evaluated. Rebuilt
+# eagerly at make(), for moves that were then pruned or found illegal, it
+# cost 23% of the search's speed.
 #[align(16)]
 pub rec Acc {
-    v:      [2][HIDDEN]i16;
-    ready:  i64;
-    count:  i64;
-    piece:  [CHANGES]u8;
-    square: [CHANGES]i64;
-    plus:   [CHANGES]i64;
+    v: [2][HIDDEN]i16;
+    # each half's orientation (see orient): the king zone and mirroring its
+    # values were built for
+    king:    [2]i64;
+    ready:   [2]i64;
+    refresh: [2]i64;
+    count:   i64;
+    piece:   [CHANGES]u8;
+    square:  [CHANGES]i64;
+    plus:    [CHANGES]i64;
 }
 
 # set when a move reports more changes than CHANGES allows, which the ceiling
@@ -114,15 +139,40 @@ pub fun stack(id: i64) *Acc {
     ret ?STACKS[id][0];
 }
 
+# how one side reads the board with its king on `king`: the zone times two,
+# plus one when the board is mirrored left-right to put that king on a-d
+pub fun orient(perspective: i64, king: i64) i64 {
+    var rel: i64 = king;
+    if (perspective == 1) { rel = rel ^ 56; }
+    var mirror: i64 = 0;
+    if ((rel & 7) >= 4) {
+        mirror = 1;
+        rel    = rel ^ 7;
+    }
+    var zone: i64 = 0;
+    if ((rel & 7) >= 2) { zone = 1; }
+    val rank: i64 = rel >> 3;
+    if (rank == 1)              { zone = zone + 2; }
+    or (rank <= 3 && rank >= 2) { zone = zone + 4; }
+    or (rank >= 4)              { zone = zone + 6; }
+    ret zone * 2 + mirror;
+}
+
 # the piece code as black sees it: colours swapped, kind kept. Looked up for
 # the same reason as position.color_of - pc / 6 and pc % 6 are divisions
 val SWAPPED: [12]i64 = [12]i64{6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5};
 
-# where (piece, square) lands in the 768 inputs, seen from one side. The
-# stored code is colour * 6 + kind already, so white's view is the code
-fun index(perspective: i64, pc: u8, sq: i64) i64 {
-    if (perspective == 1) { ret SWAPPED[pc::i64] * 64 + (sq ^ 56); }
-    ret pc::i64 * 64 + sq;
+# where (piece, square) lands in the inputs, seen from one side oriented `o`.
+# The stored code is colour * 6 + kind already, so white's row is the code
+fun index(perspective: i64, o: i64, pc: u8, sq: i64) i64 {
+    var row:    i64 = pc::i64;
+    var square: i64 = sq;
+    if (perspective == 1) {
+        row    = SWAPPED[pc::i64];
+        square = square ^ 56;
+    }
+    if ((o & 1) != 0) { square = square ^ 7; }
+    ret (o >> 1) * INPUTS + row * 64 + square;
 }
 
 # 128 bits at a time: eight i16 lanes, which is what x86-64 gives us without
@@ -139,17 +189,24 @@ fun store8(p: *i16, at: i64, v: i16x8) {
 
 # mark a slot as owing its contents to its parent plus the changes it records
 pub fun defer(a: *Acc) {
-    a.ready = 0;
-    a.count = 0;
+    a.ready[0]   = 0;
+    a.ready[1]   = 0;
+    a.refresh[0] = 0;
+    a.refresh[1] = 0;
+    a.count      = 0;
 }
 
-# record one feature change, or apply it now if this slot is already built
+# record one feature change, applying it at once to a half already built
 pub fun change(a: *Acc, pc: u8, sq: i64, plus: i64) {
-    if (a.ready != 0) {
-        if (plus != 0) { add(a, pc, sq); }
-        or             { sub(a, pc, sq); }
-        ret;
+    var side: i64 = 0;
+    for (side < 2) {
+        if (a.ready[side] != 0) {
+            if (plus != 0) { add_side(a, side, pc, sq); }
+            or             { sub_side(a, side, pc, sq); }
+        }
+        side = side + 1;
     }
+    if (a.ready[0] != 0 && a.ready[1] != 0) { ret; }
     if (a.count >= CHANGES) {
         OVERFLOW = OVERFLOW + 1;
         ret;
@@ -160,29 +217,80 @@ pub fun change(a: *Acc, pc: u8, sq: i64, plus: i64) {
     a.count           = a.count + 1;
 }
 
-# build every slot from the deepest one that is already built up to `top`
-pub fun materialise(accs: *Acc, top: i64) {
-    var first: i64 = top;
-    for (first > 0 && accs[first].ready == 0) { first = first - 1; }
-    var at: i64 = first + 1;
-    for (at <= top) {
-        val a: *Acc = ?accs[at];
-        carry(a, ?accs[at - 1]);
-        var k: i64 = 0;
-        for (k < a.count) {
-            if (a.plus[k] != 0) { add(a, a.piece[k], a.square[k]); }
-            or                  { sub(a, a.piece[k], a.square[k]); }
+# the move into this slot took `side`'s king into another zone
+pub fun mark_refresh(a: *Acc, side: i64) {
+    a.refresh[side] = 1;
+}
+
+# build both halves of slot `top`, the position on `board` (EMPTY is any
+# code past 11) with the kings on `white_king` and `black_king`.
+#
+# Each half is carried up from the deepest slot where it is built, applying
+# every slot's recorded changes on the way. If the way crosses a slot whose
+# move took that side's king into another zone, the half below cannot be
+# carried across it, and it is rebuilt at `top` from the board instead;
+# the slots in between stay unbuilt for that half, and whichever of them is
+# next evaluated, as the top, is rebuilt the same way.
+pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_king: i64) {
+    var side: i64 = 0;
+    for (side < 2) {
+        var first: i64 = top;
+        for (first > 0 && accs[first].ready[side] == 0) { first = first - 1; }
+        var crossed: bool = false;
+        var k:       i64  = first + 1;
+        for (k <= top) {
+            if (accs[k].refresh[side] != 0) { crossed = true; }
             k = k + 1;
         }
-        a.ready = 1;
-        at      = at + 1;
+        if (crossed) {
+            var king: i64 = white_king;
+            if (side == 1) { king = black_king; }
+            rebuild_side(?accs[top], side, king, board);
+        }
+        or {
+            var at: i64 = first + 1;
+            for (at <= top) {
+                val a: *Acc = ?accs[at];
+                carry_side(a, ?accs[at - 1], side);
+                var c: i64 = 0;
+                for (c < a.count) {
+                    if (a.plus[c] != 0) { add_side(a, side, a.piece[c], a.square[c]); }
+                    or                  { sub_side(a, side, a.piece[c], a.square[c]); }
+                    c = c + 1;
+                }
+                a.ready[side] = 1;
+                at            = at + 1;
+            }
+        }
+        side = side + 1;
     }
 }
 
-# start from the bias, with no pieces on the board
-pub fun reset(a: *Acc) {
-    a.ready = 1;
-    a.count = 0;
+# one half from the bias and every piece on `board`, oriented to `king`
+fun rebuild_side(a: *Acc, side: i64, king: i64, board: *u8) {
+    a.king[side] = orient(side, king);
+    var i: i64 = 0;
+    for (i < HIDDEN) {
+        a.v[side][i] = FEATURE_BIAS[i];
+        i            = i + 1;
+    }
+    var sq: i64 = 0;
+    for (sq < 64) {
+        if (board[sq] < 12) { add_side(a, side, board[sq], sq); }
+        sq = sq + 1;
+    }
+    a.ready[side]   = 1;
+    a.refresh[side] = 0;
+}
+
+# start from the bias, with no pieces on the board, each half oriented to
+# its own king's square
+pub fun reset(a: *Acc, white_king: i64, black_king: i64) {
+    defer(a);
+    a.ready[0] = 1;
+    a.ready[1] = 1;
+    a.king[0]  = orient(0, white_king);
+    a.king[1]  = orient(1, black_king);
     var side: i64 = 0;
     for (side < 2) {
         var i: i64 = 0;
@@ -195,45 +303,39 @@ pub fun reset(a: *Acc) {
 }
 
 pub fun add(a: *Acc, pc: u8, sq: i64) {
-    var side: i64 = 0;
-    for (side < 2) {
-        val base: i64  = index(side, pc, sq) * HIDDEN;
-        val into: *i16 = ?a.v[side][0];
-        var i:    i64  = 0;
-        for (i < HIDDEN) {
-            store8(into, i, load8(into, i) + load8(?FEATURE_WEIGHTS[base], i));
-            i = i + 8;
-        }
-        side = side + 1;
+    add_side(a, 0, pc, sq);
+    add_side(a, 1, pc, sq);
+}
+
+fun add_side(a: *Acc, side: i64, pc: u8, sq: i64) {
+    val base: i64  = index(side, a.king[side], pc, sq) * HIDDEN;
+    val into: *i16 = ?a.v[side][0];
+    var i:    i64  = 0;
+    for (i < HIDDEN) {
+        store8(into, i, load8(into, i) + load8(?FEATURE_WEIGHTS[base], i));
+        i = i + 8;
     }
 }
 
-pub fun sub(a: *Acc, pc: u8, sq: i64) {
-    var side: i64 = 0;
-    for (side < 2) {
-        val base: i64  = index(side, pc, sq) * HIDDEN;
-        val into: *i16 = ?a.v[side][0];
-        var i:    i64  = 0;
-        for (i < HIDDEN) {
-            store8(into, i, load8(into, i) - load8(?FEATURE_WEIGHTS[base], i));
-            i = i + 8;
-        }
-        side = side + 1;
+fun sub_side(a: *Acc, side: i64, pc: u8, sq: i64) {
+    val base: i64  = index(side, a.king[side], pc, sq) * HIDDEN;
+    val into: *i16 = ?a.v[side][0];
+    var i:    i64  = 0;
+    for (i < HIDDEN) {
+        store8(into, i, load8(into, i) - load8(?FEATURE_WEIGHTS[base], i));
+        i = i + 8;
     }
 }
 
-# a child position starts from its parent's hidden layer and is then patched
-pub fun carry(child: *Acc, parent: *Acc) {
-    var side: i64 = 0;
-    for (side < 2) {
-        val to:   *i16 = ?child.v[side][0];
-        val from: *i16 = ?parent.v[side][0];
-        var i:    i64  = 0;
-        for (i < HIDDEN) {
-            store8(to, i, load8(from, i));
-            i = i + 8;
-        }
-        side = side + 1;
+# a child position's half starts from its parent's and is then patched
+fun carry_side(child: *Acc, parent: *Acc, side: i64) {
+    child.king[side] = parent.king[side];
+    val to:   *i16 = ?child.v[side][0];
+    val from: *i16 = ?parent.v[side][0];
+    var i:    i64  = 0;
+    for (i < HIDDEN) {
+        store8(to, i, load8(from, i));
+        i = i + 8;
     }
 }
 
@@ -560,7 +662,7 @@ fun read_body(f: fs.File) bool {
     var head: [32]u8;
     if (!read_exact(f, ?head[0], HEADER)) { ret false; }
 
-    val magic: str = "MCHNNUE2";
+    val magic: str = "MCHNNUE3";
     var i:     i64 = 0;
     for (i < 8) {
         if (head[i] != magic[i]) { ret false; }
@@ -568,19 +670,19 @@ fun read_body(f: fs.File) bool {
     }
     # a file built for different dimensions or scales would evaluate to
     # plausible nonsense, so refuse it rather than load it
-    if (u32_at(?head[0], 8) != INPUTS)  { ret false; }
-    if (u32_at(?head[0], 12) != HIDDEN) { ret false; }
-    if (u32_at(?head[0], 16) != QA)     { ret false; }
-    if (u32_at(?head[0], 20) != QB)     { ret false; }
+    if (u32_at(?head[0], 8) != KING_BUCKETS * INPUTS) { ret false; }
+    if (u32_at(?head[0], 12) != HIDDEN)               { ret false; }
+    if (u32_at(?head[0], 16) != QA)                   { ret false; }
+    if (u32_at(?head[0], 20) != QB)                   { ret false; }
     val scale: i64 = u32_at(?head[0], 24);
     if (scale < 1 || scale > 4000)       { ret false; }
     if (u32_at(?head[0], 28) != BUCKETS) { ret false; }
     SCALE = scale;
 
-    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2))     { ret false; }
-    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))                 { ret false; }
-    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, BUCKETS * 2 * HIDDEN * 2)) { ret false; }
-    if (!read_exact(f, (?OUTPUT_BIAS[0]):~*u8, BUCKETS * 4))                 { ret false; }
+    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, KING_BUCKETS * INPUTS * HIDDEN * 2)) { ret false; }
+    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))                            { ret false; }
+    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, BUCKETS * 2 * HIDDEN * 2))            { ret false; }
+    if (!read_exact(f, (?OUTPUT_BIAS[0]):~*u8, BUCKETS * 4))                            { ret false; }
 
     ret true;
 }
@@ -600,7 +702,7 @@ pub fun load(path: str) bool {
 var TEST_VALUES:  [HIDDEN]i16;
 var TEST_WEIGHTS: [HIDDEN]i16;
 
-test pmaddwd_kernel_sums_exactly_portable_loop {
+test nnue_the_pmaddwd_kernel_sums_exactly_what_the_portable_loop_does {
     # hidden values well outside 0..QA, so both clamps are exercised, and
     # weights across the whole range the quantizer allows. The kernel is
     # unrolled for HIDDEN = 256: a wider build fails here, not in a game.
