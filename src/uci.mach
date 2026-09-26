@@ -50,7 +50,7 @@ var thinking: i64 = 0;
 var threads: i64 = 1;
 
 # the clock budget a ponder search takes on at ponderhit
-var ponder_budget: i64 = 0;
+var ponder_budget: search.Budget;
 
 rec Tokens {
     count: i64;
@@ -116,8 +116,9 @@ fun start_search() {
     halt();
     search.reset(?ENGINE);
     # both decided here, before the search thread exists: see search.ponderhit
-    ponder_budget = 0;
-    if (LIMITS.infinite == 0) { ponder_budget = search.budget_ms(?GAME, ?LIMITS); }
+    var none: search.Budget;
+    ponder_budget = none;
+    if (LIMITS.infinite == 0) { ponder_budget = search.budget(?GAME, ?LIMITS); }
     ENGINE.pondering = LIMITS.ponder::i64;
     atomic.store(?thinking, 1);
     var config: thread.Config;
@@ -309,7 +310,7 @@ pub fun loop(exe: str) i64 {
             start_search();
         }
         or (str_equals(command, "ponderhit")) {
-            if (is_thinking()) { search.ponderhit(?ENGINE, ponder_budget); }
+            if (is_thinking()) { search.ponderhit(?ENGINE, ?ponder_budget); }
         }
         or (str_equals(command, "stop")) {
             halt();
