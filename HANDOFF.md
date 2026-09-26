@@ -41,7 +41,7 @@ on pipes, concurrent games, real clocks - which would work `std.process` and
 
 These are not style preferences. They came from being wrong.
 
-**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 29.
+**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 30.
 A new one is not finished until it has been made to fail on purpose and the
 failure recorded in the commit message. Two gates in this repo were green for
 days while being structurally incapable of failing - one held a stale node
@@ -153,7 +153,7 @@ and `#[embed]` would fold it into the binary so a release is one file.
 ## Running it
 
 ```bash
-bash check.sh                      # 29 gates; MACH=<path> to use a particular compiler
+bash check.sh                      # 30 gates; MACH=<path> to use a particular compiler
 
 mach build . --profile release     # build both executables
 mach run   . --profile release -- bench    # run the built engine

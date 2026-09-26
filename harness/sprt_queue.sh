@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SUPERSEDED by harness/jobqueue.py (ROADMAP P0-5), which runs any measurement,
+# refuses a second runner, waits for a quiet machine and writes the ledger line.
+# Kept only until the jobs written for this format have been played.
+#
 # Run SPRTs one at a time, from job files, as soon as their inputs exist.
 #
 #   bash harness/sprt_queue.sh          # usually via harness/detach.ps1

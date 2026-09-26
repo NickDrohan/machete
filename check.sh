@@ -100,6 +100,9 @@ if [[ -n "$python" ]]; then
         "$python" "$here/harness/protocol.py" "$release"
     gate "plays 6 self-play games with no illegal move or crash" 0 \
         "$python" "$here/harness/match.py" "$release" --games 6 --movetime 30 --max-plies 160
+    # the machine's one queue: a throwaway queue, two runners at once, two jobs
+    gate "job queue runs jobs one at a time and records each in the ledger" 0 \
+        "$python" "$here/harness/test_jobqueue.py"
 fi
 
 # A GUI starts the engine with no options: it must find machete.nnue in its own

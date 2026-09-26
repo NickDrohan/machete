@@ -225,10 +225,13 @@ Each WP carries a tier, so an orchestrator can route it:
 Two measurements at once contaminate each other - LOAD-01 exists to find out by
 how much, and until it reports, assume they do.
 
-- Until P0-5 lands: **check before measuring**, every time -
-  `tasklist | grep -ciE "machete|cont\.exe"` must print 0, and that includes your
-  own leftovers. `TaskStop` kills a shell wrapper, not the Python process under it.
-- After P0-5: submit a job to the queue; never start a match by hand.
+- P0-5 has landed: **submit a job to `harness/jobqueue.py`; never start a match
+  by hand.** The runner waits for a quiet machine itself.
+- Anything you still run directly - a gate, a build, a quick probe - **check
+  first** with `python harness/jobqueue.py status`, which lists engines, match
+  drivers and Arena. The owner runs tournaments in Arena on this machine; a
+  2026-09-25 agent session ran its gates beside one without looking. Stopping a
+  tool's shell does not always stop the process under it: check again after.
 - Data generation runs overnight; SPRTs run by day; GPU training can overlap
   either, since it barely touches the CPU.
 - Never kill the owner's servers on ports **8420** and **8421**.
@@ -364,7 +367,9 @@ Nothing claimed before M0 counts toward 3500.
 - **Accept:** decisive rate rises; the SPRT median game count at a fixed true Elo falls.
 - **Ratings are a different job (2026-09-23).** A UHO book is for SPRTs between machete versions, where a lopsided start that both sides play once is fine. For a rating against outside engines, the ladder now uses `--self-book FIRST,REPLIES` (`harness/self_book.py`): every game starts from ply 0 with a first move White's own engine ranks among its best, and a reply Black's own engine ranks among its best. The reason: LADDER-03 at `--startpos` played the same Rybka game 20 times (1. e4 Nc6 2. d4 d5 3. e5 h5 4. Nf3 Nh6, which Stockfish rates +1.06, splitting only at move five), so its 3167 ± 120 is not a rating.
 
-#### P0-5 One queue for the machine · HARNESS · Tier B
+#### P0-5 One queue for the machine · HARNESS · Tier B · **Done** (`wp/P0-5-jobqueue`, GATE-P05)
+- **Result:** `harness/jobqueue.py` (not `queue.py`: that name would shadow the standard library for every script in `harness/`). `submit` requires an id, a change and a prediction; `run` refuses a second runner, plays jobs strictly in order, passes over a job whose `--requires` files do not exist yet, waits until no engine, match driver, data generator or Arena runs outside it (GPU training allowed), and appends one line per job to `RESULTS.tsv`, parsing `match.py`'s summary. A job interrupted by a dead runner is retried once. Gate `harness/test_jobqueue.py` in `check.sh`; perturbed by removing the lock (a job ran twice, a runner crashed; caught). Its first run found a crash for a queue on another drive. Not yet done: `longqueue.sh` is still a script, not jobs; `sprt_queue.sh` is marked superseded.
+- **After P0-5, section 4's rule applies:** submit a job; never start a match by hand.
 - **Why:** agents produce patches faster than the machine can test them, and two measurements at once corrupt each other.
 - **Change:** `harness/queue.py` - a job file per test in `data/queue/`, one runner that executes them strictly in order, waits for the machine to be quiet first, writes the result line to `RESULTS.tsv`, and never starts a job while another runs. `harness/longqueue.sh` becomes a list of jobs.
 - **Gate:** submit two jobs at once and show they ran serially. The runner itself is started with `harness/detach.ps1` (rule 19), or it dies the next time the session restarts.
@@ -503,7 +508,7 @@ After each phase, before starting the next:
 3. Re-read section 3. If a phase delivered far less than its prior, find out why before spending the next one - the priors are guesses, and an assumption that is wrong is worth more than another feature.
 
 The current position on the road (2026-09-25): **before M0.** Done: P0-2,
-X-04, and parts of P0-1, P0-4, P0-9. Next, by territory: MACH - X-05, then
-Phase 1 (S-06, S-07) on fixed-node SPRTs once P0-3 lands; HARNESS - finish
-P0-1 in `tournament.py` and `scaling.py`, then P0-3 and P0-5, then P0-6;
-machine - D-07's corpus overnight.
+P0-5, X-04, and parts of P0-1, P0-4, P0-9. Next, by territory: MACH - X-05,
+then Phase 1 (S-06, S-07) on fixed-node SPRTs once P0-3 lands; HARNESS -
+finish P0-1 in `tournament.py` and `scaling.py`, then P0-3, then P0-6;
+machine - D-07's corpus overnight, submitted through `jobqueue.py`.

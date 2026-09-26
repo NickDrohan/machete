@@ -44,6 +44,14 @@ the engine and which are the harness, the house rules and where they came
 from, and what is genuinely open. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the
 evidence behind it.
 
+Measurements go through one queue, never started by hand: two at once
+contaminate each other. `harness/jobqueue.py submit --id ... --predicted ... -- <command>`
+adds a job; one runner (`harness/jobqueue.py run`, started with `harness/detach.ps1`)
+plays jobs one at a time in submission order, waits until no engine, match driver,
+data generator or Arena is running outside it, and writes every result, pass or
+fail, to `RESULTS.tsv` with the prediction beside it. `jobqueue.py status` shows the
+queue and what is keeping the machine busy.
+
 ## What the numbers rest on
 
 `check.sh` proves the code does what it says. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the other
