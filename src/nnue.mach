@@ -1,6 +1,7 @@
 # a quantized perspective network, evaluated incrementally
 #
-#   768 inputs -> 256 hidden per perspective (one shared weight matrix) -> 1
+#   768 inputs -> HIDDEN per perspective (one shared weight matrix) -> 1,
+#   through one of BUCKETS output layers chosen by how many pieces are left
 #
 # a feature is (colour, piece kind, square), all three relative to whichever
 # side is looking. seen from black the colours swap and the squares flip
@@ -31,11 +32,19 @@ use std.simd.select.select_i16x8;
 use std.simd.shuffle.splat_i16x8;
 use std.simd.shuffle.splat_i32x4;
 
+use machete.rng;
+
 use fs:       std.filesystem;
 use io_error: std.io.error;
 
 pub val INPUTS: i64 = 768;
 pub val HIDDEN: i64 = 256;
+
+# output layers, one per band of piece counts: an opening and a rook ending
+# want different things from the same hidden layer, and eight small output
+# layers cost nothing but a lookup. The band is (pieces - 2) / 4, kings
+# included, so 2-5 pieces use layer 0 and 30-32 use layer 7.
+pub val BUCKETS: i64 = 8;
 
 val QA:     i64 = 255; # a clipped-relu output of 1.0
 val QB:     i64 = 64; # an output weight of 1.0
@@ -54,8 +63,8 @@ pub var FEATURE_WEIGHTS: [INPUTS * HIDDEN]i16;
 #[align(16)]
 pub var FEATURE_BIAS: [HIDDEN]i16;
 #[align(16)]
-pub var OUTPUT_WEIGHTS: [2 * HIDDEN]i16;
-pub var OUTPUT_BIAS:    i32 = 0;
+pub var OUTPUT_WEIGHTS: [BUCKETS * 2 * HIDDEN]i16;
+pub var OUTPUT_BIAS:    [BUCKETS]i32;
 
 # whether a network file has been read; until it has, the engine uses the
 # hand-written evaluation
@@ -105,16 +114,15 @@ pub fun stack(id: i64) *Acc {
     ret ?STACKS[id][0];
 }
 
-# where (piece, square) lands in the 768 inputs, seen from one side
+# the piece code as black sees it: colours swapped, kind kept. Looked up for
+# the same reason as position.color_of - pc / 6 and pc % 6 are divisions
+val SWAPPED: [12]i64 = [12]i64{6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5};
+
+# where (piece, square) lands in the 768 inputs, seen from one side. The
+# stored code is colour * 6 + kind already, so white's view is the code
 fun index(perspective: i64, pc: u8, sq: i64) i64 {
-    var colour: i64 = (pc / 6)::i64;
-    val kind:   i64 = (pc % 6)::i64;
-    var square: i64 = sq;
-    if (perspective == 1) {
-        colour = colour ^ 1;
-        square = square ^ 56;
-    }
-    ret (colour * 6 + kind) * 64 + square;
+    if (perspective == 1) { ret SWAPPED[pc::i64] * 64 + (sq ^ 56); }
+    ret pc::i64 * 64 + sq;
 }
 
 # 128 bits at a time: eight i16 lanes, which is what x86-64 gives us without
@@ -233,18 +241,267 @@ pub fun carry(child: *Acc, parent: *Acc) {
 #
 # A clipped hidden value is 0..QA and an output weight is -127..127, so every
 # product fits an int16 exactly (255 * 127 = 32385); only the running sum needs
-# to be wider. So the multiply stays in i16x8, which SSE2 has as a single
-# instruction, and only the products are widened. Multiplying after widening
-# was tried and measured slower: SSE2 has no packed 32-bit multiply, and the
-# emulation cost more than it saved.
+# to be wider.
 #
-# The eight products are then widened to two i32x4 and summed. The widening
-# literal compiles to a packed unpack as of mach 5.11.0 (mach#3738); before
-# that it went lane by lane through memory, so this was written as a masking
-# trick over two overlapping loads - one of which read an element past the end
-# of the output weights, harmlessly masked away. One load, one clamp and one
-# multiply per eight lanes now, and nothing read out of bounds.
+# On x86-64 this is SSE2's pmaddwd, which multiplies eight int16 pairs and
+# adds neighbouring products into four int32 lanes in one instruction - the
+# multiply, the widening and half the adding at once, and exact. std.simd has
+# no multiply-add, and the widening it does have cost two unpacks and two adds
+# per eight lanes; with the two clamps as pmaxsw and pminsw, the output layer
+# went from 11% of the search's time to (see the commit that made this). The
+# assembler's mnemonic table has none of the three, so they are written as
+# bytes, the way bitboard.mach writes popcnt; the registers are all ones the
+# Windows x64 convention lets a function overwrite. Every other target keeps
+# the portable loop below, and agree.py holds both to the numpy reference.
 fun accumulate(values: *i16, weights: *i16, running: i32x4) i32x4 {
+    $if ($mach.build.arch == $mach.arch.x86_64) {
+        var sums: [4]i32;
+        val out:  *i32 = ?sums[0];
+        asm x86_64 {
+            mov rdx, {values}
+            mov rcx, {weights}
+            mov rax, {out}
+            # xmm4 = 0, xmm3 = QA in every lane, xmm2 = the running sums
+            .byte 0x66, 0x0F, 0xEF, 0xE4 :: writes(xmm4)
+            .byte 0x66, 0x0F, 0x75, 0xDB :: writes(xmm3)
+            .byte 0x66, 0x0F, 0x71, 0xD3, 0x08 :: writes(xmm3)
+            .byte 0x66, 0x0F, 0xEF, 0xD2 :: writes(xmm2)
+            # lanes 0..7
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x00, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x00, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 8..15
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x10, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x10, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 16..23
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x20, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x20, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 24..31
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x30, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x30, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 32..39
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x40, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x40, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 40..47
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x50, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x50, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 48..55
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x60, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x60, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 56..63
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x70, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x70, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 64..71
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x80, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x80, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 72..79
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x90, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x90, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 80..87
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xA0, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xA0, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 88..95
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xB0, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xB0, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 96..103
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xC0, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xC0, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 104..111
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xD0, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xD0, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 112..119
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xE0, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xE0, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 120..127
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xF0, 0x00, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xF0, 0x00, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 128..135
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x00, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x00, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 136..143
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x10, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x10, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 144..151
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x20, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x20, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 152..159
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x30, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x30, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 160..167
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x40, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x40, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 168..175
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x50, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x50, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 176..183
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x60, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x60, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 184..191
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x70, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x70, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 192..199
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x80, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x80, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 200..207
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0x90, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0x90, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 208..215
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xA0, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xA0, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 216..223
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xB0, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xB0, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 224..231
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xC0, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xC0, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 232..239
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xD0, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xD0, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 240..247
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xE0, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xE0, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # lanes 248..255
+            .byte 0xF3, 0x0F, 0x6F, 0x82, 0xF0, 0x01, 0x00, 0x00 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEE, 0xC4 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xEA, 0xC3 :: writes(xmm0)
+            .byte 0xF3, 0x0F, 0x6F, 0x89, 0xF0, 0x01, 0x00, 0x00 :: writes(xmm1)
+            .byte 0x66, 0x0F, 0xF5, 0xC1 :: writes(xmm0)
+            .byte 0x66, 0x0F, 0xFE, 0xD0 :: writes(xmm2)
+            # movdqu [rax], xmm2
+            .byte 0xF3, 0x0F, 0x7F, 0x10 :: writes()
+        }
+        ret running + i32x4{sums[0], sums[1], sums[2], sums[3]};
+    }
+    $or {
+        ret accumulate_portable(values, weights, running);
+    }
+}
+
+# the same sum without pmaddwd: clamp, multiply in int16, widen, add
+fun accumulate_portable(values: *i16, weights: *i16, running: i32x4) i32x4 {
     val zero: i16x8 = splat_i16x8(0);
     val high: i16x8 = splat_i16x8(QA::i16);
     var acc:  i32x4 = running;
@@ -260,17 +517,28 @@ fun accumulate(values: *i16, weights: *i16, running: i32x4) i32x4 {
     ret acc;
 }
 
-# centipawns from the side to move's point of view
+# which output layer a position with `pieces` pieces on the board uses
+pub fun bucket(pieces: i64) i64 {
+    var b: i64 = (pieces - 2) / 4;
+    if (b < 0)           { b = 0; }
+    if (b > BUCKETS - 1) { b = BUCKETS - 1; }
+    ret b;
+}
+
+# centipawns from the side to move's point of view, with `pieces` pieces on
+# the board
 #
 # the side to move's half of the hidden layer is read first, so the network
 # can learn that having the move is worth something.
-pub fun output(a: *Acc, side: u8) i64 {
-    val us:  i64   = side::i64;
-    var acc: i32x4 = splat_i32x4(0);
-    acc = accumulate(?a.v[us][0], ?OUTPUT_WEIGHTS[0], acc);
-    acc = accumulate(?a.v[us ^ 1][0], ?OUTPUT_WEIGHTS[HIDDEN], acc);
+pub fun output(a: *Acc, side: u8, pieces: i64) i64 {
+    val us:   i64   = side::i64;
+    val b:    i64   = bucket(pieces);
+    val base: i64   = b * 2 * HIDDEN;
+    var acc:  i32x4 = splat_i32x4(0);
+    acc = accumulate(?a.v[us][0], ?OUTPUT_WEIGHTS[base], acc);
+    acc = accumulate(?a.v[us ^ 1][0], ?OUTPUT_WEIGHTS[base + HIDDEN], acc);
     val total: i64 = hsum_i32x4(acc)::i64;
-    ret (total + OUTPUT_BIAS::i64) * SCALE / (QA * QB);
+    ret (total + OUTPUT_BIAS[b]::i64) * SCALE / (QA * QB);
 }
 
 fun u32_at(buf: *u8, at: i64) i64 {
@@ -292,7 +560,7 @@ fun read_body(f: fs.File) bool {
     var head: [32]u8;
     if (!read_exact(f, ?head[0], HEADER)) { ret false; }
 
-    val magic: str = "MCHNNUE1";
+    val magic: str = "MCHNNUE2";
     var i:     i64 = 0;
     for (i < 8) {
         if (head[i] != magic[i]) { ret false; }
@@ -305,16 +573,14 @@ fun read_body(f: fs.File) bool {
     if (u32_at(?head[0], 16) != QA)     { ret false; }
     if (u32_at(?head[0], 20) != QB)     { ret false; }
     val scale: i64 = u32_at(?head[0], 24);
-    if (scale < 1 || scale > 4000) { ret false; }
+    if (scale < 1 || scale > 4000)       { ret false; }
+    if (u32_at(?head[0], 28) != BUCKETS) { ret false; }
     SCALE = scale;
 
-    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2)) { ret false; }
-    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))             { ret false; }
-    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, 2 * HIDDEN * 2))       { ret false; }
-
-    var tail: [4]u8;
-    if (!read_exact(f, ?tail[0], 4)) { ret false; }
-    OUTPUT_BIAS = @((?tail[0]):~*i32);
+    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2))     { ret false; }
+    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))                 { ret false; }
+    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, BUCKETS * 2 * HIDDEN * 2)) { ret false; }
+    if (!read_exact(f, (?OUTPUT_BIAS[0]):~*u8, BUCKETS * 4))                 { ret false; }
 
     ret true;
 }
@@ -329,4 +595,38 @@ pub fun load(path: str) bool {
     val shut: err[io_error.Error] = fs.close(?f);
     loaded = ok;
     ret ok;
+}
+
+var TEST_VALUES:  [HIDDEN]i16;
+var TEST_WEIGHTS: [HIDDEN]i16;
+
+test "nnue: the pmaddwd kernel sums exactly what the portable loop does" {
+    # hidden values well outside 0..QA, so both clamps are exercised, and
+    # weights across the whole range the quantizer allows. The kernel is
+    # unrolled for HIDDEN = 256: a wider build fails here, not in a game.
+    var r:     rng.Rng = rng.seeded(0x9E3779B97F4A7C15);
+    var trial: i64     = 0;
+    for (trial < 300) {
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            TEST_VALUES[i]  = (rng.below(?r, 4001)::i64 - 2000)::i16;
+            TEST_WEIGHTS[i] = (rng.below(?r, 255)::i64 - 127)::i16;
+            i               = i + 1;
+        }
+        # the extremes on some trials: every lane at its largest product
+        if (trial % 50 == 0) {
+            i = 0;
+            for (i < HIDDEN) {
+                TEST_VALUES[i]  = 32767;
+                TEST_WEIGHTS[i] = 127 - 254 * (trial / 50 % 2)::i16;
+                i               = i + 1;
+            }
+        }
+        val start: i32x4 = i32x4{trial::i32, 0 - 7, 11, 0};
+        val fast:  i64   = hsum_i32x4(accumulate(?TEST_VALUES[0], ?TEST_WEIGHTS[0], start))::i64;
+        val slow:  i64   = hsum_i32x4(accumulate_portable(?TEST_VALUES[0], ?TEST_WEIGHTS[0], start))::i64;
+        if (fast != slow) { ret 1; }
+        trial = trial + 1;
+    }
+    ret 0;
 }

@@ -1,0 +1,29 @@
+---
+description: Documentation moves with the code in the same change; it is never left stale between prompts
+alwaysApply: true
+---
+
+# Documentation is part of the change
+
+Before ending any turn that changed code, measured something, or decided
+something, bring every document it touches up to date in the same turn. A
+doc that is wrong for one prompt is wrong for the next agent, who will act on it.
+
+What to update, and when:
+
+| you did | update |
+|---|---|
+| ran any test, match, SPRT, bench or profile | a line in `RESULTS.tsv` (pass or fail), and the figure wherever it is quoted. Matches and SPRTs go through `harness/jobqueue.py`, which writes the line itself; still update the roadmap and wherever the figure is quoted |
+| finished, started or abandoned a work package | its row or entry in `ROADMAP_3500.md` (mark **Done**, **Rejected**, or **In progress** with the branch) |
+| changed a search, eval or protocol behaviour | `fixtures/bench.expected` if the node count moved, `HANDOFF.md` "What is actually open", the README section describing it |
+| tested or broke an assumption | its entry in `ASSUMPTIONS.md` (measured / open / retired) |
+| learned something about Mach itself | `MACH_FINDINGS.md` |
+| added a gate | the gate count in `HANDOFF.md` and the README |
+
+Rules:
+
+- Quote the ledger ID (`SPRT-S04`, `CONFIRM-01`) next to any number, so it can be checked.
+- Commit hashes quoted in docs must resolve in *this* repository (`git cat-file -t <hash>`).
+- ROADMAP section 1 ("Where we stand") must describe the current best engine, not the one before it. If a result supersedes it, rewrite it; do not append.
+- If you could not measure something, the doc says "not measured", not a guess.
+- Last step of every turn: `git diff --stat` and ask "which doc does each of these files make wrong?"

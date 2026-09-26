@@ -89,6 +89,10 @@ pub var Z_EP:     [8]u64;
 # rights that survive a move touching each square
 var CASTLE_KEEP: [64]u8;
 
+# the squares strictly between two squares on one rank, file or diagonal,
+# and nothing for two squares on no common line
+var BETWEEN: [64][64]u64;
+
 var ready: i64 = 0;
 
 var seed: u64 = 0x2545F4914F6CDD1D;
@@ -106,6 +110,21 @@ pub fun init() {
     if (ready != 0) { ret; }
     attacks.init();
     magic.init();
+    var from: i64 = 0;
+    for (from < 64) {
+        var to: i64 = 0;
+        for (to < 64) {
+            BETWEEN[from][to] = 0;
+            if (from != to && (magic.rook(from, 0) & bb.bit(to)) != 0) {
+                BETWEEN[from][to] = magic.rook(from, bb.bit(to)) & magic.rook(to, bb.bit(from));
+            }
+            or (from != to && (magic.bishop(from, 0) & bb.bit(to)) != 0) {
+                BETWEEN[from][to] = magic.bishop(from, bb.bit(to)) & magic.bishop(to, bb.bit(from));
+            }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
     var pc: i64 = 0;
     for (pc < 12) {
         var sq: i64 = 0;
@@ -144,12 +163,20 @@ pub fun code(color: u8, kind: u8) u8 {
     ret color * 6 + kind;
 }
 
+# a piece code's colour and kind, looked up rather than divided: Mach 5.11
+# compiles pc / 6 and pc % 6 to div instructions, tens of cycles each, and
+# put, remove, make, SEE and move ordering ask for them on every move. Codes
+# 0-11 are pieces and 12 is EMPTY; 13-15 only pad the table, with the values
+# division gives.
+val COLOR_OF: [16]u8 = [16]u8{0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2};
+val KIND_OF:  [16]u8 = [16]u8{0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3};
+
 pub fun color_of(pc: u8) u8 {
-    ret pc / 6;
+    ret COLOR_OF[pc::i64];
 }
 
 pub fun kind_of(pc: u8) u8 {
-    ret pc % 6;
+    ret KIND_OF[pc::i64];
 }
 
 pub fun all(p: *Position) u64 {
@@ -200,6 +227,39 @@ pub fun attacked(p: *Position, sq: i64, by: u8) bool {
 
 pub fun in_check(p: *Position) bool {
     ret attacked(p, king_square(p, p.side), p.side ^ 1);
+}
+
+# the pieces of `color` that stand alone between its king and an enemy slider
+pub fun pinned(p: *Position, color: u8) u64 {
+    val king:    i64 = king_square(p, color);
+    val them:    u8  = color ^ 1;
+    val occ:     u64 = all(p);
+    val queen:   u64 = p.pieces[code(them, QUEEN)];
+    var snipers: u64 = (magic.rook(king, 0) & (p.pieces[code(them, ROOK)] | queen))
+        | (magic.bishop(king, 0) & (p.pieces[code(them, BISHOP)] | queen));
+    var result: u64 = 0;
+    for (snipers != 0) {
+        val sniper: i64 = bb.lsb(snipers);
+        snipers = snipers & (snipers - 1);
+        val between: u64 = BETWEEN[king][sniper] & occ;
+        if (between != 0 && (between & (between - 1)) == 0 && (between & p.occ[color]) != 0) {
+            result = result | between;
+        }
+    }
+    ret result;
+}
+
+# whether a pseudo-legal move of the side to move can leave its own king
+# attacked, and so has to be made and tested with left_in_check. Out of check,
+# a move by a piece that is not the king, not pinned (`pins`, from pinned())
+# and not capturing en passant - which removes a second piece from the board -
+# never can: nothing it vacates was shielding the king.
+pub fun needs_test(p: *Position, m: Move, pins: u64, in_check: bool) bool {
+    if (in_check) { ret true; }
+    val from: i64 = mv.from(m);
+    if (kind_of(p.board[from]) == KING) { ret true; }
+    if (mv.flag(m) == mv.EP_CAPTURE)    { ret true; }
+    ret (pins & bb.bit(from)) != 0;
 }
 
 # whether the side that just moved left its own king attacked

@@ -11,9 +11,28 @@ Companion files: [HANDOFF.md](HANDOFF.md) (boundary and house rules),
 
 ---
 
-## 1. Where we stand — measured 2026-09-22
+## 1. Where we stand — updated 2026-09-25
 
-### Rating
+### The engine today, and what is and is not measured about it
+
+The shipping engine (machete 0.1, network A) is **not** the one LADDER-02
+rated. Since then S-03, S-04 and S-05 merged and network A replaced the old
+network; CONFIRM-01 measured the combination against the LADDER-02 engine at
+**+109 +/- 49** (200 ms, 214 games). A self-play gain does not transfer one to
+one onto a rating scale, so the honest statement is: **the current engine has
+no rating of its own in the ledger.** `HANDOFF.md` quotes "about 3100-3200
+(ladder 4: Spike and Rybka at 3+2)"; ladder 4 has no line in `RESULTS.tsv`
+and two anchors are not a rating. P0-8 is what fixes this.
+
+The reference field was re-run as **FIELD-02** (3+2, one thread, 128 MB, no
+engine books, balanced book): 360 games, 78% drawn, spread 173, with Black
+Marlin (-105) now the floor and Koivisto at -58. Section 2 uses FIELD-02.
+
+Everything below this block, down to "The engine, profiled", is the
+2026-09-22 picture, kept because the per-opponent detail is still the best
+available.
+
+### Rating (2026-09-22, the engine before network A)
 
 | measurement | result | status |
 |---|---|---|
@@ -80,7 +99,7 @@ the bottom of the target band; it is several hundred Elo below it.
 | evaluation | NNUE 768 -> 256 -> 1, CReLU, int16, QA 255 / QB 64 | no king buckets, no output buckets |
 | training target | `sigmoid(score / 150)`, blend 1.0 | saturates above about +700 |
 | corpus | 42.2M positions, five teachers | plus 21.3M unused in `data/train3.bin` |
-| speed, 1 thread | 769,675 nps | idle machine; **any other load moves this by up to 79%** |
+| speed, 1 thread | 769,675 nps | idle machine; **any other load moves this by up to 79%**. `machete bench` does not load a network (it searches on the hand-written evaluation) and clears a 128 MB table six times, so its nps says nothing about playing speed; its node count is a signature of the search code only |
 | speed, 8 threads | 5,279,319 nps | Lazy SMP |
 | effective branching factor | 1.49 - 1.68 | respectable |
 | nodes to depth 12 | 766k middlegame, 485k opening, 42k endgame | **large constant: ordering and pruning** |
@@ -94,15 +113,12 @@ the bottom of the target band; it is several hundred Elo below it.
    evaluation gradient inside a won position (scale-150 saturation, and no
    classical mop-up knowledge anywhere).
 2. **Time management is hard-deadline only.** `budget_ms` in `src/search.mach`
-   is `remaining/30 + 3/4*inc`, capped at a third. No soft limit, no stopping
-   before an iteration it cannot finish, no stability scaling, and **`movestogo`
-   is not parsed** - yet CCRL 40/15 sends it every move. Every measurement ever
-   taken used fixed `movetime`, which bypasses the time manager entirely, so this
-   leak has never been visible.
-3. **`go nodes` is not supported.** The engine parses only `depth`, `movetime`,
-   `wtime/btime/winc/binc` and `infinite`. A node-limited request is read as no
-   limit and **searches until depth 62**. Fixed-node testing - the standard way
-   to make a test deterministic and immune to machine load - is impossible.
+   is `remaining/movestogo + 3/4*inc` (thirty when `movestogo` is absent),
+   capped at a third. It does skip an iteration it expects not to finish
+   (`elapsed/2` past the deadline), but has no soft limit and no stability
+   scaling. `movestogo` is parsed since P0-2. Most measurements used fixed
+   `movetime`, which bypasses the time manager entirely.
+3. ~~`go nodes` is not supported~~ - fixed (P0-2).
 4. ~~The static evaluation is computed twice at the same node~~ - fixed (S-02).
 5. **Quiescence never uses the transposition table, and stands pat in check.**
 6. ~~Continuation history is dead weight~~ - removed (S-01).
@@ -116,7 +132,8 @@ the bottom of the target band; it is several hundred Elo below it.
 | Does a longer clock hurt us? | No, we gain | SCALE-01 |
 | Does the game-result term help the target? | No; blend 1.0 beats 0.9 and 0.8 | HIST-08, HIST-09 |
 | Does an external corpus with a different label scale help? | No, -159 | HIST-06 |
-| Is continuation history worth keeping? | No | SPRT-01 |
+| Is continuation history worth keeping? | No, **as implemented** - used in quiet-move ordering only. Its payoff elsewhere comes through LMR and pruning (S-08), which did not exist when it was tested; it may be retried as a new candidate after S-08 | SPRT-01 |
+| Does endgame-heavy or Leela data help? | No: both converted hard endings better and lost strength (-13, -20) | SPRT-NET-EG, SPRT-NET-MIX |
 | Colour-swap augmentation? | Provably a no-op | ASSUMPTIONS.md |
 | Mirroring as a label-preserving symmetry? | False | ASSUMPTIONS.md |
 
@@ -134,8 +151,8 @@ milestones, each checkable with tools in this repo once Phase 0 is done.
 | **M2 - in the field** | >= 50% against Koivisto 9.0 | about 3300 |
 | **M3 - 3500** | **>= 50% against the reference field as a whole**, i.e. machete is the field's median | the goal |
 
-M3 is measured with `harness/tournament.py` entering machete into the field,
-under the same conditions as FIELD-01, all opponents pinned to one thread, at
+M3 is measured with `harness/stable.py` entering machete into the field,
+under the same conditions as FIELD-02, all opponents pinned to one thread, at
 least 100 games per pairing, and the pentanomial interval (P0-3) reported. The
 field's median engines (Torch, Caissa) sit at the field mean.
 
@@ -143,9 +160,11 @@ A **CCRL-scale figure** is quoted alongside, never instead: the P0-6 gauntlet,
 anchors' current CCRL 40/15 **1-CPU** ratings looked up and recorded with the
 date, pooled, chi2/dof reported.
 
-**Open parameter the owner must record:** the time control FIELD-01 was played
-at. Until it is known, use 10+0.1 (ten seconds a game plus 0.1 s a move) as the
-reference condition and say so in every result.
+**Reference condition: 3+2**, one thread, 128 MB, no engine books, the
+balanced book - FIELD-02's conditions. FIELD-01's time control was never
+recorded, so FIELD-02 replaces it as the field. Koivisto stays the M1/M2
+opponent for continuity with every earlier result, although FIELD-02 puts
+Black Marlin below it.
 
 ---
 
@@ -206,10 +225,13 @@ Each WP carries a tier, so an orchestrator can route it:
 Two measurements at once contaminate each other - LOAD-01 exists to find out by
 how much, and until it reports, assume they do.
 
-- Until P0-5 lands: **check before measuring**, every time -
-  `tasklist | grep -ciE "machete|cont\.exe"` must print 0, and that includes your
-  own leftovers. `TaskStop` kills a shell wrapper, not the Python process under it.
-- After P0-5: submit a job to the queue; never start a match by hand.
+- P0-5 has landed: **submit a job to `harness/jobqueue.py`; never start a match
+  by hand.** The runner waits for a quiet machine itself.
+- Anything you still run directly - a gate, a build, a quick probe - **check
+  first** with `python harness/jobqueue.py status`, which lists engines, match
+  drivers and Arena. The owner runs tournaments in Arena on this machine; a
+  2026-09-25 agent session ran its gates beside one without looking. Stopping a
+  tool's shell does not always stop the process under it: check again after.
 - Data generation runs overnight; SPRTs run by day; GPU training can overlap
   either, since it barely touches the CPU.
 - Never kill the owner's servers on ports **8420** and **8421**.
@@ -253,8 +275,10 @@ Each of these cost at least one wrong result. They are not style.
 8. **Pin every opponent to one thread and a fixed hash.** Engines name it
    differently: `Threads`, `Max CPUs`, `Cores`. If none can be set, the engine
    cannot be an anchor.
-9. **`go nodes` does not exist until P0-2 lands.** A node-limited request
-   searches until depth 62. It will look like a hang.
+9. **`go nodes` counts one thread.** It exists since P0-2 and is exact and
+   repeatable on one thread; with `Threads` above 1 the helpers are not
+   counted and the result is not deterministic. Builds before P0-2 read a
+   node limit as no limit and search to depth 62, which looks like a hang.
 10. **Movetime matches cannot see time management.** Any time-management change
     is measured on a real clock or not at all.
 11. **A mate written as a huge score teaches the network nothing.** At scale
@@ -283,27 +307,47 @@ Each of these cost at least one wrong result. They are not style.
     that way, with nothing in its log. Launch every long job - matches, data
     generation, queues - with `harness/detach.ps1`, which starts it through WMI
     and refuses to report success if `claude.exe` is still in its ancestry.
+    Agents now also run from Cursor, whose shells have a different owner;
+    `detach.ps1` only looks for `claude.exe`, and whether a Cursor-launched job
+    survives a session restart has not been tested.
+20. **Documentation moves with the code, in the same change.** A result, a
+    finished WP, a changed behaviour or a broken assumption updates
+    `RESULTS.tsv`, this file, `HANDOFF.md`, `ASSUMPTIONS.md` or the README
+    before the turn ends - never "later". This file went stale in three days
+    once: section 1 described an engine two merges and a network behind, and
+    every commit hash in the ledger pointed at a repository that no longer
+    exists here. The checklist is `.cursor/rules/docs-stay-current.mdc`.
 
 ---
 
 ## 6. The work packages
 
-Phase 0 first, in order. After M0, Phases 1, 3 and 5 run in parallel (different
-territories), Phase 4 starts when Phase 5 has data for it, and Phases 2 and 6
-come last because tuning an engine whose structure is still changing wastes the
-tune.
+Phase 0 first, but not strictly in order: **P0-2, P0-3 and P0-5 matter most**
+(deterministic tests, about a third fewer games per SPRT at these draw rates,
+and a queue so agents cannot corrupt each other's measurements), and P0-8
+waits for P0-6's anchors so the ladder is run once. After M0, Phases 1, 3 and
+5 run in parallel (different territories), Phase 4 starts when Phase 5 has
+data for it, and Phases 2 and 6 come last because tuning an engine whose
+structure is still changing wastes the tune.
+
+**Exception: data generation (D-02) does not wait for M0.** It measures
+nothing, so an unvalidated instrument cannot spoil it, and at about 100
+machine-hours per 500M positions it is the longest pole on the road. It runs
+overnight from now, on whatever teacher panel D-07 supports.
 
 ### Phase 0 - Make the instrument trustworthy
 
 Nothing claimed before M0 counts toward 3500.
 
-#### P0-1 Pin every opponent to one thread · HARNESS · Tier A
+#### P0-1 Pin every opponent to one thread · HARNESS · Tier A · **partly done**
+- **Status (2026-09-25):** `harness/engine.py` has `pin()` and `ladder.py`, `stable.py`, `shadow.py`, `divergence.py` and `conversion.py` call it. **`tournament.py` and `scaling.py` do not**, and the gate test below does not exist.
 - **Why:** nothing in the harness sets an opponent's threads or hash, so an anchor's strength depends on its defaults. None of today's anchors turned out to be multi-threaded - Rybka was suspected and measured at one search thread - but a rating that depends on luck about defaults is not measured. Pin it and the question goes away.
 - **Change:** in `harness/ladder.py`, `harness/scaling.py`, `harness/tournament.py` and anywhere an external engine is opened, after `popen_uci` set the first of `Threads`, `Max CPUs`, `Cores`, `CPUs` that exists to 1, and `Hash` to a fixed 64 MB. If no thread option exists and the engine is not known to be single-threaded, refuse to use it and say which engine. Put the logic in one function in `harness/engine.py`, not four copies.
 - **Gate:** a test that opens each configured opponent and asserts the option was set; perturb by removing the pin for one engine and confirm the check fails.
 - **Accept:** every ladder opponent reports one thread.
 
-#### P0-2 `go nodes` and `go movestogo` · MACH · Tier B
+#### P0-2 `go nodes` and `go movestogo` · MACH · Tier B · **Done** (`wp/P0-2-nodes-movestogo`, GATE-P02)
+- **Result:** `go nodes N` stops at exactly N nodes on the main thread and gives the same move twice after `ucinewgame`; `movestogo` replaces the fixed thirty in `budget_ms`. Bench unchanged; unit tests and `protocol.py` both fail when the node check is removed. With several threads the limit bounds only the main thread, so fixed-node tests must run on one.
 - **Why:** fixed-node tests are deterministic and immune to load; CCRL 40/15 sends `movestogo` on every move and we ignore it.
 - **Change:** `src/uci.mach` parses `nodes N` and `movestogo N` into `Limits`; `src/search.mach` stops at the node count (checked where `out_of_time` is), and `budget_ms` uses `remaining / max(movestogo, 2)` when `movestogo` is given.
 - **Gate:** extend `harness/protocol.py`: `go nodes 10000` returns a bestmove and reports at most about 10,000 nodes; perturb by disabling the check and confirm the gate times out.
@@ -315,21 +359,25 @@ Nothing claimed before M0 counts toward 3500.
 - **Gate:** validate against simulation the way the trinomial SPRT was validated (5% false positives at true zero, at alpha 0.05); cross-check a finished match against `fastchess`'s pentanomial output if it is available.
 - **Accept:** the SPRT's false-positive rate at true zero is within 2 points of alpha over 300 simulated runs.
 
-#### P0-4 An unbalanced opening book · HARNESS · Tier A
+#### P0-4 An unbalanced opening book · HARNESS · Tier A · **half done**
+- **Status (2026-09-25):** `match.py --book FILE` and `ladder.py --self-book` exist, and `harness/books/balanced_200.epd` (the balanced book FIELD-02 used) is committed; no UHO book is on disk and the decisive-rate gate has not been run.
 - **Why:** four random plies make weird, often lopsided or dead positions; at 73% draws an SPRT becomes very expensive. Worse, a random opening can *finish* a game: LADDER-02's only "win" over Koivisto was `1. f3 e5 2. g4 Qh4#`, all four moves random, machete never having played - and the ladder scored it. Until the book lands, reject any random opening that ends the game. Unbalanced books (UHO) are built to make decisive games likely while keeping pairs fair.
 - **Change:** obtain a UHO book (the `official-stockfish/books` repository carries them - verify the source and licence before downloading, and download to `E:/`); `match.py` and `tournament.py` take `--book FILE` and draw openings from it, still one opening per colour-reversed pair.
 - **Gate:** decisive-game rate on a 400-game self-match is reported with and without the book.
 - **Accept:** decisive rate rises; the SPRT median game count at a fixed true Elo falls.
 - **Ratings are a different job (2026-09-23).** A UHO book is for SPRTs between machete versions, where a lopsided start that both sides play once is fine. For a rating against outside engines, the ladder now uses `--self-book FIRST,REPLIES` (`harness/self_book.py`): every game starts from ply 0 with a first move White's own engine ranks among its best, and a reply Black's own engine ranks among its best. The reason: LADDER-03 at `--startpos` played the same Rybka game 20 times (1. e4 Nc6 2. d4 d5 3. e5 h5 4. Nf3 Nh6, which Stockfish rates +1.06, splitting only at move five), so its 3167 ± 120 is not a rating.
 
-#### P0-5 One queue for the machine · HARNESS · Tier B
+#### P0-5 One queue for the machine · HARNESS · Tier B · **Done** (`wp/P0-5-jobqueue`, GATE-P05)
+- **Result:** `harness/jobqueue.py` (not `queue.py`: that name would shadow the standard library for every script in `harness/`). `submit` requires an id, a change and a prediction; `run` refuses a second runner, plays jobs strictly in order, passes over a job whose `--requires` files do not exist yet, waits until no engine, match driver, data generator or Arena runs outside it (GPU training allowed), and appends one line per job to `RESULTS.tsv`, parsing `match.py`'s summary. A job interrupted by a dead runner is retried once. Gate `harness/test_jobqueue.py` in `check.sh`; perturbed by removing the lock (a job ran twice, a runner crashed; caught). Its first run found a crash for a queue on another drive. Not yet done: `longqueue.sh` is still a script, not jobs; `sprt_queue.sh` is marked superseded.
+- **After P0-5, section 4's rule applies:** submit a job; never start a match by hand.
+- **Extended for the competition (GATE-P05B):** one machine-wide queue in `E:/machete/queue`; jobs carry `--team` and run in, and report to, the worktree that submitted them; `--kind train` runs in a GPU lane beside the cpu lane; `--kind data` is charged to a per-team budget and stopped at it. Perturbed by bypassing the budget: caught.
 - **Why:** agents produce patches faster than the machine can test them, and two measurements at once corrupt each other.
 - **Change:** `harness/queue.py` - a job file per test in `data/queue/`, one runner that executes them strictly in order, waits for the machine to be quiet first, writes the result line to `RESULTS.tsv`, and never starts a job while another runs. `harness/longqueue.sh` becomes a list of jobs.
 - **Gate:** submit two jobs at once and show they ran serially. The runner itself is started with `harness/detach.ps1` (rule 19), or it dies the next time the session restarts.
 
 #### P0-6 A gauntlet that can measure 3000 to 3600 · HARNESS · Tier B
 - **Why:** there is no opponent between Rybka (3050) and Koivisto (3300), and we score 3% against Koivisto - nothing on disk measures us in the band we are climbing through.
-- **Change:** a `harness/gauntlet.py` (or a mode of `ladder.py`) with three kinds of anchor: the single-threaded old engines up to Spike and Rybka; **Stockfish with `UCI_LimitStrength` at `UCI_Elo` steps up to its maximum** (verify the range the installed build supports); and the FIELD-01 engines, optionally at fixed time odds until machete gets close. Look up each anchor's current CCRL 40/15 1-CPU rating and record it with the date and URL in the script.
+- **Change:** a `harness/gauntlet.py` (or a mode of `ladder.py`) with three kinds of anchor: the single-threaded old engines up to Spike and Rybka; **old Stockfish releases** (for example 5, 7, 8, 9, 10, 11), whose single-CPU CCRL 40/15 ratings are long established and span roughly 3200 to 3550 - exactly the band being climbed; and the FIELD-02 engines, optionally at fixed time odds until machete gets close. *Not* `UCI_LimitStrength`: `UCI_Elo` is calibrated for human-like play on Stockfish's own scale, tops out below the band, and its weakening is noisiest at fast time controls. Look up each anchor's current CCRL 40/15 1-CPU rating and record it with the date and URL in the script.
 - **Gate:** chi2/dof across anchors reported every run; above 1.5, the run says so.
 - **Sanity-check every anchor at the test time control.** In LADDER-01 at 200 ms, Koivisto 9.0 hung a mate in one twice and threw away a +3.5 position once, across 40 games - not how a 3300 engine plays. An anchor that blunders like that is not measuring anything. Screen each anchor's losses with Stockfish for single moves costing a forced mate from a level position, and drop or re-time the anchor if they appear.
 
@@ -340,7 +388,7 @@ Nothing claimed before M0 counts toward 3500.
 #### P0-8 Re-run the rating ladder · HARNESS · machine · needs P0-1, P0-4
 - **Change:** LADDER-03 at 1000 ms and again at 10+0.1, 100 games per opponent, all pinned. Record both in the ledger. This is **M0**.
 
-#### P0-9 Harness scripts that finish should exit · HARNESS · Tier A
+#### P0-9 Harness scripts that finish should exit · HARNESS · Tier A · **done for `ladder.py`** (`--linger`, default 600); **`watch.py` still has no `--linger`**
 - `ladder.py` and `watch.py` keep their wall up forever after finishing, so they never exit on their own (a finished ladder process was still alive hours later). Add `--linger SECONDS`, default 600, then shut down.
 
 ### Phase 1 - Search (MACH)
@@ -364,10 +412,11 @@ the idea until it passes, which is how noise gets merged.
 | S-09 | Null move: extra reduction from `(eval - beta)`, and require `eval >= beta` | NMP block | B | +5..15 | S-02 |
 | S-10 | **Rejected, -9 +/- 18** (H0). SEE pruning at depth <= 6, quiets below -25d^2, captures below -90d. Retry with other thresholds only as a new candidate | move loop | B | +10..20 | - |
 | S-11 | Razoring at depth 1-2 | `search_node` | B | +5..10 | S-02 |
-| S-12 | **Singular extensions**, then double extensions and multi-cut | `search_node` | C | +20..50 | S-02 |
-| S-13 | **Correction history**: learned correction of static eval keyed by pawn structure | new table, eval call site | C | +15..35 | S-02 |
+| S-12 | **Candidate, SPRT-C-S12 queued** (`claude/s12`, bench 157988): singular extensions at depth >= 8 (bar = table score - 2*depth, half-depth search with the move excluded per ply) and multi-cut; double extensions not yet | `search_node` | C | +20..50 | S-02 |
+| S-13 | **Candidate, SPRT-C-S13 queued** (`claude/s13`, bench 131482): 8192 slots per side keyed by a multiplicative hash of the pawn bitboards, applied in `search_node` only, capped at 64 cp | new table, eval call site | C | +15..35 | S-02 |
 | S-14 | ProbCut | `search_node` | B | +5..15 | S-10 |
 | S-15 | Staged move generation (TT move, captures, killers, quiets) | `movegen.mach`, move loop | C | speed +5..15 | - |
+| S-16 | **Parked, unmeasured.** A repetition penalty (a repeated position scores +/-2000 by default) is on `wip/repetition-penalty`. Not mergeable as written: it refuses a draw by repetition even when losing, and stores a path-dependent score in the TT at full depth. If contempt is wanted, the candidate is a small draw score relative to the root side, off by default, with its own SPRT. The defect it aimed at is eval saturation (E-02), not search | `search_node` | B | uncertain, likely negative | - |
 
 S-01 and S-02 first: one clears dead weight, the other is the prerequisite for
 half the table. Record the node count to depth 12 on the four positions in
@@ -378,8 +427,8 @@ change did what it claimed.
 
 | id | change | tier | prior |
 |---|---|---|---|
-| T-01 | Soft and hard limits; do not start an iteration past the soft limit; honour `movestogo` | B | +15..40 |
-| T-02 | Scale the soft limit by best-move stability and by how much the score dropped | B | +10..20 |
+| T-01 | **Candidate with T-02, SPRT-C-T01 queued at 10+0.1** (`claude/t01`): soft aim remaining/25 + 3/4 increment, hard stop 5x the aim capped at a quarter of the clock, 20 ms overhead; movetime unchanged | B | +15..40 |
+| T-02 | **In T-01's candidate**: 2.0x the aim while the best move keeps changing down to 0.75x after four stable iterations, up to +50% for a falling score | B | +10..20 |
 | T-03 | Scale by the fraction of nodes spent on the best move | B | +5..15 |
 
 **Measure at 10+0.1 with the clock, never with `movetime`** - under `movetime`
@@ -389,7 +438,7 @@ the time manager does not run, so every one of these would test as exactly zero.
 
 | id | territory | change | tier | accept |
 |---|---|---|---|---|
-| E-01 | HARNESS | Decide the endgame supplement from EG-01..EG-03 (queued in `harness/longqueue.sh`) - merge the data if conversion improved *and* EG-03 shows no loss in ordinary play | A | ledger lines |
+| E-01 | HARNESS | **Decided: no.** Both supplements converted hard endings better and lost strength overall (SPRT-NET-EG -13, SPRT-NET-MIX -20). Conversion now rests on E-02 | A | ledger lines |
 | E-02 | MACH | Mop-up knowledge when the material is a known win: drive the losing king to the edge (to the right corner for KBN), bring the kings together; applied on top of the network's score | B | endgame gate 12 of 12, SPRT non-regression [-5, 0] |
 | E-03 | MACH | Syzygy tablebases - **decide first**, it was deliberately out of scope | C | owner's call |
 
@@ -403,10 +452,10 @@ architecture before training anything for it.**
 
 | id | change | tier | prior | needs |
 |---|---|---|---|---|
-| N-01 | A format version in the network file header; the loader rejects a mismatch by name | B | prerequisite | - |
+| N-01 | **Done with N-04**: format `MCHNNUE2`, the header records hidden width and bucket count, the loader refuses a mismatch; `match.py` refuses to play when an engine cannot read its EvalFile | B | prerequisite | - |
 | N-02 | SCReLU activation (squared clipped ReLU) in place of CReLU | C | +10..30 | N-01 |
-| N-03 | Wider accumulator: 256 -> 512, then 1024; check nps cost on a quiet machine | C | +30..80 | N-01, X-01 helps |
-| N-04 | Output buckets by piece count (8) | C | +15..30 | N-01 |
+| N-03 | **512 candidate** (`claude/n03-512`): 26% fewer nodes/s (526k against 714k); TRAIN-C3 and SPRT-C-NET3 (against the 256-wide C2) queued | C | +30..80 | N-01, X-01 helps |
+| N-04 | **Built** (`71ed4e4`): 8 output layers by (pieces - 2) / 4; network A carried over with its one layer in every bucket, evals identical; TRAIN-C2 and SPRT-C-NET2 queued | C | +15..30 | N-01 |
 | N-05 | **King buckets with horizontal mirroring**, plus an accumulator cache so a king move does not force a full refresh | C | +50..100 | N-01, data |
 | N-06 | A second hidden layer | C | uncertain | N-05 |
 
@@ -422,9 +471,10 @@ that may be the data, not the idea (see D-02).
 | D-01 | **Done.** SIZE-02, 2,000 games: 42M +131, 20M +83, 8M +4, 2M -201. **Not saturated** - about +100 Elo per doubling from 2M to 8M, +60 to 20M, +45 from 20M to 42M. Returns are diminishing, so data alone will not reach 3500, but the next doubling is still worth roughly +35 to +45 | - | justifies D-02 |
 | D-02 | Generate at scale: 500M, then 1B positions, one consistent pipeline, overnight only | B | about 100 machine-hours per 500M |
 | D-03 | Race two pipelines on equal budgets: Stockfish labels (current) against machete self-play at fixed nodes (needs P0-2) | B | self-play is how most top open engines train |
-| D-04 | Trainer throughput: profile `train.py` at 290k positions a second; evaluate a faster loader or an external trainer that can export our format | B | at 1B positions, 14 epochs is 13 hours per network |
+| D-04 | **Done** (`2417f24`): the corpus lives on the GPU; 1.38M positions/s unpacked, 1.16M packed; 14 epochs of 118.6M in about 25 minutes | B | at 1B positions, 14 epochs is 13 hours per network |
 | D-05 | Fold `data/train3.bin` (21.3M, unused) into the corpus | A | cheap |
-| D-06 | Compressed storage once past about 200M positions | B | 70 bytes a record is 70 GB per billion |
+| D-06 | **Done on the GPU** (`b560d0e`): 28 bytes a position, about 190M on an 8 GB card; several corpora per run, `PATH@N` for the first N records | B | 70 bytes a record is 70 GB per billion |
+| D-07 | **Teacher panel from LABEL-01.** At 1,500 nodes Berserk (.689) and Alexandria (.683) track deep evaluations far worse than Stockfish (.872), PlentyChess (.871), Reckless (.861) or Obsidian (.859), yet supplied about 40% of network A's labels. Generate an equal-size corpus from the better panel and SPRT the two networks. The most direct test of "label consistency beats depth" | B | cheap relative to its prior; decides D-02's panel |
 
 Remember HIST-06: an outside corpus with a different label scale lost 159 Elo.
 Consistency of labels has mattered more than their depth. Do not mix pipelines
@@ -442,10 +492,11 @@ inside one training run without a tournament saying it helps.
 
 | id | territory | change | tier |
 |---|---|---|---|
-| X-01 | MACH | **Done:** mach 5.11.0, std 7.1.0, the widen written as a literal at speed parity (commit 470c86a). Was: bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
+| X-01 | MACH | **Done:** mach 5.11.0, std 7.1.0, the widen written as a literal at speed parity (commit c9e8847). Was: bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
 | X-02 | MACH | `#[embed]` the network into the binary | A |
 | X-03 | MACH | One owner for `MAX_THREADS` | A |
-| X-04 | MACH | Make `go ponder` safe | B |
+| X-05 | MACH | Raise `MAX_PLY` from 64 (it sizes killers, evals and the PV, and quiescence returns a static eval at ply 63); strong engines use 128 or more, and a faster engine in a long endgame will reach it. Bench must not move | A |
+| X-04 | MACH | **Done** (`wp/X-04-ponder`). `go ponder` waits for `ponderhit` or `stop` and never answers alone; `bestmove ... ponder ...` from the same iteration; budget and flag set before the search thread starts, so an immediate `ponderhit` is not lost. Bench unchanged (130,660); four protocol checks, two perturbed to failure. The earlier attempt, parked on `wip/repetition-penalty`, lost an immediate `ponderhit` and read the side to move from a position the search thread was changing | B |
 
 ---
 
@@ -457,4 +508,13 @@ After each phase, before starting the next:
 2. Re-profile (section 1's table): nps on a quiet machine, nodes to depth 12, the endgame gate.
 3. Re-read section 3. If a phase delivered far less than its prior, find out why before spending the next one - the priors are guesses, and an assumption that is wrong is worth more than another feature.
 
-The current position on the road: **before M0.** Start with P0-1.
+**From 2026-09-25 the road forks** ([COMPETITION.md](COMPETITION.md)): teams
+cursor and claude each take this plan from tag `competition-fork` in their own
+worktree, and statuses below describe the common start. Each team tracks its
+own progress in its own copy of this file.
+
+The current position on the road (2026-09-25): **before M0.** Done: P0-2,
+P0-5, X-04, and parts of P0-1, P0-4, P0-9. Next, by territory: MACH - X-05,
+then Phase 1 (S-06, S-07) on fixed-node SPRTs once P0-3 lands; HARNESS -
+finish P0-1 in `tournament.py` and `scaling.py`, then P0-3, then P0-6;
+machine - D-07's corpus overnight, submitted through `jobqueue.py`.

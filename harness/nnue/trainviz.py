@@ -54,11 +54,28 @@ class Watch(object):
         self.net_path = None
         self.net_stamp = None
         self.weights = b""
+        self.sizes = {}
+        self.following = None
 
     def current_log(self):
-        """The log itself, or the most recently written match of a pattern."""
+        """The log itself, or the match of a pattern that is being written.
+
+        Windows does not move a file's modified time while a writer holds it
+        open, so a training log in progress can look older than one that
+        finished minutes ago. A file that has grown since the last look is the
+        one being written; until one has, the most recently modified wins.
+        """
         matches = glob.glob(self.log)
-        return max(matches, key=os.path.getmtime) if matches else self.log
+        if not matches:
+            return self.log
+        sizes = {path: os.path.getsize(path) for path in matches}
+        grown = [path for path in matches if sizes[path] > self.sizes.get(path, sizes[path])]
+        self.sizes = sizes
+        if grown:
+            self.following = max(grown, key=lambda path: sizes[path])
+        if self.following not in sizes:
+            self.following = max(matches, key=os.path.getmtime)
+        return self.following
 
     def read_log(self):
         path = self.current_log()

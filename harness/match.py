@@ -29,6 +29,7 @@ import argparse
 import math
 import os
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -396,6 +397,25 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
             engines.shutdown(side)
 
 
+def check_network(path, options):
+    """Refuse to play when an engine cannot read the network it is given.
+
+    machete answers an unreadable EvalFile with an info string and carries on
+    with its hand-written evaluation, so a match would quietly measure the
+    wrong engine. `machete nnue NET FEN` exits nonzero when NET will not load:
+    a wrong format, a wrong width, a missing file.
+    """
+    for setting in options:
+        if not setting.startswith("EvalFile="):
+            continue
+        net = setting[len("EvalFile="):]
+        probe = subprocess.run([path, "nnue", net] + chess.STARTING_FEN.split(),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if probe.returncode != 0:
+            raise SystemExit("{} cannot read the network {}: {}".format(
+                path, net, probe.stderr.decode("ascii", "replace").strip()))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("engine_a")
@@ -437,6 +457,8 @@ def main():
 
     path_a = os.path.abspath(args.engine_a)
     path_b = os.path.abspath(args.engine_b) if args.engine_b else path_a
+    check_network(path_a, args.option_a)
+    check_network(path_b, args.option_b)
 
     upper = lower = None
     if args.sprt:
