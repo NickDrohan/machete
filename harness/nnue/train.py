@@ -29,7 +29,7 @@ import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import reference
-from reference import RECORD, feature_indices
+from reference import RECORD
 
 INPUTS = reference.INPUTS
 HIDDEN = reference.HIDDEN
@@ -65,21 +65,58 @@ class Net(nn.Module):
             self.features.weight[PAD].zero_()
 
 
-def targets(rows):
-    """The number the network is asked to produce, as a win probability."""
-    score = rows["score"].astype(np.float32)
-    result = rows["result"].astype(np.float32) / 2.0
-    from_search = 1.0 / (1.0 + np.exp(-score / SCALE))
-    return LAMBDA * from_search + (1.0 - LAMBDA) * result
+class Corpus(object):
+    """The whole corpus on the device, as the columns training reads.
 
+    Gathering rows from a memmap and building features with numpy kept the GPU
+    two-thirds idle: gen5 trained at ~110-330k positions/s with the card at
+    26-41%. Held on the card, a batch is an index gather and a few integer ops,
+    and the CPU leaves the loop. 55M positions take 3.85 GB.
+    """
 
-def batches(data, order, size, device):
-    for at in range(0, len(order) - size + 1, size):
-        rows = data[np.sort(order[at:at + size])]
-        us, them = feature_indices(rows)
-        yield (torch.from_numpy(us).to(device),
-               torch.from_numpy(them).to(device),
-               torch.from_numpy(targets(rows)).to(device))
+    CHUNK = 1 << 22
+
+    def __init__(self, data, device):
+        self.device = device
+        count = len(data)
+        self.stm = torch.empty(count, dtype=torch.uint8, device=device)
+        self.count = torch.empty(count, dtype=torch.uint8, device=device)
+        self.pieces = torch.empty((count, 32), dtype=torch.uint8, device=device)
+        self.squares = torch.empty((count, 32), dtype=torch.uint8, device=device)
+        self.score = torch.empty(count, dtype=torch.int16, device=device)
+        self.result = torch.empty(count, dtype=torch.uint8, device=device)
+        for at in range(0, count, self.CHUNK):
+            rows = np.asarray(data[at:at + self.CHUNK])
+            end = at + len(rows)
+            for name in ("stm", "count", "pieces", "squares", "score", "result"):
+                column = torch.from_numpy(np.ascontiguousarray(rows[name]))
+                getattr(self, name)[at:end] = column.to(device)
+        self.slots = torch.arange(32, device=device)[None, :]
+
+    def features(self, index):
+        """reference.feature_indices, on the device."""
+        pieces = self.pieces[index].long()
+        squares = self.squares[index].long()
+        live = self.slots < self.count[index].long()[:, None]
+        white = pieces * 64 + squares
+        black = ((pieces + 6) % 12) * 64 + (squares ^ 56)
+        black_to_move = (self.stm[index] == 1)[:, None]
+        us = torch.where(black_to_move, black, white)
+        them = torch.where(black_to_move, white, black)
+        pad = torch.full_like(us, INPUTS)
+        return torch.where(live, us, pad), torch.where(live, them, pad)
+
+    def targets(self, index):
+        """The number the network is asked to produce, as a win probability."""
+        from_search = torch.sigmoid(self.score[index].float() / SCALE)
+        result = self.result[index].float() / 2.0
+        return LAMBDA * from_search + (1.0 - LAMBDA) * result
+
+    def batches(self, order, size):
+        for at in range(0, len(order) - size + 1, size):
+            index = torch.from_numpy(np.sort(order[at:at + size])).to(self.device)
+            us, them = self.features(index)
+            yield us, them, self.targets(index)
 
 
 def export(model, path):
@@ -142,6 +179,7 @@ def main():
     order = rng.permutation(len(data))
     held_out, training = order[:args.validation], order[args.validation:]
 
+    corpus = Corpus(data, device)
     model = Net().to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
@@ -150,32 +188,34 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         rng.shuffle(training)
-        started, seen, running = time.time(), 0, 0.0
-        for us, them, target in batches(data, training, args.batch, device):
+        # the loss stays on the device and is read back every 100 steps;
+        # reading it every step made the CPU wait on the GPU each batch
+        started, seen, running = time.time(), 0, torch.zeros((), device=device)
+        for us, them, target in corpus.batches(training, args.batch):
             predicted = torch.sigmoid(model(us, them))
             loss = loss_of(predicted, target)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
             model.clip_weights()
-            running += float(loss)
+            running += loss.detach()
             seen += 1
             if seen % 100 == 0:
                 rate = seen * args.batch / (time.time() - started)
                 sys.stdout.write("\repoch {}  {:,} positions  loss {:.5f}  {:,.0f}/s".format(
-                    epoch + 1, seen * args.batch, running / seen, rate))
+                    epoch + 1, seen * args.batch, float(running) / seen, rate))
                 sys.stdout.flush()
         schedule.step()
 
         model.eval()
         with torch.no_grad():
             error, count = 0.0, 0
-            for us, them, target in batches(data, held_out, args.batch, device):
+            for us, them, target in corpus.batches(held_out, args.batch):
                 predicted = torch.sigmoid(model(us, them))
                 error += float(((predicted - target) ** 2).sum())
                 count += len(target)
         print("\repoch {} done: training loss {:.5f}, validation {:.5f}      ".format(
-            epoch + 1, running / max(1, seen), error / max(1, count)))
+            epoch + 1, float(running) / max(1, seen), error / max(1, count)))
         worst = export(model, args.out)
         print("  wrote {} (worst accumulator {:.0f} of 32767)".format(args.out, worst))
     return 0
