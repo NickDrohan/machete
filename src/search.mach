@@ -10,6 +10,7 @@
 
 use std.print;
 use std.sync.atomic;
+use std.system.os;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
@@ -119,6 +120,7 @@ fun reported_nodes(s: *Search) i64 {
 # movetime: milliseconds for this move
 # wtime:    white's remaining clock, and so on
 # infinite: search until stopped
+# ponder:   search the expected reply until ponderhit or stop
 pub rec Limits {
     depth:    i64;
     movetime: i64;
@@ -127,22 +129,30 @@ pub rec Limits {
     winc:     i64;
     binc:     i64;
     infinite: u8;
+    ponder:   u8;
 }
 
 # ---
-# nodes:    nodes visited, including quiescence
-# stop:     set from outside to abandon the search
-# deadline: monotonic millisecond after which to stop; 0 means no deadline
-# best:     best move of the last completed iteration
-# quiet:    suppress info lines (used by bench and tests)
+# nodes:     nodes visited, including quiescence
+# stop:      set from outside to abandon the search
+# deadline:  monotonic millisecond after which to stop; 0 means no deadline
+# best:      best move of the last completed iteration
+# ponder:    the reply expected to best, from the same iteration's PV
+# quiet:     suppress info lines (used by bench and tests)
+# pondering: 1 while the search is pondering. Set by the caller before think
+#            starts and cleared by ponderhit, never by think itself: a
+#            ponderhit that arrives before the search thread runs must not
+#            be lost.
 pub rec Search {
     nodes:         i64;
     stop:          i64;
     deadline:      i64;
     started:       i64;
     best:          Move;
+    ponder:        Move;
     depth_reached: i64;
     quiet:         u8;
+    pondering:     i64;
     # which accumulator stack this search owns; every thread needs its own
     thread_id: i64;
     killers:   [64][2]Move;
@@ -163,7 +173,9 @@ pub fun reset(s: *Search) {
     s.thread_id = 0;
     s.stop      = 0;
     s.deadline  = 0;
+    s.pondering = 0;
     s.best      = mv.NONE;
+    s.ponder    = mv.NONE;
     var i: i64 = 0;
     for (i < MAX_PLY) {
         s.killers[i][0] = mv.NONE;
@@ -234,10 +246,12 @@ fun out_of_time(s: *Search) bool {
         s.stop = 1;
         ret true;
     }
-    if (s.deadline == 0) { ret false; }
     # the clock is read every 2048 nodes; reading it per node costs more than it saves
     if ((s.nodes & 2047) != 0) { ret false; }
-    if (clock.now_ms() >= s.deadline) {
+    # atomic because ponderhit sets it from the UCI thread mid-search
+    val deadline: i64 = atomic.load(?s.deadline);
+    if (deadline == 0) { ret false; }
+    if (clock.now_ms() >= deadline) {
         s.stop = 1;
         ret true;
     }
@@ -672,7 +686,7 @@ fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
 }
 
 # how long to spend on this move, from the clock the GUI reported
-fun budget_ms(p: *Position, limits: *Limits) i64 {
+pub fun budget_ms(p: *Position, limits: *Limits) i64 {
     if (limits.movetime > 0) { ret limits.movetime; }
     var remaining: i64 = limits.wtime;
     var increment: i64 = limits.winc;
@@ -689,7 +703,22 @@ fun budget_ms(p: *Position, limits: *Limits) i64 {
     ret budget;
 }
 
+# the opponent played the move being pondered: from now on this is a normal
+# search, with `budget` milliseconds on the clock (0 for no deadline).
+# Called from the UCI thread while the search runs, so the budget must have
+# been worked out before the search started - the search thread is making
+# and unmaking moves on the position, and its side to move is not stable.
+pub fun ponderhit(s: *Search, budget: i64) {
+    if (atomic.load(?s.pondering) == 0) { ret; }
+    if (budget > 0)                     { atomic.store(?s.deadline, clock.now_ms() + budget); }
+    atomic.store(?s.pondering, 0);
+}
+
 # search until the limits say stop; returns the best move and sets s.best
+#
+# a ponder search is started with s.pondering already set (see Search); it
+# runs without a deadline, and when it runs out of depth it waits for
+# ponderhit or stop rather than answering early, which the protocol forbids.
 pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     init_tables();
     val start: i64 = clock.now_ms();
@@ -697,10 +726,15 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     s.stop          = 0;
     s.started       = start;
     s.best          = mv.NONE;
+    s.ponder        = mv.NONE;
     s.depth_reached = 0;
     s.deadline      = 0;
     val budget: i64 = budget_ms(p, limits);
-    if (budget > 0 && limits.infinite == 0) { s.deadline = start + budget; }
+    # read after the deadline was cleared, so a ponderhit that lands in between
+    # is seen here rather than overwritten
+    if (budget > 0 && limits.infinite == 0 && atomic.load(?s.pondering) == 0) {
+        s.deadline = start + budget;
+    }
 
     var max_depth: i64 = limits.depth;
     if (max_depth <= 0 || max_depth > MAX_PLY - 2) { max_depth = MAX_PLY - 2; }
@@ -750,21 +784,36 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         }
         if (s.stop != 0) { brk; }
         previous = score;
-        if (s.pv_len[0] > 0) { s.best = s.pv[0][0]; }
+        # the ponder move comes from the same completed iteration as the best
+        # move; an aborted iteration can leave pv[0] half overwritten
+        if (s.pv_len[0] > 0) {
+            s.best   = s.pv[0][0];
+            s.ponder = mv.NONE;
+            if (s.pv_len[0] > 1) { s.ponder = s.pv[0][1]; }
+        }
         s.depth_reached = depth;
         val elapsed: i64 = clock.now_ms() - start;
         print_info(s, depth, score, elapsed);
-        # stop early when a mate is proven or the next iteration cannot finish.
-        # A mate is proven only once the iteration is as deep as the mate is
-        # long. Shallower, the score is the table's word from an earlier move:
-        # stopping on it replayed the table's move for fifty moves and drew
-        # queen and bishop against a bare king (ladder 4, Rybka game 20).
-        var mate_plies: i64 = INFINITE;
-        if (score > MATE_FOUND)                                            { mate_plies = MATE - score; }
-        if (score < 0 - MATE_FOUND)                                        { mate_plies = MATE + score; }
-        if (mate_plies <= depth)                                           { brk; }
-        if (s.deadline != 0 && clock.now_ms() + elapsed / 2 >= s.deadline) { brk; }
+        # while pondering there is no clock to save and nothing may be answered,
+        # so neither early stop applies
+        if (atomic.load(?s.pondering) == 0) {
+            # stop early when a mate is proven or the next iteration cannot finish.
+            # A mate is proven only once the iteration is as deep as the mate is
+            # long. Shallower, the score is the table's word from an earlier move:
+            # stopping on it replayed the table's move for fifty moves and drew
+            # queen and bishop against a bare king (ladder 4, Rybka game 20).
+            var mate_plies: i64 = INFINITE;
+            if (score > MATE_FOUND)     { mate_plies = MATE - score; }
+            if (score < 0 - MATE_FOUND) { mate_plies = MATE + score; }
+            if (mate_plies <= depth)    { brk; }
+            val deadline: i64 = atomic.load(?s.deadline);
+            if (deadline != 0 && clock.now_ms() + elapsed / 2 >= deadline) { brk; }
+        }
         depth = depth + 1;
+    }
+    # a ponder search that ran out of depth holds its answer until told
+    for (atomic.load(?s.pondering) != 0 && atomic.load(?s.stop) == 0) {
+        os.sleep(1000000);
     }
     pos.detach(p);
     ret s.best;

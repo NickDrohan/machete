@@ -254,6 +254,14 @@ parts a normal game never reaches: `stop` returns a move in well under 500 ms, `
 answered mid-search, malformed FENs and illegal moves in a `position` command do not take the
 engine down, and mates are reported as `score mate` rather than centipawns.
 
+Pondering works. `bestmove` names the reply the engine expects (`bestmove e2e4 ponder e7e5`,
+taken from the same completed iteration as the move), and `go ponder` searches that reply with
+no deadline and never answers on its own - not even on running out of depth - until `ponderhit`
+turns it into a normal search with the clock starting then, or `stop` ends it. The budget and the
+pondering flag are both set before the search thread starts, so a `ponderhit` that arrives
+straight after `go ponder` is not lost. `protocol.py` checks each of those claims, and each check
+was seen to fail against an engine broken on purpose.
+
 `harness/match.py` plays engine against engine through python-chess, alternating colours and
 playing each opening from both sides. With one engine it is a self-play soak test where any
 illegal move, crash or hang fails the run; with two it prints an Elo difference with an error
@@ -264,7 +272,7 @@ bar.
 [`games/vs-qwen3.8-27b.pgn`](games/vs-qwen3.8-27b.pgn): the engine won a pawn on move 3. Cloud
 models are refused so positions never leave this machine.
 
-The `Hash` option is reported but fixed at 64 MB: the table is a static array, so the engine
+The `Hash` option is reported but fixed at 128 MB: the table is a static array, so the engine
 allocates nothing at all, at startup or during search.
 
 ## Watching it play
@@ -496,7 +504,7 @@ Leela's scores through the teachers' own medians (`leela_scale.json`) rather tha
 
 ## Deliberately not built
 
-No opening book, endgame tablebases or pondering. Gated on windows-x86_64 only.
+No opening book or endgame tablebases. Gated on windows-x86_64 only.
 
 ## Working on this repository
 

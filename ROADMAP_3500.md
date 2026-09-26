@@ -445,7 +445,7 @@ inside one training run without a tournament saying it helps.
 | X-01 | MACH | **Done:** mach 5.11.0, std 7.1.0, the widen written as a literal at speed parity (commit 470c86a). Was: bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
 | X-02 | MACH | `#[embed]` the network into the binary | A |
 | X-03 | MACH | One owner for `MAX_THREADS` | A |
-| X-04 | MACH | Make `go ponder` safe | B |
+| X-04 | MACH | **Done** (`wp/X-04-ponder`). `go ponder` waits for `ponderhit` or `stop` and never answers alone; `bestmove ... ponder ...` from the same iteration; budget and flag set before the search thread starts, so an immediate `ponderhit` is not lost. Bench unchanged (130,660); four protocol checks, two perturbed to failure. The earlier attempt, parked on `wip/repetition-penalty`, lost an immediate `ponderhit` and read the side to move from a position the search thread was changing | B |
 
 ---
 

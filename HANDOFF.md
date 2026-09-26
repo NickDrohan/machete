@@ -140,7 +140,7 @@ data. Wider accumulator, piece-count output buckets and mirrored king
 conditioning are all unexplored.
 
 **Known small debts:** `MAX_THREADS` is duplicated rather than having one
-owner. `go ponder` still misbehaves and wants about ten lines to make safe.
+owner. (`go ponder` is fixed - ROADMAP X-04.)
 `Hash` is reported but fixed at 128 MB (2^23 slots). The network is loaded
 from a file at runtime - `machete.nnue` beside the executable, or `EvalFile` -
 and `#[embed]` would fold it into the binary so a release is one file.

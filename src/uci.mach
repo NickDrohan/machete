@@ -49,6 +49,9 @@ var thinking: i64 = 0;
 # how many search threads `go` uses; set by setoption name Threads
 var threads: i64 = 1;
 
+# the clock budget a ponder search takes on at ponderhit
+var ponder_budget: i64 = 0;
+
 rec Tokens {
     count: i64;
     item:  [1024]str;
@@ -83,8 +86,17 @@ fun run_search(arg: *u8) {
     val best:    Move = smp.think(?ENGINE, ?GAME, ?LIMITS, threads);
     var spelled: [6]u8;
     mv.to_uci(best, ?spelled[0]);
-    if (best == mv.NONE) { print.println("bestmove 0000"); }
-    or                   { print.printlnf("bestmove {}", ?spelled[0]); }
+    if (best == mv.NONE) {
+        print.println("bestmove 0000");
+    }
+    or (ENGINE.ponder != mv.NONE) {
+        var reply: [6]u8;
+        mv.to_uci(ENGINE.ponder, ?reply[0]);
+        print.printlnf("bestmove {} ponder {}", ?spelled[0], ?reply[0]);
+    }
+    or {
+        print.printlnf("bestmove {}", ?spelled[0]);
+    }
     atomic.store(?thinking, 0);
 }
 
@@ -103,6 +115,10 @@ fun halt() {
 fun start_search() {
     halt();
     search.reset(?ENGINE);
+    # both decided here, before the search thread exists: see search.ponderhit
+    ponder_budget = 0;
+    if (LIMITS.infinite == 0) { ponder_budget = search.budget_ms(?GAME, ?LIMITS); }
+    ENGINE.pondering = LIMITS.ponder::i64;
     atomic.store(?thinking, 1);
     var config: thread.Config;
     thread.config_default(?config);
@@ -177,7 +193,7 @@ fun set_position(t: *Tokens) {
     }
 }
 
-# go [depth n] [movetime ms] [wtime ms] [btime ms] [winc ms] [binc ms] [infinite]
+# go [depth n] [movetime ms] [wtime ms] [btime ms] [winc ms] [binc ms] [infinite] [ponder]
 fun parse_go(t: *Tokens) {
     LIMITS.depth    = 0;
     LIMITS.movetime = 0;
@@ -186,6 +202,7 @@ fun parse_go(t: *Tokens) {
     LIMITS.winc     = 0;
     LIMITS.binc     = 0;
     LIMITS.infinite = 0;
+    LIMITS.ponder   = 0;
     var i: i64 = 1;
     for (i < t.count) {
         val word: str = t.item[i];
@@ -196,6 +213,7 @@ fun parse_go(t: *Tokens) {
         or (str_equals(word, "winc"))     { LIMITS.winc = token_i64(t, i + 1, 0); }
         or (str_equals(word, "binc"))     { LIMITS.binc = token_i64(t, i + 1, 0); }
         or (str_equals(word, "infinite")) { LIMITS.infinite = 1; }
+        or (str_equals(word, "ponder"))   { LIMITS.ponder = 1; }
         i = i + 1;
     }
 }
@@ -259,6 +277,8 @@ pub fun loop(exe: str) i64 {
             print.printlnf("option name Hash type spin default {} min {} max {}",
                 tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
+            # tells the GUI it may send go ponder; nothing in the engine changes with it
+            print.println("option name Ponder type check default false");
             if (DEFAULT_NET[0] != 0) {
                 print.printlnf("option name EvalFile type string default {}", ?DEFAULT_NET[0]);
             }
@@ -282,6 +302,9 @@ pub fun loop(exe: str) i64 {
         or (str_equals(command, "go")) {
             parse_go(?t);
             start_search();
+        }
+        or (str_equals(command, "ponderhit")) {
+            if (is_thinking()) { search.ponderhit(?ENGINE, ponder_budget); }
         }
         or (str_equals(command, "stop")) {
             halt();
@@ -375,5 +398,24 @@ test "uci: go parses its limits" {
     if (LIMITS.winc != 2000)    { ret 2; }
     if (LIMITS.movetime != 500) { ret 3; }
     if (LIMITS.infinite != 0)   { ret 4; }
+    if (LIMITS.ponder != 0)     { ret 5; }
+    ret 0;
+}
+
+test "uci: go ponder is parsed alongside the clock" {
+    var line: [64]u8;
+    var t:    Tokens;
+    val text: str = "go ponder wtime 120000 btime 90000";
+    var n:    i64 = 0;
+    for (text[n] != 0) {
+        line[n] = text[n];
+        n       = n + 1;
+    }
+    line[n] = 0;
+    split(?line[0], n, ?t);
+    parse_go(?t);
+    if (LIMITS.ponder != 1)     { ret 1; }
+    if (LIMITS.wtime != 120000) { ret 2; }
+    if (LIMITS.btime != 90000)  { ret 3; }
     ret 0;
 }
