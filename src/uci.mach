@@ -115,6 +115,7 @@ fun halt() {
 fun start_search() {
     halt();
     search.reset(?ENGINE);
+    tt.new_search();
     # both decided here, before the search thread exists: see search.ponderhit
     var none: search.Budget;
     ponder_budget = none;
