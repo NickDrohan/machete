@@ -412,8 +412,8 @@ the idea until it passes, which is how noise gets merged.
 | S-09 | Null move: extra reduction from `(eval - beta)`, and require `eval >= beta` | NMP block | B | +5..15 | S-02 |
 | S-10 | **Rejected, -9 +/- 18** (H0). SEE pruning at depth <= 6, quiets below -25d^2, captures below -90d. Retry with other thresholds only as a new candidate | move loop | B | +10..20 | - |
 | S-11 | Razoring at depth 1-2 | `search_node` | B | +5..10 | S-02 |
-| S-12 | **Singular extensions**, then double extensions and multi-cut | `search_node` | C | +20..50 | S-02 |
-| S-13 | **Correction history**: learned correction of static eval keyed by pawn structure | new table, eval call site | C | +15..35 | S-02 |
+| S-12 | **Candidate, SPRT-C-S12 queued** (`claude/s12`, bench 157988): singular extensions at depth >= 8 (bar = table score - 2*depth, half-depth search with the move excluded per ply) and multi-cut; double extensions not yet | `search_node` | C | +20..50 | S-02 |
+| S-13 | **Candidate, SPRT-C-S13 queued** (`claude/s13`, bench 131482): 8192 slots per side keyed by a multiplicative hash of the pawn bitboards, applied in `search_node` only, capped at 64 cp | new table, eval call site | C | +15..35 | S-02 |
 | S-14 | ProbCut | `search_node` | B | +5..15 | S-10 |
 | S-15 | Staged move generation (TT move, captures, killers, quiets) | `movegen.mach`, move loop | C | speed +5..15 | - |
 | S-16 | **Parked, unmeasured.** A repetition penalty (a repeated position scores +/-2000 by default) is on `wip/repetition-penalty`. Not mergeable as written: it refuses a draw by repetition even when losing, and stores a path-dependent score in the TT at full depth. If contempt is wanted, the candidate is a small draw score relative to the root side, off by default, with its own SPRT. The defect it aimed at is eval saturation (E-02), not search | `search_node` | B | uncertain, likely negative | - |
@@ -427,8 +427,8 @@ change did what it claimed.
 
 | id | change | tier | prior |
 |---|---|---|---|
-| T-01 | Soft and hard limits; do not start an iteration past the soft limit; honour `movestogo` | B | +15..40 |
-| T-02 | Scale the soft limit by best-move stability and by how much the score dropped | B | +10..20 |
+| T-01 | **Candidate with T-02, SPRT-C-T01 queued at 10+0.1** (`claude/t01`): soft aim remaining/25 + 3/4 increment, hard stop 5x the aim capped at a quarter of the clock, 20 ms overhead; movetime unchanged | B | +15..40 |
+| T-02 | **In T-01's candidate**: 2.0x the aim while the best move keeps changing down to 0.75x after four stable iterations, up to +50% for a falling score | B | +10..20 |
 | T-03 | Scale by the fraction of nodes spent on the best move | B | +5..15 |
 
 **Measure at 10+0.1 with the clock, never with `movetime`** - under `movetime`
@@ -452,10 +452,10 @@ architecture before training anything for it.**
 
 | id | change | tier | prior | needs |
 |---|---|---|---|---|
-| N-01 | A format version in the network file header; the loader rejects a mismatch by name | B | prerequisite | - |
+| N-01 | **Done with N-04**: format `MCHNNUE2`, the header records hidden width and bucket count, the loader refuses a mismatch; `match.py` refuses to play when an engine cannot read its EvalFile | B | prerequisite | - |
 | N-02 | SCReLU activation (squared clipped ReLU) in place of CReLU | C | +10..30 | N-01 |
-| N-03 | Wider accumulator: 256 -> 512, then 1024; check nps cost on a quiet machine | C | +30..80 | N-01, X-01 helps |
-| N-04 | Output buckets by piece count (8) | C | +15..30 | N-01 |
+| N-03 | **512 candidate** (`claude/n03-512`): 26% fewer nodes/s (526k against 714k); TRAIN-C3 and SPRT-C-NET3 (against the 256-wide C2) queued | C | +30..80 | N-01, X-01 helps |
+| N-04 | **Built** (`71ed4e4`): 8 output layers by (pieces - 2) / 4; network A carried over with its one layer in every bucket, evals identical; TRAIN-C2 and SPRT-C-NET2 queued | C | +15..30 | N-01 |
 | N-05 | **King buckets with horizontal mirroring**, plus an accumulator cache so a king move does not force a full refresh | C | +50..100 | N-01, data |
 | N-06 | A second hidden layer | C | uncertain | N-05 |
 
@@ -471,9 +471,9 @@ that may be the data, not the idea (see D-02).
 | D-01 | **Done.** SIZE-02, 2,000 games: 42M +131, 20M +83, 8M +4, 2M -201. **Not saturated** - about +100 Elo per doubling from 2M to 8M, +60 to 20M, +45 from 20M to 42M. Returns are diminishing, so data alone will not reach 3500, but the next doubling is still worth roughly +35 to +45 | - | justifies D-02 |
 | D-02 | Generate at scale: 500M, then 1B positions, one consistent pipeline, overnight only | B | about 100 machine-hours per 500M |
 | D-03 | Race two pipelines on equal budgets: Stockfish labels (current) against machete self-play at fixed nodes (needs P0-2) | B | self-play is how most top open engines train |
-| D-04 | Trainer throughput: profile `train.py` at 290k positions a second; evaluate a faster loader or an external trainer that can export our format | B | at 1B positions, 14 epochs is 13 hours per network |
+| D-04 | **Done** (`2417f24`): the corpus lives on the GPU; 1.38M positions/s unpacked, 1.16M packed; 14 epochs of 118.6M in about 25 minutes | B | at 1B positions, 14 epochs is 13 hours per network |
 | D-05 | Fold `data/train3.bin` (21.3M, unused) into the corpus | A | cheap |
-| D-06 | Compressed storage once past about 200M positions | B | 70 bytes a record is 70 GB per billion |
+| D-06 | **Done on the GPU** (`b560d0e`): 28 bytes a position, about 190M on an 8 GB card; several corpora per run, `PATH@N` for the first N records | B | 70 bytes a record is 70 GB per billion |
 | D-07 | **Teacher panel from LABEL-01.** At 1,500 nodes Berserk (.689) and Alexandria (.683) track deep evaluations far worse than Stockfish (.872), PlentyChess (.871), Reckless (.861) or Obsidian (.859), yet supplied about 40% of network A's labels. Generate an equal-size corpus from the better panel and SPRT the two networks. The most direct test of "label consistency beats depth" | B | cheap relative to its prior; decides D-02's panel |
 
 Remember HIST-06: an outside corpus with a different label scale lost 159 Elo.
