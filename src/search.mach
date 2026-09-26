@@ -171,9 +171,13 @@ pub rec Search {
     played:  [64]Move;
     mover:   [64]u8;
     # each node's static evaluation, by ply, or NO_EVAL when it was in check
-    evals:  [64]i64;
-    pv:     [64][64]Move;
-    pv_len: [64]i64;
+    evals: [64]i64;
+    # whether the side to move at this ply is in check, noted by the parent
+    # that just worked it out: 0 not known, 1 not in check, 2 in check (see
+    # check_at)
+    known_check: [64]i64;
+    pv:          [64][64]Move;
+    pv_len:      [64]i64;
 }
 
 pub fun reset(s: *Search) {
@@ -328,8 +332,17 @@ fun pick(list: *MoveList, scores: *i64, index: i64) {
     }
 }
 
+# whether the side to move is in check: the parent's note when it left one
+# (Search.known_check), worked out here otherwise
+fun check_at(p: *Position, noted: i64) bool {
+    if (noted != 0) { ret noted == 2; }
+    ret pos.in_check(p);
+}
+
 fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
-    s.nodes = s.nodes + 1;
+    val noted: i64 = s.known_check[ply];
+    s.known_check[ply] = 0;
+    s.nodes            = s.nodes + 1;
     if (out_of_time(s)) { ret 0; }
     var alpha: i64 = alpha_in;
 
@@ -357,7 +370,7 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
     # regardless, so a capture that gave check was scored as if the checked
     # side could ignore it. In check it now searches every evasion, prunes
     # none of them, and scores no legal move as mate.
-    val in_check: bool = pos.in_check(p);
+    val in_check: bool = check_at(p, noted);
     var stand:    i64  = 0 - INFINITE;
     if (!in_check) {
         # standing pat: the side to move is not obliged to capture
@@ -445,16 +458,22 @@ fun table_score(score: i64, ply: i64) i64 {
 }
 
 fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i64, ply: i64, allow_null: bool) i64 {
-    s.pv_len[ply] = 0;
+    # read before any early return, so a note is never left for another call
+    val noted: i64 = s.known_check[ply];
+    s.known_check[ply] = 0;
+    s.pv_len[ply]      = 0;
     if (out_of_time(s))        { ret 0; }
     if (ply > 0 && is_draw(p)) { ret 0; }
     if (ply >= MAX_PLY - 1)    { ret eval.evaluate(p); }
 
-    val in_check: bool = pos.in_check(p);
+    val in_check: bool = check_at(p, noted);
     var depth:    i64  = depth_in;
     # a king in check is never quiesced: the position is not quiet by definition
-    if (in_check)   { depth = depth + 1; }
-    if (depth <= 0) { ret quiesce(s, p, alpha_in, beta, ply); }
+    if (in_check) { depth = depth + 1; }
+    if (depth <= 0) {
+        s.known_check[ply] = 1 + in_check::i64;
+        ret quiesce(s, p, alpha_in, beta, ply);
+    }
 
     s.nodes = s.nodes + 1;
     var alpha: i64  = alpha_in;
@@ -563,7 +582,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         # that is only knowable after the move. Both prunes below therefore sit
         # after make - pruning on the move alone lost a mate in two twice, once
         # for futility and once for late move pruning.
-        val tactical: bool = mv.is_capture(m) || mv.is_promotion(m) || pos.in_check(p);
+        # worked out for every move, not only quiet ones: the child needs it
+        # on entry, and takes it from here rather than working it out again
+        val gives:    bool = pos.in_check(p);
+        val tactical: bool = mv.is_capture(m) || mv.is_promotion(m) || gives;
         if (futile && legal > 0 && !tactical) {
             pos.unmake(p);
             i = i + 1;
@@ -586,7 +608,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
         var score: i64 = 0;
         if (legal == 1) {
-            score = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
+            s.known_check[ply + 1] = 1 + gives::i64;
+            score                  = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
         }
         or {
             # late move reduction: quiet moves ordered last are searched
@@ -618,12 +641,15 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 # never reduce straight into quiescence: leave a ply to look
                 if (reduction > depth - 2) { reduction = depth - 2; }
             }
-            score = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
+            s.known_check[ply + 1] = 1 + gives::i64;
+            score                  = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
             if (score > alpha && reduction > 0) {
-                score = 0 - search_node(s, p, depth - 1, 0 - alpha - 1, 0 - alpha, ply + 1, true);
+                s.known_check[ply + 1] = 1 + gives::i64;
+                score                  = 0 - search_node(s, p, depth - 1, 0 - alpha - 1, 0 - alpha, ply + 1, true);
             }
             if (score > alpha && score < beta) {
-                score = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
+                s.known_check[ply + 1] = 1 + gives::i64;
+                score                  = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
             }
         }
         pos.unmake(p);
