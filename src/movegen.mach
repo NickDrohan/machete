@@ -253,6 +253,9 @@ test nnue_incremental_accumulator_matches_fresh_every_move {
         nn.FEATURE_BIAS[i] = (rng.below(?r, 601)::i64 - 300)::i16;
         i                  = i + 1;
     }
+    # weights written by hand, not loaded: the rebuild cache must not keep
+    # sums made with another test's weights
+    nn.forget_cache();
 
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
@@ -282,7 +285,7 @@ test nnue_incremental_accumulator_matches_fresh_every_move {
         var fresh: Position = p;
         pos.attach(?fresh, nn.stack(2));
         if (played % 2 == 0) {
-            nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
+            nn.materialise(p.accs, p.acc_top, ?p.pieces[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
             if (!accs_equal(?p.accs[p.acc_top], ?fresh.accs[0])) { ret 3; }
         }
         played = played + 1;
@@ -297,7 +300,7 @@ test nnue_incremental_accumulator_matches_fresh_every_move {
     var start: Position;
     if (!pos.set_fen(?start, pos.START_FEN)) { ret 5; }
     pos.attach(?start, nn.stack(1));
-    nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
+    nn.materialise(p.accs, p.acc_top, ?p.pieces[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
     if (!accs_equal(?p.accs[p.acc_top], ?start.accs[0])) { ret 6; }
     if (p.acc_top != 0)                                  { ret 7; }
     # four recorded changes is the ceiling nnue.mach argues for; this is the

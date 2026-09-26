@@ -225,7 +225,7 @@ fun side_score(p: *Position, color: u8, phase: i64) i64 {
 # design, so nothing may compare scores across the boundary.
 pub fun evaluate(p: *Position) i64 {
     if (nn.loaded && p.accs != nil) {
-        nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(p, pos.WHITE), pos.king_square(p, pos.BLACK));
+        nn.materialise(p.accs, p.acc_top, ?p.pieces[0], pos.king_square(p, pos.WHITE), pos.king_square(p, pos.BLACK));
         ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])) + mop_up(p);
     }
     ret classical(p) + mop_up(p);
