@@ -140,12 +140,12 @@ fun mate_parse(p: *Position, uci: *u8) Move {
 # Every position below was checked with python-chess first, after two earlier
 # attempts used knights that did not defend the square I thought they did.
 
-test "see: a free pawn is worth a pawn" {
+test free_pawn_worth_pawn {
     if (see_of("4k3/8/8/8/3p4/8/8/3RK3 w - - 0 1", "d1d4") != 100) { ret 1; }
     ret 0;
 }
 
-test "see: taking a defended pawn with a rook loses the exchange" {
+test taking_defended_pawn_with_rook_loses_exchange {
     # the pawn on d4 is defended by a pawn on c5: RxP, PxR is 100 for 500
     if (see_of("4k3/8/8/2p5/3p4/8/8/3RK3 w - - 0 1", "d1d4") != 100 - 500) { ret 1; }
     # the same shape with a knight defender, and a rook that is worth more
@@ -153,12 +153,12 @@ test "see: taking a defended pawn with a rook loses the exchange" {
     ret 0;
 }
 
-test "see: a knight taking a defended pawn loses a knight for a pawn" {
+test knight_taking_defended_pawn_loses_knight_pawn {
     if (see_of("4k3/5n2/8/4p3/8/5N2/8/4K3 w - - 0 1", "f3e5") != 100 - 320) { ret 1; }
     ret 0;
 }
 
-test "see: an x-ray attacker behind the capturer is counted" {
+test x_ray_attacker_behind_capturer_counted {
     # rook d2 takes d5, knight f6 recaptures, and the queen on d1 - which only
     # sees d5 once the rook has left - takes the knight
     val backed: i64 = see_of("4k3/8/5n2/3p4/8/8/3R4/3QK3 w - - 0 1", "d2d5");
@@ -166,7 +166,7 @@ test "see: an x-ray attacker behind the capturer is counted" {
     ret 0;
 }
 
-test "see: winning captures are separated from losing ones" {
+test winning_captures_separated_from_losing_ones {
     var p: Position;
     if (!pos.set_fen(?p, "4k3/8/5n2/3p4/8/8/3R4/3QK3 w - - 0 1")) { ret 1; }
     val losing: Move = movegen.parse_uci(?p, "d2d5");

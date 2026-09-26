@@ -37,7 +37,7 @@ pub fun below(r: *Rng, n: u64) u64 {
     ret (hi * n) >> 32;
 }
 
-test "rng: matches the splitmix64 reference sequence for seed 0" {
+test matches_splitmix64_reference_for_seed_0 {
     var r: Rng = seeded(0);
     if (next(?r) != 0xE220A8397B1DCDAF) { ret 1; }
     if (next(?r) != 0x6E789E6AA1B965F4) { ret 2; }
@@ -45,7 +45,7 @@ test "rng: matches the splitmix64 reference sequence for seed 0" {
     ret 0;
 }
 
-test "rng: below stays in range" {
+test below_stays_range {
     var r: Rng = seeded(7);
     var i: i64 = 0;
     for (i < 10000) {

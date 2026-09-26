@@ -600,7 +600,7 @@ pub fun load(path: str) bool {
 var TEST_VALUES:  [HIDDEN]i16;
 var TEST_WEIGHTS: [HIDDEN]i16;
 
-test "nnue: the pmaddwd kernel sums exactly what the portable loop does" {
+test pmaddwd_kernel_sums_exactly_portable_loop {
     # hidden values well outside 0..QA, so both clamps are exercised, and
     # weights across the whole range the quantizer allows. The kernel is
     # unrolled for HIDDEN = 256: a wider build fails here, not in a game.

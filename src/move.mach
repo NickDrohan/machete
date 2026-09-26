@@ -66,7 +66,7 @@ pub fun to_uci(m: Move, out: *u8) {
     }
 }
 
-test "move: fields round-trip" {
+test fields_round_trip {
     val m: Move = make(12, 28, DOUBLE_PUSH);
     if (from(m) != 12 || to(m) != 28 || flag(m) != DOUBLE_PUSH) { ret 1; }
     if (is_capture(m) || is_promotion(m))                       { ret 2; }
@@ -77,7 +77,7 @@ test "move: fields round-trip" {
     ret 0;
 }
 
-test "move: uci spelling" {
+test uci_spelling {
     var buf: [6]u8;
     to_uci(make(12, 28, DOUBLE_PUSH), ?buf[0]);
     if (buf[0] != 'e' || buf[1] != '2' || buf[2] != 'e' || buf[3] != '4' || buf[4] != 0) { ret 1; }

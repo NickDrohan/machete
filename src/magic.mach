@@ -416,12 +416,12 @@ pub fun embedded_are_valid() bool {
     ret true;
 }
 
-test "magic: the embedded constants are valid without the search" {
+test embedded_constants_valid_without_search {
     if (!embedded_are_valid()) { ret 1; }
     ret 0;
 }
 
-test "magic: every square and occupancy matches the ray walker" {
+test every_square_occupancy_matches_ray_walker {
     init();
     var r:  rng.Rng = rng.seeded(99);
     var sq: i64     = 0;
@@ -446,7 +446,7 @@ test "magic: every square and occupancy matches the ray walker" {
     ret 0;
 }
 
-test "magic: every subset of a mask is exact" {
+test every_subset_mask_exact {
     init();
     # exhaustive for two squares, one central and one in a corner
     var which: i64 = 0;

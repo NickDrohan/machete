@@ -85,7 +85,7 @@ pub fun queen_rays(sq: i64, occ: u64) u64 {
     ret bishop_rays(sq, occ) | rook_rays(sq, occ);
 }
 
-test "attacks: leapers from corners and centre" {
+test leapers_from_corners_centre {
     init();
     if (bb.count(KNIGHT[0]) != 2)  { ret 1; }
     if (bb.count(KNIGHT[27]) != 8) { ret 2; }
@@ -97,7 +97,7 @@ test "attacks: leapers from corners and centre" {
     ret 0;
 }
 
-test "attacks: sliders stop at the first blocker" {
+test sliders_stop_first_blocker {
     init();
     # rook on a1, empty board: 14 squares
     if (bb.count(rook_rays(0, 0)) != 14) { ret 1; }
