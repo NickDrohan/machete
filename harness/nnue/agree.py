@@ -27,6 +27,24 @@ def positions(count, seed):
     yield chess.Board("8/8/8/4k3/8/8/4K3/8 w - - 0 1")
     yield chess.Board("8/P7/8/8/8/8/7p/K6k w - - 0 1")
     rng = random.Random(seed)
+    # every output layer: random play rarely thins a board to twelve pieces,
+    # so boards are also stripped at random to each count from 3 to 32
+    for target in range(3, 33):
+        while True:
+            board = chess.Board()
+            for _ in range(rng.randint(0, 30)):
+                moves = list(board.legal_moves)
+                if not moves:
+                    break
+                board.push(rng.choice(moves))
+            others = [sq for sq, piece in board.piece_map().items()
+                      if piece.piece_type != chess.KING]
+            rng.shuffle(others)
+            for square in others[:max(0, len(board.piece_map()) - target)]:
+                board.remove_piece_at(square)
+            if len(board.piece_map()) == target and board.is_valid():
+                yield board
+                break
     made = 0
     while made < count:
         board = chess.Board()
@@ -57,9 +75,10 @@ def main():
     checked = 0
     for board in positions(args.positions, args.seed):
         fen = board.fen()
+        pieces = reference.pieces_of(board)
         expected = reference.forward(
-            net, reference.accumulate(net, reference.pieces_of(board)),
-            reference.WHITE if board.turn == chess.WHITE else reference.BLACK)
+            net, reference.accumulate(net, pieces),
+            reference.WHITE if board.turn == chess.WHITE else reference.BLACK, len(pieces))
         out = subprocess.check_output([engine, "nnue", net_path] + fen.split())
         got = int(out.decode("ascii").strip())
         if got != expected:

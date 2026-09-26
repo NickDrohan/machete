@@ -32,7 +32,7 @@ import reference
 from reference import RECORD
 
 INPUTS = reference.INPUTS
-HIDDEN = reference.HIDDEN
+BUCKETS = reference.BUCKETS
 QA = reference.QA
 QB = reference.QB
 SCALE = reference.SCALE
@@ -43,19 +43,23 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, hidden):
         super(Net, self).__init__()
-        self.features = nn.EmbeddingBag(INPUTS + 1, HIDDEN, mode="sum", padding_idx=PAD)
-        self.feature_bias = nn.Parameter(torch.zeros(HIDDEN))
-        self.out = nn.Linear(2 * HIDDEN, 1)
+        self.features = nn.EmbeddingBag(INPUTS + 1, hidden, mode="sum", padding_idx=PAD)
+        self.feature_bias = nn.Parameter(torch.zeros(hidden))
+        # one output layer per band of piece counts (reference.bucket); all
+        # are computed and the position's own is picked, which on a GPU costs
+        # less than gathering eight weight rows per position
+        self.out = nn.Linear(2 * hidden, BUCKETS)
         nn.init.uniform_(self.features.weight, -0.01, 0.01)
         with torch.no_grad():
             self.features.weight[PAD].zero_()
 
-    def forward(self, us, them):
+    def forward(self, us, them, bucket):
         ours = torch.clamp(self.features(us) + self.feature_bias, 0.0, 1.0)
         theirs = torch.clamp(self.features(them) + self.feature_bias, 0.0, 1.0)
-        return self.out(torch.cat([ours, theirs], dim=1)).squeeze(1)
+        every = self.out(torch.cat([ours, theirs], dim=1))
+        return every.gather(1, bucket[:, None]).squeeze(1)
 
     def clip_weights(self):
         with torch.no_grad():
@@ -108,11 +112,14 @@ class Corpus(object):
         self.slots = torch.arange(32, device=device)[None, :]
 
     def features(self, index):
-        """reference.feature_indices, on the device, with the pieces in square order."""
+        """reference.feature_indices, on the device, with the pieces in square
+        order, and each position's output bucket (reference.bucket)."""
         bits = (self.occupied[index][:, None] >> self.squares) & 1
         # occupied squares first, each group in ascending order
         squares = torch.argsort(1 - bits, dim=1, stable=True)[:, :32]
-        live = self.slots < bits.sum(dim=1)[:, None]
+        count = bits.sum(dim=1)
+        live = self.slots < count[:, None]
+        bucket = torch.clamp((count - 2) // 4, 0, BUCKETS - 1)
         codes = self.codes[index]
         pieces = torch.stack([codes & 15, codes >> 4], dim=2).reshape(-1, 32).long()
         white = pieces * 64 + squares
@@ -121,7 +128,7 @@ class Corpus(object):
         us = torch.where(black_to_move, black, white)
         them = torch.where(black_to_move, white, black)
         pad = torch.full_like(us, INPUTS)
-        return torch.where(live, us, pad), torch.where(live, them, pad)
+        return torch.where(live, us, pad), torch.where(live, them, pad), bucket
 
     def targets(self, index):
         """The number the network is asked to produce, as a win probability."""
@@ -132,8 +139,8 @@ class Corpus(object):
     def batches(self, order, size):
         for at in range(0, len(order) - size + 1, size):
             index = torch.from_numpy(np.sort(order[at:at + size])).to(self.device)
-            us, them = self.features(index)
-            yield us, them, self.targets(index)
+            us, them, bucket = self.features(index)
+            yield us, them, bucket, self.targets(index)
 
 
 def pack(rows):
@@ -170,10 +177,10 @@ def export(model, path):
     with torch.no_grad():
         fw = model.features.weight[:INPUTS].cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
-        ow = model.out.weight[0].cpu().numpy() * QB
-        ob = float(model.out.bias[0]) * QA * QB
+        ow = model.out.weight.cpu().numpy() * QB
+        ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * QB
 
-    fw, fb, ow = np.rint(fw), np.rint(fb), np.rint(ow)
+    fw, fb, ow, ob = np.rint(fw), np.rint(fb), np.rint(ow), np.rint(ob)
     for name, array in (("feature weights", fw), ("feature bias", fb),
                         ("output weights", ow)):
         if np.abs(array).max() > 32767:
@@ -186,7 +193,7 @@ def export(model, path):
         raise SystemExit("an accumulator could reach {:.0f}, past int16".format(worst))
 
     reference.save(path, fw.astype(np.int16), fb.astype(np.int16),
-                   ow.astype(np.int16), int(round(ob)))
+                   ow.astype(np.int16), [int(b) for b in ob])
     return worst
 
 
@@ -194,6 +201,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
     parser.add_argument("--out", default="machete.nnue")
+    parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
+                        help="hidden width; the engine must be built with the same")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch", type=int, default=16384)
     parser.add_argument("--lr", type=float, default=0.001)
@@ -229,7 +238,7 @@ def main():
 
     partial = args.out + ".partial"
     corpus = Corpus(sources, device)
-    model = Net().to(device)
+    model = Net(args.hidden).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
     loss_of = nn.MSELoss()
@@ -240,8 +249,8 @@ def main():
         # the loss stays on the device and is read back every 100 steps;
         # reading it every step made the CPU wait on the GPU each batch
         started, seen, running = time.time(), 0, torch.zeros((), device=device)
-        for us, them, target in corpus.batches(training, args.batch):
-            predicted = torch.sigmoid(model(us, them))
+        for us, them, bucket, target in corpus.batches(training, args.batch):
+            predicted = torch.sigmoid(model(us, them, bucket))
             loss = loss_of(predicted, target)
             optimiser.zero_grad()
             loss.backward()
@@ -259,8 +268,8 @@ def main():
         model.eval()
         with torch.no_grad():
             error, count = 0.0, 0
-            for us, them, target in corpus.batches(held_out, args.batch):
-                predicted = torch.sigmoid(model(us, them))
+            for us, them, bucket, target in corpus.batches(held_out, args.batch):
+                predicted = torch.sigmoid(model(us, them, bucket))
                 error += float(((predicted - target) ** 2).sum())
                 count += len(target)
         print("\repoch {} done: training loss {:.5f}, validation {:.5f}      ".format(

@@ -226,7 +226,7 @@ fun side_score(p: *Position, color: u8, phase: i64) i64 {
 pub fun evaluate(p: *Position) i64 {
     if (nn.loaded && p.accs != nil) {
         nn.materialise(p.accs, p.acc_top);
-        ret nn.output(?p.accs[p.acc_top], p.side);
+        ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1]));
     }
     ret classical(p);
 }

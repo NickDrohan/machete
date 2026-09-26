@@ -1,6 +1,7 @@
 # a quantized perspective network, evaluated incrementally
 #
-#   768 inputs -> 256 hidden per perspective (one shared weight matrix) -> 1
+#   768 inputs -> HIDDEN per perspective (one shared weight matrix) -> 1,
+#   through one of BUCKETS output layers chosen by how many pieces are left
 #
 # a feature is (colour, piece kind, square), all three relative to whichever
 # side is looking. seen from black the colours swap and the squares flip
@@ -37,6 +38,12 @@ use io_error: std.io.error;
 pub val INPUTS: i64 = 768;
 pub val HIDDEN: i64 = 256;
 
+# output layers, one per band of piece counts: an opening and a rook ending
+# want different things from the same hidden layer, and eight small output
+# layers cost nothing but a lookup. The band is (pieces - 2) / 4, kings
+# included, so 2-5 pieces use layer 0 and 30-32 use layer 7.
+pub val BUCKETS: i64 = 8;
+
 val QA:     i64 = 255; # a clipped-relu output of 1.0
 val QB:     i64 = 64; # an output weight of 1.0
 val HEADER: i64 = 32;
@@ -54,8 +61,8 @@ pub var FEATURE_WEIGHTS: [INPUTS * HIDDEN]i16;
 #[align(16)]
 pub var FEATURE_BIAS: [HIDDEN]i16;
 #[align(16)]
-pub var OUTPUT_WEIGHTS: [2 * HIDDEN]i16;
-pub var OUTPUT_BIAS:    i32 = 0;
+pub var OUTPUT_WEIGHTS: [BUCKETS * 2 * HIDDEN]i16;
+pub var OUTPUT_BIAS:    [BUCKETS]i32;
 
 # whether a network file has been read; until it has, the engine uses the
 # hand-written evaluation
@@ -260,17 +267,28 @@ fun accumulate(values: *i16, weights: *i16, running: i32x4) i32x4 {
     ret acc;
 }
 
-# centipawns from the side to move's point of view
+# which output layer a position with `pieces` pieces on the board uses
+pub fun bucket(pieces: i64) i64 {
+    var b: i64 = (pieces - 2) / 4;
+    if (b < 0)           { b = 0; }
+    if (b > BUCKETS - 1) { b = BUCKETS - 1; }
+    ret b;
+}
+
+# centipawns from the side to move's point of view, with `pieces` pieces on
+# the board
 #
 # the side to move's half of the hidden layer is read first, so the network
 # can learn that having the move is worth something.
-pub fun output(a: *Acc, side: u8) i64 {
-    val us:  i64   = side::i64;
-    var acc: i32x4 = splat_i32x4(0);
-    acc = accumulate(?a.v[us][0], ?OUTPUT_WEIGHTS[0], acc);
-    acc = accumulate(?a.v[us ^ 1][0], ?OUTPUT_WEIGHTS[HIDDEN], acc);
+pub fun output(a: *Acc, side: u8, pieces: i64) i64 {
+    val us:   i64   = side::i64;
+    val b:    i64   = bucket(pieces);
+    val base: i64   = b * 2 * HIDDEN;
+    var acc:  i32x4 = splat_i32x4(0);
+    acc = accumulate(?a.v[us][0], ?OUTPUT_WEIGHTS[base], acc);
+    acc = accumulate(?a.v[us ^ 1][0], ?OUTPUT_WEIGHTS[base + HIDDEN], acc);
     val total: i64 = hsum_i32x4(acc)::i64;
-    ret (total + OUTPUT_BIAS::i64) * SCALE / (QA * QB);
+    ret (total + OUTPUT_BIAS[b]::i64) * SCALE / (QA * QB);
 }
 
 fun u32_at(buf: *u8, at: i64) i64 {
@@ -292,7 +310,7 @@ fun read_body(f: fs.File) bool {
     var head: [32]u8;
     if (!read_exact(f, ?head[0], HEADER)) { ret false; }
 
-    val magic: str = "MCHNNUE1";
+    val magic: str = "MCHNNUE2";
     var i:     i64 = 0;
     for (i < 8) {
         if (head[i] != magic[i]) { ret false; }
@@ -305,16 +323,14 @@ fun read_body(f: fs.File) bool {
     if (u32_at(?head[0], 16) != QA)     { ret false; }
     if (u32_at(?head[0], 20) != QB)     { ret false; }
     val scale: i64 = u32_at(?head[0], 24);
-    if (scale < 1 || scale > 4000) { ret false; }
+    if (scale < 1 || scale > 4000)       { ret false; }
+    if (u32_at(?head[0], 28) != BUCKETS) { ret false; }
     SCALE = scale;
 
-    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2)) { ret false; }
-    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))             { ret false; }
-    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, 2 * HIDDEN * 2))       { ret false; }
-
-    var tail: [4]u8;
-    if (!read_exact(f, ?tail[0], 4)) { ret false; }
-    OUTPUT_BIAS = @((?tail[0]):~*i32);
+    if (!read_exact(f, (?FEATURE_WEIGHTS[0]):~*u8, INPUTS * HIDDEN * 2))     { ret false; }
+    if (!read_exact(f, (?FEATURE_BIAS[0]):~*u8, HIDDEN * 2))                 { ret false; }
+    if (!read_exact(f, (?OUTPUT_WEIGHTS[0]):~*u8, BUCKETS * 2 * HIDDEN * 2)) { ret false; }
+    if (!read_exact(f, (?OUTPUT_BIAS[0]):~*u8, BUCKETS * 4))                 { ret false; }
 
     ret true;
 }

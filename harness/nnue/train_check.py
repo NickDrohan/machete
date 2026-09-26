@@ -54,7 +54,7 @@ def main():
     order = np.random.RandomState(args.seed).permutation(len(rows))
     index = np.sort(order[:len(rows) // 2])
 
-    us, them = corpus.features(torch.from_numpy(index).to(args.device))
+    us, them, bucket = corpus.features(torch.from_numpy(index).to(args.device))
     us, them = np.sort(us.cpu().numpy(), axis=1), np.sort(them.cpu().numpy(), axis=1)
     want_us, want_them = (np.sort(side, axis=1) for side in reference.feature_indices(rows[index]))
     if not (np.array_equal(us, want_us) and np.array_equal(them, want_them)):
@@ -62,12 +62,17 @@ def main():
         raise SystemExit("features differ from the reference on {} of {} records".format(
             len(bad), len(index)))
 
+    want_bucket = np.array([reference.bucket(int(c)) for c in rows["count"][index]])
+    if not np.array_equal(bucket.cpu().numpy(), want_bucket):
+        raise SystemExit("output buckets differ from the reference on {} records".format(
+            int((bucket.cpu().numpy() != want_bucket).sum())))
+
     got = corpus.targets(torch.from_numpy(index).to(args.device)).cpu().numpy()
     worst = np.abs(got - numpy_targets(rows[index])).max()
     if worst > 1e-6:
         raise SystemExit("targets differ from the reference by up to {:.2e}".format(worst))
 
-    print("{:,} records on {}: features exact, targets within {:.1e}".format(
+    print("{:,} records on {}: features and buckets exact, targets within {:.1e}".format(
         len(index), args.device, worst))
     return 0
 
