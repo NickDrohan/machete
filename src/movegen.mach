@@ -305,3 +305,71 @@ test "nnue: the incremental accumulator matches a fresh one, move by move" {
     if (nn.OVERFLOW != 0) { ret 8; }
     ret 0;
 }
+
+test "movegen: a move the pin test calls safe never leaves the king in check" {
+    pos.init();
+    var r:       u64 = 0x2545F4914F6CDD1D;
+    var game:    i64 = 0;
+    var checked: i64 = 0;
+    for (game < 40) {
+        var p: Position;
+        if (!pos.set_fen(?p, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")) { ret 1; }
+        var ply: i64 = 0;
+        for (ply < 120) {
+            val check: bool = pos.in_check(?p);
+            val pins:  u64  = pos.pinned(?p, p.side);
+            var list:  MoveList;
+            generate(?p, ?list, false);
+            var legal: [256]Move;
+            var count: i64 = 0;
+            var i:     i64 = 0;
+            for (i < list.count) {
+                val m:    Move = list.moves[i];
+                val test: bool = pos.needs_test(?p, m, pins, check);
+                pos.make(?p, m);
+                val bad: bool = pos.left_in_check(?p);
+                pos.unmake(?p);
+                if (bad && !test) { ret 2; }
+                if (!bad) {
+                    legal[count] = m;
+                    count        = count + 1;
+                }
+                checked = checked + 1;
+                i       = i + 1;
+            }
+            if (count == 0) { brk; }
+            r = r ^ (r << 13);
+            r = r ^ (r >> 7);
+            r = r ^ (r << 17);
+            pos.make(?p, legal[(r % count::u64)::i64]);
+            ply = ply + 1;
+        }
+        game = game + 1;
+    }
+    if (checked < 50000) { ret 3; }
+
+    # the case random games rarely reach: taking en passant takes two pawns
+    # off one rank, and here that opens it between the king and a rook
+    var ep: Position;
+    if (!pos.set_fen(?ep, "8/8/8/K2pP2r/8/8/8/7k w - d6 0 1")) { ret 4; }
+    var moves: MoveList;
+    generate(?ep, ?moves, false);
+    val pins:  u64 = pos.pinned(?ep, ep.side);
+    var found: i64 = 0;
+    var k:     i64 = 0;
+    for (k < moves.count) {
+        val m: Move = moves.moves[k];
+        if (mv.flag(m) == mv.EP_CAPTURE) {
+            found = found + 1;
+            val test: bool = pos.needs_test(?ep, m, pins, pos.in_check(?ep));
+            pos.make(?ep, m);
+            val bad: bool = pos.left_in_check(?ep);
+            pos.unmake(?ep);
+            if (!bad)  { ret 5; }
+            if (!test) { ret 6; }
+        }
+        k = k + 1;
+    }
+    if (found != 1) { ret 7; }
+    ret 0;
+}
