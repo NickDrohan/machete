@@ -599,11 +599,17 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # null-move pruning: if passing still leaves the opponent unable to reach
     # beta, this position is good enough to cut. skipped in check, in pawn-only
     # endgames (zugzwang), and when the previous move was already a pass.
-    if (allow_null && excluded == mv.NONE && !is_pv && !in_check && depth >= 3 && has_pieces(p, p.side)) {
+    # Only a position already standing at or above beta is tried: passing
+    # from below beta almost never holds, and the null search was wasted.
+    if (allow_null && excluded == mv.NONE && !is_pv && !in_check && depth >= 3 && static_eval >= beta && has_pieces(p, p.side)) {
         # a deeper null search still refutes almost everything it used to, and
         # the plies saved compound: 2 + depth/6 was costing about a ply of
-        # final depth against 3 + depth/3
-        val reduction: i64 = 3 + depth / 3;
+        # final depth against 3 + depth/3. The further above beta the
+        # position stands, the less the pass needs checking: a ply more per
+        # 200 centipawns, up to three.
+        var margin: i64 = (static_eval - beta) / 200;
+        if (margin > 3) { margin = 3; }
+        val reduction: i64 = 3 + depth / 3 + margin;
         pos.make_null(p);
         val score: i64 = 0 - search_node(s, p, depth - 1 - reduction, 0 - beta, 1 - beta, ply + 1, false);
         pos.unmake_null(p);
