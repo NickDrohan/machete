@@ -18,6 +18,7 @@ import time
 
 import chess
 import chess.engine
+import psutil
 
 FENS = [
     chess.STARTING_FEN,
@@ -29,16 +30,22 @@ FENS = [
 
 
 def run(path, net, nodes):
+    """CPU seconds the engine spent on the searches, and what it found.
+
+    CPU time, not wall time: on a machine running other jobs, wall time also
+    counts the moments the engine waited for a core, which is noise here.
+    """
     engine = chess.engine.SimpleEngine.popen_uci(path)
     engine.configure({"EvalFile": net})
-    started = time.perf_counter()
+    process = psutil.Process(engine.transport.get_pid())
+    before = sum(process.cpu_times()[:2])
     trees = []
     for fen in FENS:
         info = engine.analyse(chess.Board(fen), chess.engine.Limit(nodes=nodes), game=object())
         trees.append((info.get("nodes"), info["pv"][0].uci()))
-    elapsed = time.perf_counter() - started
+    used = sum(process.cpu_times()[:2]) - before
     engine.quit()
-    return elapsed, trees
+    return used, trees
 
 
 def main():
