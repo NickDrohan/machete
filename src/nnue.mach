@@ -114,16 +114,15 @@ pub fun stack(id: i64) *Acc {
     ret ?STACKS[id][0];
 }
 
-# where (piece, square) lands in the 768 inputs, seen from one side
+# the piece code as black sees it: colours swapped, kind kept. Looked up for
+# the same reason as position.color_of - pc / 6 and pc % 6 are divisions
+val SWAPPED: [12]i64 = [12]i64{6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5};
+
+# where (piece, square) lands in the 768 inputs, seen from one side. The
+# stored code is colour * 6 + kind already, so white's view is the code
 fun index(perspective: i64, pc: u8, sq: i64) i64 {
-    var colour: i64 = (pc / 6)::i64;
-    val kind:   i64 = (pc % 6)::i64;
-    var square: i64 = sq;
-    if (perspective == 1) {
-        colour = colour ^ 1;
-        square = square ^ 56;
-    }
-    ret (colour * 6 + kind) * 64 + square;
+    if (perspective == 1) { ret SWAPPED[pc::i64] * 64 + (sq ^ 56); }
+    ret pc::i64 * 64 + sq;
 }
 
 # 128 bits at a time: eight i16 lanes, which is what x86-64 gives us without

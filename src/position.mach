@@ -163,12 +163,20 @@ pub fun code(color: u8, kind: u8) u8 {
     ret color * 6 + kind;
 }
 
+# a piece code's colour and kind, looked up rather than divided: Mach 5.11
+# compiles pc / 6 and pc % 6 to div instructions, tens of cycles each, and
+# put, remove, make, SEE and move ordering ask for them on every move. Codes
+# 0-11 are pieces and 12 is EMPTY; 13-15 only pad the table, with the values
+# division gives.
+val COLOR_OF: [16]u8 = [16]u8{0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2};
+val KIND_OF:  [16]u8 = [16]u8{0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3};
+
 pub fun color_of(pc: u8) u8 {
-    ret pc / 6;
+    ret COLOR_OF[pc::i64];
 }
 
 pub fun kind_of(pc: u8) u8 {
-    ret pc % 6;
+    ret KIND_OF[pc::i64];
 }
 
 pub fun all(p: *Position) u64 {
