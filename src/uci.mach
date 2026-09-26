@@ -115,6 +115,7 @@ fun halt() {
 fun start_search() {
     halt();
     search.reset(?ENGINE);
+    tt.new_search();
     # both decided here, before the search thread exists: see search.ponderhit
     ponder_budget = 0;
     if (LIMITS.infinite == 0) { ponder_budget = search.budget_ms(?GAME, ?LIMITS); }
