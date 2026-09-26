@@ -288,6 +288,12 @@ fun capture_score(p: *Position, m: Move) i64 {
     ret victim::i64 * 100 - attacker::i64;
 }
 
+# a capture that survives the exchange scores about GOOD_CAPTURE; a losing
+# one scores LOSING_CAPTURE plus its (negative) exchange, under the quiet moves
+# that might work, and so below LOSING_CAPTURE
+val GOOD_CAPTURE:   i64 = 800000000;
+val LOSING_CAPTURE: i64 = 50000000;
+
 fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (m == tt_move)                                            { ret 1000000000; }
     if (mv.is_promotion(m) && mv.promotion_type(m) == pos.QUEEN) { ret 900000000; }
@@ -295,8 +301,8 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
         # a capture that survives the recapture sequence is worth trying early;
         # one that loses material belongs below the quiet moves that might work
         val gain: i64 = see.evaluate(p, m);
-        if (gain >= 0) { ret 800000000 + gain * 100 + capture_score(p, m); }
-        ret 50000000 + gain;
+        if (gain >= 0) { ret GOOD_CAPTURE + gain * 100 + capture_score(p, m); }
+        ret LOSING_CAPTURE + gain;
     }
     if (m == s.killers[ply][0])    { ret 700000000; }
     if (m == s.killers[ply][1])    { ret 600000000; }
@@ -381,10 +387,17 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         pick(?list, ?scores[0], i);
         val m: Move = list.moves[i];
         # losing captures do not improve a quiescence score, and searching them
-        # is most of the work in a noisy position
-        if (!in_check && mv.is_capture(m) && see.evaluate(p, m) < 0) {
-            i = i + 1;
-            cnt;
+        # is most of the work in a noisy position. score_move already ran the
+        # exchange for every capture and put the losing ones below
+        # LOSING_CAPTURE; only the table's move and promotions were scored
+        # without it, so only they are exchanged again here.
+        if (!in_check && mv.is_capture(m)) {
+            var losing: bool = scores[i] < LOSING_CAPTURE;
+            if (m == tt_move || mv.is_promotion(m)) { losing = see.evaluate(p, m) < 0; }
+            if (losing) {
+                i = i + 1;
+                cnt;
+            }
         }
         # delta pruning: even winning this piece outright would not reach alpha
         if (!in_check && !mv.is_promotion(m) && p.board[mv.to(m)] != pos.EMPTY) {
