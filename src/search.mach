@@ -171,9 +171,12 @@ pub rec Search {
     played:  [64]Move;
     mover:   [64]u8;
     # each node's static evaluation, by ply, or NO_EVAL when it was in check
-    evals:  [64]i64;
-    pv:     [64][64]Move;
-    pv_len: [64]i64;
+    evals: [64]i64;
+    # how far the static evaluation has been off, by side to move and pawn
+    # structure, in 1/CORRECTION_GRAIN centipawns (see corrected)
+    correction: [2][CORRECTION_SIZE]i64;
+    pv:         [64][64]Move;
+    pv_len:     [64]i64;
 }
 
 pub fun reset(s: *Search) {
@@ -191,6 +194,12 @@ pub fun reset(s: *Search) {
         s.killers[i][1] = mv.NONE;
         s.pv_len[i]     = 0;
         i               = i + 1;
+    }
+    var slot: i64 = 0;
+    for (slot < CORRECTION_SIZE) {
+        s.correction[0][slot] = 0;
+        s.correction[1][slot] = 0;
+        slot                  = slot + 1;
     }
     var pc: i64 = 0;
     for (pc < 12) {
@@ -216,6 +225,48 @@ pub fun reset(s: *Search) {
 # towards zero in proportion to its size. That keeps the table bounded without
 # a hard cap and lets old information decay as new arrives.
 val HISTORY_MAX: i64 = 16384;
+
+# correction history: the static evaluation is systematically wrong in some
+# pawn structures - a blocked centre, a passed pawn it underrates - and the
+# search finds that out node after node. Each (side, pawn structure) slot
+# keeps a running average of how far the search's answer sat from the static
+# evaluation, and later static evaluations there are moved by it before
+# pruning decides anything on them.
+val CORRECTION_SIZE:  i64 = 8192;
+val CORRECTION_GRAIN: i64 = 256;
+# no correction larger than this many centipawns
+val CORRECTION_LIMIT: i64 = 64;
+
+# the slot for this position's pawns, from a multiplicative hash of the two
+# pawn bitboards: nothing to keep in step through make and unmake
+fun correction_slot(p: *Position) i64 {
+    val white: u64 = p.pieces[pos.code(pos.WHITE, pos.PAWN)];
+    val black: u64 = p.pieces[pos.code(pos.BLACK, pos.PAWN)];
+    val mixed: u64 = (white * 0x9E3779B97F4A7C15) ^ (black * 0xC2B2AE3D27D4EB4F);
+    ret (mixed >> 51)::i64;
+}
+
+fun corrected(s: *Search, p: *Position, raw: i64) i64 {
+    var score: i64 = raw + s.correction[p.side][correction_slot(p)] / CORRECTION_GRAIN;
+    if (score > MATE_FOUND - 1) { score = MATE_FOUND - 1; }
+    if (score < 1 - MATE_FOUND) { score = 1 - MATE_FOUND; }
+    ret score;
+}
+
+# move the slot a step towards what the search found, a larger step for a
+# deeper search, which is the better witness
+fun correction_update(s: *Search, p: *Position, raw: i64, found: i64, depth: i64) {
+    val slot:   i64 = correction_slot(p);
+    var weight: i64 = depth + 1;
+    if (weight > 16) { weight = 16; }
+    val target:  i64 = (found - raw) * CORRECTION_GRAIN;
+    val current: i64 = s.correction[p.side][slot];
+    var next:    i64 = (current * (256 - weight) + target * weight) / 256;
+    val limit:   i64 = CORRECTION_LIMIT * CORRECTION_GRAIN;
+    if (next > limit)     { next = limit; }
+    if (next < 0 - limit) { next = 0 - limit; }
+    s.correction[p.side][slot] = next;
+}
 
 fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
     val piece: u8  = p.board[mv.from(m)];
@@ -468,13 +519,15 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # improving node is reduced less by late move reductions. A node in check has no static evaluation; the
     # comparison then reaches back four plies, and gives the benefit of the
     # doubt when there is nothing to compare with.
+    var raw_eval:    i64  = 0;
     var static_eval: i64  = 0;
     var improving:   bool = true;
     if (in_check) {
         s.evals[ply] = NO_EVAL;
     }
     or {
-        static_eval  = eval.evaluate(p);
+        raw_eval     = eval.evaluate(p);
+        static_eval  = corrected(s, p, raw_eval);
         s.evals[ply] = static_eval;
         if (ply >= 2 && s.evals[ply - 2] != NO_EVAL) { improving = static_eval > s.evals[ply - 2]; }
         or (ply >= 4 && s.evals[ply - 4] != NO_EVAL) { improving = static_eval > s.evals[ply - 4]; }
@@ -651,6 +704,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     if (legal == 0) {
         if (in_check) { ret 0 - MATE + ply; }
         ret 0;
+    }
+
+    # the search's answer for a quiet position says how far the evaluation
+    # was off here; a bound says so only in the direction it bounds
+    if (!in_check && (best_move == mv.NONE || (!mv.is_capture(best_move) && !mv.is_promotion(best_move)))
+        && best < MATE_FOUND && best > 0 - MATE_FOUND
+        && !(flag == tt.LOWER && best <= static_eval) && !(flag == tt.UPPER && best >= static_eval)) {
+        correction_update(s, p, raw_eval, best, depth);
     }
 
     var stored: i64 = best;
