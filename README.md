@@ -46,12 +46,18 @@ evidence behind it. [CLAUDE.md](CLAUDE.md) is the short version for agents: the 
 the documentation rule, and this machine's practicalities.
 
 Measurements go through one queue, never started by hand: two at once
-contaminate each other. `harness/jobqueue.py submit --id ... --predicted ... -- <command>`
-adds a job; one runner (`harness/jobqueue.py run`, started with `harness/detach.ps1`)
-plays jobs one at a time in submission order, waits until no engine, match driver,
-data generator or Arena is running outside it, and writes every result, pass or
-fail, to `RESULTS.tsv` with the prediction beside it. `jobqueue.py status` shows the
-queue and what is keeping the machine busy.
+contaminate each other. `harness/jobqueue.py submit --team ... --id ... --predicted ... -- <command>`
+adds a job to the machine-wide queue in `E:/machete/queue`; one runner
+(`harness/jobqueue.py run`, started with `harness/detach.ps1`) plays jobs one at a time
+in submission order, waits until no engine, match driver, data generator or Arena is
+running outside it, and writes every result, pass or fail, to the submitting worktree's
+`RESULTS.tsv` with the prediction beside it. Training runs in a separate GPU lane.
+`jobqueue.py status` shows the queue, each team's hours, and what is keeping the machine
+busy.
+
+Two agents are competing to make the strongest machete from the same start - see
+[COMPETITION.md](COMPETITION.md). `harness/referee.py` plays their final: real clocks,
+the balanced book, forfeits for crashes and hangs, pentanomial statistics.
 
 ## What the numbers rest on
 

@@ -103,6 +103,9 @@ if [[ -n "$python" ]]; then
     # the machine's one queue: a throwaway queue, two runners at once, two jobs
     gate "job queue runs jobs one at a time and records each in the ledger" 0 \
         "$python" "$here/harness/test_jobqueue.py"
+    # the competition's referee (COMPETITION.md): forfeits, pentanomial, resume
+    gate "referee scores forfeits, pairs and resumes" 0 \
+        "$python" "$here/harness/test_referee.py" "$release" "$here/net/machete.nnue"
 fi
 
 # A GUI starts the engine with no options: it must find machete.nnue in its own

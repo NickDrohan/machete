@@ -360,7 +360,7 @@ Nothing claimed before M0 counts toward 3500.
 - **Accept:** the SPRT's false-positive rate at true zero is within 2 points of alpha over 300 simulated runs.
 
 #### P0-4 An unbalanced opening book · HARNESS · Tier A · **half done**
-- **Status (2026-09-25):** `match.py --book FILE` and `ladder.py --self-book` exist; no UHO book is on disk (`harness/books/` is empty) and the decisive-rate gate has not been run.
+- **Status (2026-09-25):** `match.py --book FILE` and `ladder.py --self-book` exist, and `harness/books/balanced_200.epd` (the balanced book FIELD-02 used) is committed; no UHO book is on disk and the decisive-rate gate has not been run.
 - **Why:** four random plies make weird, often lopsided or dead positions; at 73% draws an SPRT becomes very expensive. Worse, a random opening can *finish* a game: LADDER-02's only "win" over Koivisto was `1. f3 e5 2. g4 Qh4#`, all four moves random, machete never having played - and the ladder scored it. Until the book lands, reject any random opening that ends the game. Unbalanced books (UHO) are built to make decisive games likely while keeping pairs fair.
 - **Change:** obtain a UHO book (the `official-stockfish/books` repository carries them - verify the source and licence before downloading, and download to `E:/`); `match.py` and `tournament.py` take `--book FILE` and draw openings from it, still one opening per colour-reversed pair.
 - **Gate:** decisive-game rate on a 400-game self-match is reported with and without the book.
@@ -370,6 +370,7 @@ Nothing claimed before M0 counts toward 3500.
 #### P0-5 One queue for the machine · HARNESS · Tier B · **Done** (`wp/P0-5-jobqueue`, GATE-P05)
 - **Result:** `harness/jobqueue.py` (not `queue.py`: that name would shadow the standard library for every script in `harness/`). `submit` requires an id, a change and a prediction; `run` refuses a second runner, plays jobs strictly in order, passes over a job whose `--requires` files do not exist yet, waits until no engine, match driver, data generator or Arena runs outside it (GPU training allowed), and appends one line per job to `RESULTS.tsv`, parsing `match.py`'s summary. A job interrupted by a dead runner is retried once. Gate `harness/test_jobqueue.py` in `check.sh`; perturbed by removing the lock (a job ran twice, a runner crashed; caught). Its first run found a crash for a queue on another drive. Not yet done: `longqueue.sh` is still a script, not jobs; `sprt_queue.sh` is marked superseded.
 - **After P0-5, section 4's rule applies:** submit a job; never start a match by hand.
+- **Extended for the competition (GATE-P05B):** one machine-wide queue in `E:/machete/queue`; jobs carry `--team` and run in, and report to, the worktree that submitted them; `--kind train` runs in a GPU lane beside the cpu lane; `--kind data` is charged to a per-team budget and stopped at it. Perturbed by bypassing the budget: caught.
 - **Why:** agents produce patches faster than the machine can test them, and two measurements at once corrupt each other.
 - **Change:** `harness/queue.py` - a job file per test in `data/queue/`, one runner that executes them strictly in order, waits for the machine to be quiet first, writes the result line to `RESULTS.tsv`, and never starts a job while another runs. `harness/longqueue.sh` becomes a list of jobs.
 - **Gate:** submit two jobs at once and show they ran serially. The runner itself is started with `harness/detach.ps1` (rule 19), or it dies the next time the session restarts.
@@ -506,6 +507,11 @@ After each phase, before starting the next:
 1. Run the P0-6 gauntlet and the M-milestone test that applies. Record both.
 2. Re-profile (section 1's table): nps on a quiet machine, nodes to depth 12, the endgame gate.
 3. Re-read section 3. If a phase delivered far less than its prior, find out why before spending the next one - the priors are guesses, and an assumption that is wrong is worth more than another feature.
+
+**From 2026-09-25 the road forks** ([COMPETITION.md](COMPETITION.md)): teams
+cursor and claude each take this plan from tag `competition-fork` in their own
+worktree, and statuses below describe the common start. Each team tracks its
+own progress in its own copy of this file.
 
 The current position on the road (2026-09-25): **before M0.** Done: P0-2,
 P0-5, X-04, and parts of P0-1, P0-4, P0-9. Next, by territory: MACH - X-05,

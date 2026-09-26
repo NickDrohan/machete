@@ -41,7 +41,7 @@ on pipes, concurrent games, real clocks - which would work `std.process` and
 
 These are not style preferences. They came from being wrong.
 
-**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 30.
+**Every claim gets a gate, and every gate gets perturbed.** `check.sh` has 31.
 A new one is not finished until it has been made to fail on purpose and the
 failure recorded in the commit message. Two gates in this repo were green for
 days while being structurally incapable of failing - one held a stale node
@@ -158,7 +158,7 @@ and `#[embed]` would fold it into the binary so a release is one file.
 ## Running it
 
 ```bash
-bash check.sh                      # 30 gates; MACH=<path> to use a particular compiler
+bash check.sh                      # 31 gates; MACH=<path> to use a particular compiler
 
 mach build . --profile release     # build both executables
 mach run   . --profile release -- bench    # run the built engine
@@ -185,20 +185,28 @@ exit code is the one that matters.
 ### Measuring: the job queue
 
 ```bash
-py -3.7 harness/jobqueue.py status                 # queue, runner, and what is busy
-py -3.7 harness/jobqueue.py submit --id SPRT-S06 --change "S-06: mate distance pruning" \
-    --predicted +3 --against "dev (b454e97)" --tc "movetime 200" \
-    --requires E:/machete/ab/s06.exe -- py -3.7 -u harness/match.py ...
+py -3.7 harness/jobqueue.py status                 # queue, runner, team hours, what is busy
+py -3.7 harness/jobqueue.py submit --team cursor --id SPRT-S06 \
+    --change "S-06: mate distance pruning" --predicted +3 --against "cursor/main (abc1234)" \
+    --tc "movetime 200" --requires E:/machete/cursor/ab/s06.exe -- py -3.7 -u harness/match.py ...
 powershell -File harness/detach.ps1 "py -3.7 -u harness/jobqueue.py run"   # the one runner
 ```
 
-Copy both binaries of an A/B out of `out/` (for example to `E:/machete/ab/`)
-and hash them before submitting: the job runs later, and a rebuild in between
-would otherwise change what it measures. Jobs live in `data/queue/` (pending,
-running, done, failed, logs); the runner's own log is `data/queue/runner.log`.
-`--requires` holds a job until its input exists, so a job can be submitted
-before the network it tests has finished training - as long as it points at
-the finished copy.
+One queue serves every worktree: `E:/machete/queue` (override with
+`MACHETE_QUEUE`), with pending, running, done, failed and logs folders and the
+runner's log `runner.log`. A job runs in the worktree it was submitted from
+and writes that worktree's `RESULTS.tsv`. `--team` is required
+(cursor, claude or owner - see COMPETITION.md). `--kind` is `measure` (the
+default) or `data`, which share the cpu lane and wait for a quiet machine, or
+`train`, which runs in a separate gpu lane beside them, one training at a
+time. `data` jobs are charged to the team's budget (`budget.json`, 48 h) and
+stopped at it.
+
+Copy both binaries of an A/B out of `out/` and hash them before submitting:
+the job runs later, and a rebuild in between would otherwise change what it
+measures. `--requires` holds a job until its input exists, so a job can be
+submitted before the network it tests has finished training - as long as it
+points at the finished copy.
 
 ## Releases
 

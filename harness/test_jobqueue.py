@@ -40,6 +40,17 @@ print("elo +35 +/- 120")
 """
 
 
+# records its span only if it finishes, so a job that was stopped leaves no row
+SLEEPER = r"""
+import sys, time
+spans, name, seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+start = time.time()
+time.sleep(seconds)
+with open(spans, "a") as f:
+    f.write("{} {:.3f} {:.3f}\n".format(name, start, time.time()))
+"""
+
+
 def check(name, condition, detail=""):
     if condition:
         print("  ok   {}".format(name))
@@ -64,12 +75,14 @@ def main():
         return [sys.executable, SCRIPT, "--queue", queue, "--ledger", ledger] + list(args)
 
     # submitted first, but it needs a file the second job creates
-    subprocess.check_call(jobqueue("submit", "--id", "T-WAITS", "--change", "waits for an input",
+    subprocess.check_call(jobqueue("submit", "--team", "cursor", "--id", "T-WAITS",
+                                   "--change", "waits for an input",
                                    "--predicted", "+5", "--requires", made, "--",
                                    sys.executable, fake, spans, "waits", "-"),
                           stdout=subprocess.DEVNULL)
     time.sleep(0.01)
-    subprocess.check_call(jobqueue("submit", "--id", "T-MAKES", "--change", "creates the input",
+    subprocess.check_call(jobqueue("submit", "--team", "claude", "--id", "T-MAKES",
+                                   "--change", "creates the input",
                                    "--predicted", "0", "--",
                                    sys.executable, fake, spans, "makes", made),
                           stdout=subprocess.DEVNULL)
@@ -121,6 +134,46 @@ def main():
             job = json.load(f)
         failures += check("a finished job keeps its log path and exit code",
                           job.get("exit") == 0 and job.get("log", "").endswith(".txt"), str(job))
+
+    # ---- lanes and the data budget, on a second queue
+    queue2 = os.path.join(work, "queue2")
+    os.makedirs(queue2)
+    with open(os.path.join(queue2, "budget.json"), "w") as f:
+        json.dump({"data_hours": 3.0 / 3600}, f)   # three seconds
+    sleeper = os.path.join(work, "sleeper.py")
+    with open(sleeper, "w") as f:
+        f.write(SLEEPER)
+    spans2 = os.path.join(work, "spans2.txt")
+
+    def jobqueue2(*args):
+        return [sys.executable, SCRIPT, "--queue", queue2, "--ledger", ledger] + list(args)
+
+    for team, kind, name, seconds in (("cursor", "data", "D-LONG", 30), ("cursor", "data", "D-AGAIN", 1),
+                                      ("claude", "train", "T-GPU", 4), ("claude", "measure", "M-CPU", 1)):
+        subprocess.check_call(jobqueue2("submit", "--team", team, "--kind", kind, "--id", name,
+                                        "--change", name, "--predicted", "-", "--",
+                                        sys.executable, sleeper, spans2, name, str(seconds)),
+                              stdout=subprocess.DEVNULL)
+        time.sleep(0.01)
+    started = time.time()
+    lanes = subprocess.run(jobqueue2("run", "--exit-when-empty", "--no-wait-quiet"),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=120)
+    elapsed = time.time() - started
+    outputs.append(lanes.stdout)
+    with open(spans2) as f:
+        ran = {row.split()[0]: (float(row.split()[1]), float(row.split()[2])) for row in f if row.strip()}
+    failures += check("a data job is stopped when its team's budget runs out",
+                      "D-LONG" not in ran and elapsed < 25, "ran {}, took {:.0f} s".format(sorted(ran), elapsed))
+    failures += check("the team's next data job is refused", "D-AGAIN" not in ran, str(sorted(ran)))
+    failures += check("the gpu lane runs beside the cpu lane",
+                      "T-GPU" in ran and "M-CPU" in ran and ran["T-GPU"][0] < started + 2,
+                      str(ran))
+    with open(ledger) as f:
+        rows = {line.split("\t")[1]: line.split("\t")[10] for line in f.read().splitlines()[1:]}
+    failures += check("both stopped jobs still leave a ledger line saying why",
+                      "data budget" in rows.get("D-LONG", "") and "spent its data budget" in rows.get("D-AGAIN", ""),
+                      str({k: rows.get(k) for k in ("D-LONG", "D-AGAIN")}))
 
     if failures:
         print("runner output:\n" + "\n---\n".join(outputs))
