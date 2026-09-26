@@ -226,9 +226,81 @@ fun side_score(p: *Position, color: u8, phase: i64) i64 {
 pub fun evaluate(p: *Position) i64 {
     if (nn.loaded && p.accs != nil) {
         nn.materialise(p.accs, p.acc_top);
-        ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1]));
+        ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])) + mop_up(p);
     }
-    ret classical(p);
+    ret classical(p) + mop_up(p);
+}
+
+# Mop-up: against a bare king, what wins is driving it to the edge and
+# bringing the other king up, and neither evaluation says so. The network
+# saturates long before a won ending is over - a queen up and a rook up both
+# read as decided - so the search saw no reason to prefer the moves that make
+# progress, and played on until the fifty-move rule drew it (80 of 1,884
+# self-play games drawn a rook or more ahead). This adds the gradient, and
+# only there: one side has nothing but its king, the other has a queen or a
+# rook, or a bishop with a second minor piece. Bishop and knight also drive
+# the king to a corner of the bishop's colour, the only corners that mate.
+fun mop_up(p: *Position) i64 {
+    var strong: u8 = pos.WHITE;
+    if (bare(p, pos.WHITE))  { strong = pos.BLACK; }
+    or (!bare(p, pos.BLACK)) { ret 0; }
+    if (bare(p, strong))     { ret 0; }
+    val weak:    u8  = strong ^ 1;
+    val heavy:   u64 = p.pieces[pos.code(strong, pos.QUEEN)] | p.pieces[pos.code(strong, pos.ROOK)];
+    val bishops: u64 = p.pieces[pos.code(strong, pos.BISHOP)];
+    val knights: u64 = p.pieces[pos.code(strong, pos.KNIGHT)];
+    if (heavy == 0 && (bishops == 0 || bb.count(bishops | knights) < 2)) { ret 0; }
+
+    val loser:  i64 = pos.king_square(p, weak);
+    val winner: i64 = pos.king_square(p, strong);
+    var bonus:  i64 = 20 * centre_distance(loser) + 10 * (7 - distance(loser, winner));
+    # bishop and knight alone: only the corners of the bishop's colour mate
+    if (heavy == 0 && bb.count(bishops) == 1 && bb.count(knights) == 1) {
+        val bishop: i64 = bb.lsb(bishops);
+        var near:   i64 = 0;
+        if (((bishop & 7) + (bishop >> 3)) % 2 == 1) {
+            # light squares: h1 and a8
+            near = min_i64(distance(loser, 7), distance(loser, 56));
+        }
+        or {
+            near = min_i64(distance(loser, 0), distance(loser, 63));
+        }
+        bonus = bonus + 25 * (7 - near);
+    }
+    if (p.side == strong) { ret bonus; }
+    ret 0 - bonus;
+}
+
+# nothing but the king
+fun bare(p: *Position, color: u8) bool {
+    ret p.occ[color] == p.pieces[pos.code(color, pos.KING)];
+}
+
+# king steps between two squares
+fun distance(a: i64, b: i64) i64 {
+    var files: i64 = (a & 7) - (b & 7);
+    var ranks: i64 = (a >> 3) - (b >> 3);
+    if (files < 0)     { files = 0 - files; }
+    if (ranks < 0)     { ranks = 0 - ranks; }
+    if (files > ranks) { ret files; }
+    ret ranks;
+}
+
+# 0 on the four centre squares, 6 in a corner
+fun centre_distance(sq: i64) i64 {
+    val file: i64 = sq & 7;
+    val rank: i64 = sq >> 3;
+    var d:    i64 = 0;
+    if (file < 3) { d = d + 3 - file; }
+    if (file > 4) { d = d + file - 4; }
+    if (rank < 3) { d = d + 3 - rank; }
+    if (rank > 4) { d = d + rank - 4; }
+    ret d;
+}
+
+fun min_i64(a: i64, b: i64) i64 {
+    if (a < b) { ret a; }
+    ret b;
 }
 
 # material, piece-square tables and a few pawn terms
@@ -298,5 +370,35 @@ test "eval: insufficient material is spotted" {
     if (!insufficient_material(?p))                          { ret 2; }
     if (!pos.set_fen(?p, "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")) { ret 3; }
     if (insufficient_material(?p))                           { ret 4; }
+    ret 0;
+}
+
+test "eval: mop-up only against a bare king, and toward the edge" {
+    var p: Position;
+    # queen and king against a bare king: a king in the corner scores better
+    # for the side with the queen than one in the centre
+    if (!pos.set_fen(?p, "8/8/8/4k3/8/8/8/3QK3 w - - 0 1")) { ret 1; }
+    val centre: i64 = mop_up(?p);
+    if (!pos.set_fen(?p, "7k/8/8/8/8/8/8/3QK3 w - - 0 1")) { ret 2; }
+    val corner: i64 = mop_up(?p);
+    if (corner <= centre || centre < 0) { ret 3; }
+    # the same from the bare king's side is the negation
+    if (!pos.set_fen(?p, "7k/8/8/8/8/8/8/3QK3 b - - 0 1")) { ret 4; }
+    if (mop_up(?p) != 0 - corner)                          { ret 5; }
+    # nothing when both sides keep a piece, when the stronger side cannot
+    # force mate (two knights), or when a pawn stands beside the lone king
+    if (!pos.set_fen(?p, "7k/6n1/8/8/8/8/8/3QK3 w - - 0 1")) { ret 6; }
+    if (mop_up(?p) != 0)                                     { ret 7; }
+    if (!pos.set_fen(?p, "7k/8/8/8/8/8/8/1NN1K3 w - - 0 1")) { ret 8; }
+    if (mop_up(?p) != 0)                                     { ret 9; }
+    if (!pos.set_fen(?p, "7k/7p/8/8/8/8/8/3QK3 w - - 0 1"))  { ret 10; }
+    if (mop_up(?p) != 0)                                     { ret 11; }
+    # bishop and knight: the right corner beats the wrong one (light bishop
+    # on f1 mates in h1 or a8, not a1 or h8)
+    if (!pos.set_fen(?p, "8/8/8/8/8/8/8/k3KBN1 w - - 0 1")) { ret 12; }
+    val wrong: i64 = mop_up(?p);
+    if (!pos.set_fen(?p, "k7/8/8/8/8/8/8/4KBN1 w - - 0 1")) { ret 13; }
+    val right: i64 = mop_up(?p);
+    if (right <= wrong) { ret 14; }
     ret 0;
 }
