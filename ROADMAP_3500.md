@@ -94,15 +94,12 @@ the bottom of the target band; it is several hundred Elo below it.
    evaluation gradient inside a won position (scale-150 saturation, and no
    classical mop-up knowledge anywhere).
 2. **Time management is hard-deadline only.** `budget_ms` in `src/search.mach`
-   is `remaining/30 + 3/4*inc`, capped at a third. No soft limit, no stopping
-   before an iteration it cannot finish, no stability scaling, and **`movestogo`
-   is not parsed** - yet CCRL 40/15 sends it every move. Every measurement ever
-   taken used fixed `movetime`, which bypasses the time manager entirely, so this
-   leak has never been visible.
-3. **`go nodes` is not supported.** The engine parses only `depth`, `movetime`,
-   `wtime/btime/winc/binc` and `infinite`. A node-limited request is read as no
-   limit and **searches until depth 62**. Fixed-node testing - the standard way
-   to make a test deterministic and immune to machine load - is impossible.
+   is `remaining/movestogo + 3/4*inc` (thirty when `movestogo` is absent),
+   capped at a third. It does skip an iteration it expects not to finish
+   (`elapsed/2` past the deadline), but has no soft limit and no stability
+   scaling. `movestogo` is parsed since P0-2. Most measurements used fixed
+   `movetime`, which bypasses the time manager entirely.
+3. ~~`go nodes` is not supported~~ - fixed (P0-2).
 4. ~~The static evaluation is computed twice at the same node~~ - fixed (S-02).
 5. **Quiescence never uses the transposition table, and stands pat in check.**
 6. ~~Continuation history is dead weight~~ - removed (S-01).
@@ -253,8 +250,10 @@ Each of these cost at least one wrong result. They are not style.
 8. **Pin every opponent to one thread and a fixed hash.** Engines name it
    differently: `Threads`, `Max CPUs`, `Cores`. If none can be set, the engine
    cannot be an anchor.
-9. **`go nodes` does not exist until P0-2 lands.** A node-limited request
-   searches until depth 62. It will look like a hang.
+9. **`go nodes` counts one thread.** It exists since P0-2 and is exact and
+   repeatable on one thread; with `Threads` above 1 the helpers are not
+   counted and the result is not deterministic. Builds before P0-2 read a
+   node limit as no limit and search to depth 62, which looks like a hang.
 10. **Movetime matches cannot see time management.** Any time-management change
     is measured on a real clock or not at all.
 11. **A mate written as a huge score teaches the network nothing.** At scale
@@ -303,7 +302,8 @@ Nothing claimed before M0 counts toward 3500.
 - **Gate:** a test that opens each configured opponent and asserts the option was set; perturb by removing the pin for one engine and confirm the check fails.
 - **Accept:** every ladder opponent reports one thread.
 
-#### P0-2 `go nodes` and `go movestogo` · MACH · Tier B
+#### P0-2 `go nodes` and `go movestogo` · MACH · Tier B · **Done** (`wp/P0-2-nodes-movestogo`, GATE-P02)
+- **Result:** `go nodes N` stops at exactly N nodes on the main thread and gives the same move twice after `ucinewgame`; `movestogo` replaces the fixed thirty in `budget_ms`. Bench unchanged; unit tests and `protocol.py` both fail when the node check is removed. With several threads the limit bounds only the main thread, so fixed-node tests must run on one.
 - **Why:** fixed-node tests are deterministic and immune to load; CCRL 40/15 sends `movestogo` on every move and we ignore it.
 - **Change:** `src/uci.mach` parses `nodes N` and `movestogo N` into `Limits`; `src/search.mach` stops at the node count (checked where `out_of_time` is), and `budget_ms` uses `remaining / max(movestogo, 2)` when `movestogo` is given.
 - **Gate:** extend `harness/protocol.py`: `go nodes 10000` returns a bestmove and reports at most about 10,000 nodes; perturb by disabling the check and confirm the gate times out.

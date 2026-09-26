@@ -193,27 +193,32 @@ fun set_position(t: *Tokens) {
     }
 }
 
-# go [depth n] [movetime ms] [wtime ms] [btime ms] [winc ms] [binc ms] [infinite] [ponder]
+# go [depth n] [nodes n] [movetime ms] [wtime ms] [btime ms] [winc ms] [binc ms]
+#    [movestogo n] [infinite] [ponder]
 fun parse_go(t: *Tokens) {
-    LIMITS.depth    = 0;
-    LIMITS.movetime = 0;
-    LIMITS.wtime    = 0;
-    LIMITS.btime    = 0;
-    LIMITS.winc     = 0;
-    LIMITS.binc     = 0;
-    LIMITS.infinite = 0;
-    LIMITS.ponder   = 0;
+    LIMITS.depth     = 0;
+    LIMITS.movetime  = 0;
+    LIMITS.wtime     = 0;
+    LIMITS.btime     = 0;
+    LIMITS.winc      = 0;
+    LIMITS.binc      = 0;
+    LIMITS.movestogo = 0;
+    LIMITS.nodes     = 0;
+    LIMITS.infinite  = 0;
+    LIMITS.ponder    = 0;
     var i: i64 = 1;
     for (i < t.count) {
         val word: str = t.item[i];
-        if (str_equals(word, "depth"))    { LIMITS.depth = token_i64(t, i + 1, 0); }
-        or (str_equals(word, "movetime")) { LIMITS.movetime = token_i64(t, i + 1, 0); }
-        or (str_equals(word, "wtime"))    { LIMITS.wtime = token_i64(t, i + 1, 0); }
-        or (str_equals(word, "btime"))    { LIMITS.btime = token_i64(t, i + 1, 0); }
-        or (str_equals(word, "winc"))     { LIMITS.winc = token_i64(t, i + 1, 0); }
-        or (str_equals(word, "binc"))     { LIMITS.binc = token_i64(t, i + 1, 0); }
-        or (str_equals(word, "infinite")) { LIMITS.infinite = 1; }
-        or (str_equals(word, "ponder"))   { LIMITS.ponder = 1; }
+        if (str_equals(word, "depth"))     { LIMITS.depth = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "movetime"))  { LIMITS.movetime = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "wtime"))     { LIMITS.wtime = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "btime"))     { LIMITS.btime = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "winc"))      { LIMITS.winc = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "binc"))      { LIMITS.binc = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "movestogo")) { LIMITS.movestogo = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "nodes"))     { LIMITS.nodes = token_i64(t, i + 1, 0); }
+        or (str_equals(word, "infinite"))  { LIMITS.infinite = 1; }
+        or (str_equals(word, "ponder"))    { LIMITS.ponder = 1; }
         i = i + 1;
     }
 }
@@ -399,6 +404,24 @@ test "uci: go parses its limits" {
     if (LIMITS.movetime != 500) { ret 3; }
     if (LIMITS.infinite != 0)   { ret 4; }
     if (LIMITS.ponder != 0)     { ret 5; }
+    ret 0;
+}
+
+test "uci: go parses nodes and movestogo" {
+    var line: [64]u8;
+    var t:    Tokens;
+    val text: str = "go wtime 90000 btime 90000 movestogo 12 nodes 50000";
+    var n:    i64 = 0;
+    for (text[n] != 0) {
+        line[n] = text[n];
+        n       = n + 1;
+    }
+    line[n] = 0;
+    split(?line[0], n, ?t);
+    parse_go(?t);
+    if (LIMITS.movestogo != 12) { ret 1; }
+    if (LIMITS.nodes != 50000)  { ret 2; }
+    if (LIMITS.wtime != 90000)  { ret 3; }
     ret 0;
 }
 

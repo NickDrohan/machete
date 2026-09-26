@@ -254,6 +254,12 @@ parts a normal game never reaches: `stop` returns a move in well under 500 ms, `
 answered mid-search, malformed FENs and illegal moves in a `position` command do not take the
 engine down, and mates are reported as `score mate` rather than centipawns.
 
+`go` understands `depth`, `nodes`, `movetime`, `wtime`/`btime`/`winc`/`binc`, `movestogo`,
+`infinite` and `ponder`. `go nodes N` stops at exactly N nodes and, on one thread after
+`ucinewgame`, gives the same move every time, so a fixed-node test does not depend on what else
+the machine is doing; with more threads only the main thread is counted. `movestogo` divides the
+remaining clock by the moves left instead of a fixed thirty.
+
 Pondering works. `bestmove` names the reply the engine expects (`bestmove e2e4 ponder e7e5`,
 taken from the same completed iteration as the move), and `go ponder` searches that reply with
 no deadline and never answers on its own - not even on running out of depth - until `ponderhit`

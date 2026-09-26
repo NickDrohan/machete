@@ -101,6 +101,25 @@ def main():
                           elapsed < 500, "took {:.0f} ms".format(elapsed))
         failures += check("stop returns a real move", len(best.split()) > 1 and best.split()[1] != "0000", best)
 
+        # go nodes: a node-limited search stops at the limit, and after
+        # ucinewgame the same request gives the same answer - which is what
+        # makes a fixed-node test immune to the load on the machine
+        answers = []
+        for _ in range(2):
+            engine.send("ucinewgame")
+            engine.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
+            engine.send("go nodes 10000")
+            lines = engine.read_until("bestmove")
+            counts = [int(line.split()[line.split().index("nodes") + 1])
+                      for line in lines if line.startswith("info") and " nodes " in line]
+            answers.append((lines[-1], counts))
+        (best, counts), (again, _) = answers
+        failures += check("go nodes 10000 answers, reporting at most 10000 nodes",
+                          best.split()[1] != "0000" and counts and max(counts) <= 10000,
+                          "{} after {}".format(best, counts))
+        failures += check("go nodes gives the same answer twice", best == again,
+                          "{} then {}".format(best, again))
+
         # pondering: the engine names the reply it expects, and searches it
         # without answering until the GUI says the reply was played
         engine.send("position startpos")

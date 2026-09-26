@@ -116,37 +116,45 @@ fun reported_nodes(s: *Search) i64 {
 
 # how the caller bounds the search; zero means unset
 # ---
-# depth:    stop after this iteration
-# movetime: milliseconds for this move
-# wtime:    white's remaining clock, and so on
-# infinite: search until stopped
-# ponder:   search the expected reply until ponderhit or stop
+# depth:     stop after this iteration
+# movetime:  milliseconds for this move
+# wtime:     white's remaining clock, and so on
+# movestogo: moves left until the clock is topped up (a 40/15 control sends it)
+# nodes:     stop once the main thread has searched this many nodes
+# infinite:  search until stopped
+# ponder:    search the expected reply until ponderhit or stop
 pub rec Limits {
-    depth:    i64;
-    movetime: i64;
-    wtime:    i64;
-    btime:    i64;
-    winc:     i64;
-    binc:     i64;
-    infinite: u8;
-    ponder:   u8;
+    depth:     i64;
+    movetime:  i64;
+    wtime:     i64;
+    btime:     i64;
+    winc:      i64;
+    binc:      i64;
+    movestogo: i64;
+    nodes:     i64;
+    infinite:  u8;
+    ponder:    u8;
 }
 
 # ---
-# nodes:     nodes visited, including quiescence
-# stop:      set from outside to abandon the search
-# deadline:  monotonic millisecond after which to stop; 0 means no deadline
-# best:      best move of the last completed iteration
-# ponder:    the reply expected to best, from the same iteration's PV
-# quiet:     suppress info lines (used by bench and tests)
-# pondering: 1 while the search is pondering. Set by the caller before think
-#            starts and cleared by ponderhit, never by think itself: a
-#            ponderhit that arrives before the search thread runs must not
-#            be lost.
+# nodes:      nodes visited, including quiescence
+# stop:       set from outside to abandon the search
+# deadline:   monotonic millisecond after which to stop; 0 means no deadline
+# node_limit: stop at this many nodes; 0 means none. Counted on this thread
+#             only, so a node-limited search is deterministic on one thread
+#             and merely bounded on several.
+# best:       best move of the last completed iteration
+# ponder:     the reply expected to best, from the same iteration's PV
+# quiet:      suppress info lines (used by bench and tests)
+# pondering:  1 while the search is pondering. Set by the caller before think
+#             starts and cleared by ponderhit, never by think itself: a
+#             ponderhit that arrives before the search thread runs must not
+#             be lost.
 pub rec Search {
     nodes:         i64;
     stop:          i64;
     deadline:      i64;
+    node_limit:    i64;
     started:       i64;
     best:          Move;
     ponder:        Move;
@@ -169,13 +177,14 @@ pub rec Search {
 }
 
 pub fun reset(s: *Search) {
-    s.nodes     = 0;
-    s.thread_id = 0;
-    s.stop      = 0;
-    s.deadline  = 0;
-    s.pondering = 0;
-    s.best      = mv.NONE;
-    s.ponder    = mv.NONE;
+    s.nodes      = 0;
+    s.thread_id  = 0;
+    s.stop       = 0;
+    s.deadline   = 0;
+    s.node_limit = 0;
+    s.pondering  = 0;
+    s.best       = mv.NONE;
+    s.ponder     = mv.NONE;
     var i: i64 = 0;
     for (i < MAX_PLY) {
         s.killers[i][0] = mv.NONE;
@@ -243,6 +252,11 @@ pub fun clear_global_stop() {
 fun out_of_time(s: *Search) bool {
     if (s.stop != 0) { ret true; }
     if ((s.nodes & 1023) == 0 && atomic.load(?GLOBAL_STOP) != 0) {
+        s.stop = 1;
+        ret true;
+    }
+    # checked on every node, so the count stops exactly where it was asked to
+    if (s.node_limit != 0 && s.nodes >= s.node_limit) {
         s.stop = 1;
         ret true;
     }
@@ -696,8 +710,15 @@ pub fun budget_ms(p: *Position, limits: *Limits) i64 {
     }
     if (remaining <= 0) { ret 0; }
     # a simple rule: a fraction of what is left, plus most of the increment,
-    # never more than a third of the clock
-    var budget: i64 = remaining / 30 + increment * 3 / 4;
+    # never more than a third of the clock. With movestogo the fraction is
+    # the moves actually left, not a guess of thirty; the cap still holds
+    # back a reserve on the last move or two before the control.
+    var moves: i64 = 30;
+    if (limits.movestogo > 0) {
+        moves = limits.movestogo;
+        if (moves < 2) { moves = 2; }
+    }
+    var budget: i64 = remaining / moves + increment * 3 / 4;
     if (budget > remaining / 3) { budget = remaining / 3; }
     if (budget < 5)             { budget = 5; }
     ret budget;
@@ -729,6 +750,7 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     s.ponder        = mv.NONE;
     s.depth_reached = 0;
     s.deadline      = 0;
+    s.node_limit    = limits.nodes;
     val budget: i64 = budget_ms(p, limits);
     # read after the deadline was cleared, so a ponderhit that lands in between
     # is seen here rather than overwritten
@@ -896,5 +918,47 @@ test "search: a deeper search still returns a move" {
     val nodes: i64 = search_depth(?p, 5, ?s);
     if (nodes < 100)       { ret 2; }
     if (s.best == mv.NONE) { ret 3; }
+    ret 0;
+}
+
+fun search_nodes(p: *Position, nodes: i64, s: *Search) {
+    tt.clear();
+    reset(s);
+    s.quiet = 1;
+    var limits: Limits;
+    limits.nodes = nodes;
+    # far deeper than the node limit reaches; there so that an engine which
+    # ignores the limit fails this test instead of searching to depth 62
+    limits.depth = 10;
+    think(s, p, ?limits);
+}
+
+test "search: a node limit stops exactly there, and repeats exactly" {
+    var p: Position;
+    if (!pos.set_fen(?p, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")) { ret 1; }
+    var a: Search;
+    search_nodes(?p, 20000, ?a);
+    if (a.nodes != 20000)  { ret 2; }
+    if (a.best == mv.NONE) { ret 3; }
+    # the point of a node limit: the same request gives the same answer
+    var b: Search;
+    search_nodes(?p, 20000, ?b);
+    if (b.nodes != a.nodes || b.best != a.best || b.depth_reached != a.depth_reached) { ret 4; }
+    ret 0;
+}
+
+test "search: movestogo divides the clock by the moves left" {
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    var limits: Limits;
+    limits.wtime = 60000;
+    limits.btime = 60000;
+    # no movestogo: a thirtieth
+    if (budget_ms(?p, ?limits) != 2000) { ret 2; }
+    limits.movestogo = 10;
+    if (budget_ms(?p, ?limits) != 6000) { ret 3; }
+    # one move to go still keeps the cap of a third in reserve
+    limits.movestogo = 1;
+    if (budget_ms(?p, ?limits) != 20000) { ret 4; }
     ret 0;
 }
