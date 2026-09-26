@@ -48,6 +48,11 @@ days while being structurally incapable of failing - one held a stale node
 count, one had a literal `\n` where a line continuation belonged and had never
 executed once.
 
+**Documentation moves with the code.** Every change that measures, finishes,
+or alters something updates the ledger and the docs in the same commit, before
+the turn ends (ROADMAP rule 20; the checklist is
+`.cursor/rules/docs-stay-current.mdc`, which Cursor agents load automatically).
+
 **No performance claim without a measurement next to it.** Not "this should be
 faster". A `bench` number, or nothing. Node rates are only comparable across
 identical search trees; a change that alters pruning changes the tree, and
@@ -176,7 +181,8 @@ exit code is the one that matters.
 
 **machete 0.1** is network A (md5 `b9f0183b`), about 3100-3200 on the CCRL
 40/15 scale at 3+2 on one thread (ladder 4: Spike 1.4 and Rybka 2.3.2a, 40
-games each). It was first released from mach-portfolio as `machete-v0.1`;
+games each; ladder 4 has no line in `RESULTS.tsv`, so treat the range as
+unverified until P0-8). It was first released from mach-portfolio as `machete-v0.1`;
 here it is `v0.1.0`.
 
 Releases follow the template's flow (see *Releases* in the README): set
