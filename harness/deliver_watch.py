@@ -24,6 +24,7 @@ folder as it stood when it began.
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -31,11 +32,14 @@ import sys
 import time
 
 DELIVERABLES = "E:/machete/claude/deliverables"
+# which binary and network each candidate is; the commit that built each
+# binary is in DELIVERABLES/manifest.json, so a faster build of the same
+# search (an identical tree) can replace a binary while this runs
 CANDIDATES = {
-    "bundle+c2": ("bundle.exe", "0f0da00", "c2.nnue"),
-    "main+c2": ("main.exe", "175928f", "c2.nnue"),
-    "bundle+A": ("bundle.exe", "0f0da00", "A.nnue"),
-    "main+A": ("main.exe", "175928f", "A.nnue"),
+    "bundle+c2": ("bundle.exe", "c2.nnue"),
+    "main+c2": ("main.exe", "c2.nnue"),
+    "bundle+A": ("bundle.exe", "A.nnue"),
+    "main+A": ("main.exe", "A.nnue"),
 }
 
 
@@ -97,10 +101,17 @@ def check(exe, net):
     return ""
 
 
+def fingerprint(name):
+    """What delivering this candidate now would put in the folder."""
+    exe_name, net_name = CANDIDATES[name]
+    return (name, md5(os.path.join(DELIVERABLES, exe_name)), md5(os.path.join(DELIVERABLES, net_name)))
+
+
 def deliver(name, folder, log):
-    exe_name, commit, net_name = CANDIDATES[name]
+    exe_name, net_name = CANDIDATES[name]
     exe = os.path.join(DELIVERABLES, exe_name)
     net = os.path.join(DELIVERABLES, net_name)
+    commit = json.load(open(os.path.join(DELIVERABLES, "manifest.json")))[exe_name]
     problem = check(exe, net)
     if problem:
         log("NOT delivering {}: {}".format(name, problem))
@@ -135,11 +146,11 @@ def main():
             log("a referee is running: the folder is frozen, watcher exiting")
             return 0
         v = verdicts(args.ledger)
-        want = choose(v)
+        want = fingerprint(choose(v))
         if want != current:
             log("verdicts: " + "; ".join("{} {}".format(k, v.get(k, "pending")[:40])
                                           for k in ("SPRT-C-FULL", "SPRT-C-NET2", "SPRT-C-BUNDLE")))
-            if deliver(want, args.folder, log):
+            if deliver(want[0], args.folder, log):
                 current = want
         time.sleep(args.interval)
 
