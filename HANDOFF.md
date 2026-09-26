@@ -63,8 +63,13 @@ executable in place. That has produced a phantom regression, a passing gate on
 an unbuilt exe, and two identical files presented as an A/B pair. Hash the
 binary or check the exit code.
 
-**Measure on a quiet machine.** An orphaned match process once held four cores
-and put every nps figure 20% low.
+**Measure on a quiet machine, through the queue.** An orphaned match process
+once held four cores and put every nps figure 20% low, and the owner runs
+tournaments here. Every match, SPRT, ladder or data-generation run is a job
+for `harness/jobqueue.py` (ROADMAP P0-5), never started by hand; its single
+runner waits for a quiet machine and writes the ledger line. Before running
+anything directly, `py -3.7 harness/jobqueue.py status` says what else is on
+the machine.
 
 ## The Mach language, briefly
 
@@ -176,6 +181,24 @@ owns that path now, with `MACHETE_BIN` to override it.
 Note that `mach run` does **not** rebuild. A failed build leaves the previous
 binary in place, so `mach build` and `mach run` are two steps and the build's
 exit code is the one that matters.
+
+### Measuring: the job queue
+
+```bash
+py -3.7 harness/jobqueue.py status                 # queue, runner, and what is busy
+py -3.7 harness/jobqueue.py submit --id SPRT-S06 --change "S-06: mate distance pruning" \
+    --predicted +3 --against "dev (b454e97)" --tc "movetime 200" \
+    --requires E:/machete/ab/s06.exe -- py -3.7 -u harness/match.py ...
+powershell -File harness/detach.ps1 "py -3.7 -u harness/jobqueue.py run"   # the one runner
+```
+
+Copy both binaries of an A/B out of `out/` (for example to `E:/machete/ab/`)
+and hash them before submitting: the job runs later, and a rebuild in between
+would otherwise change what it measures. Jobs live in `data/queue/` (pending,
+running, done, failed, logs); the runner's own log is `data/queue/runner.log`.
+`--requires` holds a job until its input exists, so a job can be submitted
+before the network it tests has finished training - as long as it points at
+the finished copy.
 
 ## Releases
 

@@ -13,7 +13,7 @@ What to update, and when:
 
 | you did | update |
 |---|---|
-| ran any test, match, SPRT, bench or profile | a line in `RESULTS.tsv` (pass or fail), and the figure wherever it is quoted |
+| ran any test, match, SPRT, bench or profile | a line in `RESULTS.tsv` (pass or fail), and the figure wherever it is quoted. Matches and SPRTs go through `harness/jobqueue.py`, which writes the line itself; still update the roadmap and wherever the figure is quoted |
 | finished, started or abandoned a work package | its row or entry in `ROADMAP_3500.md` (mark **Done**, **Rejected**, or **In progress** with the branch) |
 | changed a search, eval or protocol behaviour | `fixtures/bench.expected` if the node count moved, `HANDOFF.md` "What is actually open", the README section describing it |
 | tested or broke an assumption | its entry in `ASSUMPTIONS.md` (measured / open / retired) |

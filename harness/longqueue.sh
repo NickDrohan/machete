@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY: new measurements are jobs for harness/jobqueue.py (ROADMAP P0-5).
+# The stages below are still to be converted; do not add new ones here.
+#
 # A night (or two) of unattended work, ordered so a partial run still answers
 # something. Each stage writes its own result file and a stage that fails does
 # not stop the ones after it.

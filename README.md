@@ -42,7 +42,8 @@ Nothing allocates: the position, its 1024-ply history and each move list are fix
 work packages for agents. [HANDOFF.md](HANDOFF.md) is the entry point for the Mach side: which files are
 the engine and which are the harness, the house rules and where they came
 from, and what is genuinely open. [ASSUMPTIONS.md](ASSUMPTIONS.md) is the
-evidence behind it.
+evidence behind it. [CLAUDE.md](CLAUDE.md) is the short version for agents: the job queue,
+the documentation rule, and this machine's practicalities.
 
 Measurements go through one queue, never started by hand: two at once
 contaminate each other. `harness/jobqueue.py submit --id ... --predicted ... -- <command>`
