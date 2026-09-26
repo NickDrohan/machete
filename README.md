@@ -564,7 +564,7 @@ branch, use `gh workflow run CI --ref <branch> -f heavy=all`.
 The last job, `gate`, is the check the branch rules require. It fails if any
 other job failed, or if a job is missing from its `needs`.
 
-The compiler version is `MACH_VERSION` in `ci.yml` (5.11.0, the version machete is
+The compiler version is `MACH_VERSION` in `ci.yml` (6.0.0, the version machete is
 built and gated with). Change it together with the `mach` range in `mach.toml`.
 
 CI builds, tests, checks formatting and cross-builds; it does not run `check.sh`,

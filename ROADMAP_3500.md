@@ -492,7 +492,7 @@ inside one training run without a tournament saying it helps.
 
 | id | territory | change | tier |
 |---|---|---|---|
-| X-01 | MACH | **Done:** mach 5.11.0, std 7.1.0, the widen written as a literal at speed parity (commit c9e8847). Was: bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
+| X-01 | MACH | **Done, again (#13):** mach 6.0.0, std 9.0.0 - tests renamed to identifiers, darwin-aarch64 restored (mach#3888 fixed), same tree, 2.6% faster. Before that: mach 5.11.0, std 7.1.0, the widen written as a literal at speed parity (commit c9e8847). Was: bump the pins (mach 5.9.0, std v3.2.0 at `62bd03f`). mach#3738 and #3739 are closed upstream; if the direct widen-then-multiply is now faster, delete the masking workaround in `nnue.mach`. See briar-systems/mach#3736 | B |
 | X-02 | MACH | `#[embed]` the network into the binary | A |
 | X-03 | MACH | One owner for `MAX_THREADS` | A |
 | X-05 | MACH | Raise `MAX_PLY` from 64 (it sizes killers, evals and the PV, and quiescence returns a static eval at ply 63); strong engines use 128 or more, and a faster engine in a long endgame will reach it. Bench must not move | A |

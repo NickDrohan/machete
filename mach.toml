@@ -1,7 +1,7 @@
 [project]
 id = "machete"
 version = "0.2.0"
-mach = "^5.11"
+mach = "^6.0"
 src = "src"
 out = "out/{target.name}/{profile.name}"
 
@@ -25,9 +25,10 @@ isa = "x86_64"
 os  = "darwin"
 abi = "sysv64"
 
-# darwin-aarch64 is left out until briar-systems/mach#3888: the 128 MB
-# transposition table puts dynamic call stubs out of a 26-bit branch's reach.
-# Apple silicon runs the darwin-x86_64 build under Rosetta.
+[target.darwin-aarch64]
+isa = "aarch64"
+os  = "darwin"
+abi = "aapcs64"
 
 [artifact.machete]
 default = true
@@ -72,4 +73,4 @@ float_reassoc = false
 
 [dep.std]
 git = "https://github.com/briar-systems/mach-std"
-version = "^7.0"
+version = "^9.0"

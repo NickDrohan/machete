@@ -183,7 +183,7 @@ pub fun parse_uci(p: *Position, text: str) Move {
     ret mv.NONE;
 }
 
-test "movegen: twenty moves from the start" {
+test twenty_moves_from_start {
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
     var list: MoveList;
@@ -194,7 +194,7 @@ test "movegen: twenty moves from the start" {
     ret 0;
 }
 
-test "movegen: castling is refused through an attacked square" {
+test castling_refused_through_attacked_square {
     var p: Position;
     # black rook on f8 covers f1, so white may castle queenside only
     if (!pos.set_fen(?p, "4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1")) { ret 1; }
@@ -212,7 +212,7 @@ test "movegen: castling is refused through an attacked square" {
     ret 0;
 }
 
-test "movegen: parse_uci finds legal moves only" {
+test parse_uci_finds_legal_moves_only {
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
     val m: Move = parse_uci(?p, "e2e4");
@@ -236,7 +236,7 @@ fun accs_equal(a: *nn.Acc, b: *nn.Acc) bool {
     ret true;
 }
 
-test "nnue: the incremental accumulator matches a fresh one, move by move" {
+test nnue_incremental_accumulator_matches_fresh_every_move {
     pos.init();
 
     # weights spread over a wide range, so a wrong feature index or a missed
@@ -306,7 +306,7 @@ test "nnue: the incremental accumulator matches a fresh one, move by move" {
     ret 0;
 }
 
-test "movegen: a move the pin test calls safe never leaves the king in check" {
+test move_pin_test_calls_safe_never_leaves_king_check {
     pos.init();
     var r:       u64 = 0x2545F4914F6CDD1D;
     var game:    i64 = 0;

@@ -6,6 +6,9 @@ source "$here/scripts/gates.sh"
 
 echo "machete"
 build_gates "$here"
+# mach 5.12+ tests only the default artifact's modules, so the decoder's own
+# tests (binpack.mach) run under its artifact or not at all
+gate "unit tests of the binpack artifact" 0 "$mach" test "$here" --bin binpack --quiet
 
 # The toolchain claims cross-compilation; this is that claim as a gate.
 # Only windows-x86_64 is ever run, so this says "it builds", not "it works".

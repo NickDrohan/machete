@@ -354,7 +354,7 @@ pub fun loop(exe: str) i64 {
     ret 0;
 }
 
-test "uci: tokenises a command line" {
+test tokenises_command_line {
     var line: [64]u8;
     var t:    Tokens;
     val text: str = "position startpos moves e2e4";
@@ -371,7 +371,7 @@ test "uci: tokenises a command line" {
     ret 0;
 }
 
-test "uci: position command applies moves" {
+test position_command_applies_moves {
     pos.init();
     var line: [64]u8;
     var t:    Tokens;
@@ -390,7 +390,7 @@ test "uci: position command applies moves" {
     ret 0;
 }
 
-test "uci: go parses its limits" {
+test go_parses_limits {
     var line: [64]u8;
     var t:    Tokens;
     val text: str = "go wtime 300000 btime 300000 winc 2000 movetime 500";
@@ -410,7 +410,7 @@ test "uci: go parses its limits" {
     ret 0;
 }
 
-test "uci: go parses nodes and movestogo" {
+test go_parses_nodes_movestogo {
     var line: [64]u8;
     var t:    Tokens;
     val text: str = "go wtime 90000 btime 90000 movestogo 12 nodes 50000";
@@ -428,7 +428,7 @@ test "uci: go parses nodes and movestogo" {
     ret 0;
 }
 
-test "uci: go ponder is parsed alongside the clock" {
+test go_ponder_parsed_alongside_clock {
     var line: [64]u8;
     var t:    Tokens;
     val text: str = "go ponder wtime 120000 btime 90000";

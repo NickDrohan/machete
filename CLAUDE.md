@@ -67,7 +67,7 @@ Commit hashes quoted in docs must resolve in this repository.
 ## Practicalities on this machine
 
 - Compiler: `mach` is not on PATH; `$MACH` is
-  `D:/Dev/Claude/mach-portfolio/tools/mach-5.11.0/mach.exe`. `mach run` does not
+  `E:/machete/tools/mach-6.0.0/mach.exe`. `mach run` does not
   rebuild; check the build's exit code.
 - `bash` in PowerShell is a broken WSL; use `C:\Program Files\Git\bin\bash.exe`
   for `check.sh`, with `PYTHON` and `MACH` set.
