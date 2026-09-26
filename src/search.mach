@@ -37,6 +37,10 @@ pub val MAX_PLY: i64 = 64;
 # no static evaluation: the node was in check
 val NO_EVAL: i64 = 0 - 32000;
 
+# the shallowest node that tries a singular extension; below it the extra
+# search costs more than a ply of extension on one move can return
+val SINGULAR_DEPTH: i64 = 8;
+
 # How much to reduce the Nth quiet move at depth D.
 #
 # The old rule reduced by one, or two past the eighth move. That is far too
@@ -175,9 +179,11 @@ pub rec Search {
     played:  [64]Move;
     mover:   [64]u8;
     # each node's static evaluation, by ply, or NO_EVAL when it was in check
-    evals:  [64]i64;
-    pv:     [64][64]Move;
-    pv_len: [64]i64;
+    evals: [64]i64;
+    # the move a singular-extension search at this ply leaves out, or NONE
+    excluded: [64]Move;
+    pv:       [64][64]Move;
+    pv_len:   [64]i64;
 }
 
 pub fun reset(s: *Search) {
@@ -195,6 +201,7 @@ pub fun reset(s: *Search) {
     for (i < MAX_PLY) {
         s.killers[i][0] = mv.NONE;
         s.killers[i][1] = mv.NONE;
+        s.excluded[i]   = mv.NONE;
         s.pv_len[i]     = 0;
         i               = i + 1;
     }
@@ -466,9 +473,15 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var alpha: i64  = alpha_in;
     val is_pv: bool = beta > alpha + 1;
 
-    var tt_move: Move = mv.NONE;
-    var entry:   tt.Entry;
-    if (tt.probe(p.key, ?entry)) {
+    # a singular-extension search is this same position with one move left
+    # out, so the table's entry for the position does not describe it: it
+    # neither takes a cutoff from the table nor stores one
+    val excluded: Move = s.excluded[ply];
+    var tt_move:  Move = mv.NONE;
+    var tt_hit:   bool = false;
+    var entry:    tt.Entry;
+    if (excluded == mv.NONE && tt.probe(p.key, ?entry)) {
+        tt_hit  = true;
         tt_move = entry.move;
         if (!is_pv && entry.depth >= depth) {
             var score: i64 = entry.score;
@@ -517,7 +530,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # null-move pruning: if passing still leaves the opponent unable to reach
     # beta, this position is good enough to cut. skipped in check, in pawn-only
     # endgames (zugzwang), and when the previous move was already a pass.
-    if (allow_null && !is_pv && !in_check && depth >= 3 && has_pieces(p, p.side)) {
+    if (allow_null && excluded == mv.NONE && !is_pv && !in_check && depth >= 3 && has_pieces(p, p.side)) {
         # a deeper null search still refutes almost everything it used to, and
         # the plies saved compound: 2 + depth/6 was costing about a ply of
         # final depth against 3 + depth/3
@@ -527,6 +540,27 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         pos.unmake_null(p);
         if (s.stop != 0)   { ret 0; }
         if (score >= beta) { ret beta; }
+    }
+
+    # singular extension: when the table's move scored well at nearly this
+    # depth, search every other move, shallower, against a bar a little below
+    # its score. If none reaches the bar the move is singular - the position
+    # hangs on it - and it is searched a ply deeper. If the bar is above beta
+    # and some other move reaches it too, two moves already beat beta and the
+    # node is cut (multi-cut).
+    var extension: i64 = 0;
+    if (ply > 0 && excluded == mv.NONE && tt_hit && tt_move != mv.NONE && depth >= SINGULAR_DEPTH
+        && entry.depth >= depth - 3 && entry.flag != tt.UPPER
+        && entry.score < MATE_FOUND && entry.score > 0 - MATE_FOUND) {
+        val bar: i64 = entry.score - 2 * depth;
+        s.excluded[ply] = tt_move;
+        val score: i64 = search_node(s, p, (depth - 1) / 2, bar - 1, bar, ply, false);
+        s.excluded[ply] = mv.NONE;
+        # the excluded search ran at this ply and may have left its own line
+        s.pv_len[ply] = 0;
+        if (s.stop != 0) { ret 0; }
+        if (score < bar) { extension = 1; }
+        or (bar >= beta) { ret bar; }
     }
 
     var list: MoveList;
@@ -559,6 +593,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     for (i < list.count) {
         pick(?list, ?scores[0], i);
         val m: Move = list.moves[i];
+        if (m == excluded) {
+            i = i + 1;
+            cnt;
+        }
         pos.make(p, m);
         if (pos.left_in_check(p)) {
             pos.unmake(p);
@@ -592,7 +630,9 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
         var score: i64 = 0;
         if (legal == 1) {
-            score = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
+            var grow: i64 = 0;
+            if (m == tt_move) { grow = extension; }
+            score = 0 - search_node(s, p, depth - 1 + grow, 0 - beta, 0 - alpha, ply + 1, true);
         }
         or {
             # late move reduction: quiet moves ordered last are searched
@@ -668,9 +708,13 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     }
 
     if (legal == 0) {
-        if (in_check) { ret 0 - MATE + ply; }
+        # with the one legal move left out there is nothing to say; the bar
+        # is not reached, so the move is singular, which it is
+        if (excluded != mv.NONE) { ret alpha_in; }
+        if (in_check)            { ret 0 - MATE + ply; }
         ret 0;
     }
+    if (excluded != mv.NONE) { ret best; }
 
     var stored: i64 = best;
     if (stored > MATE_FOUND)     { stored = stored + ply; }
