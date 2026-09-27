@@ -29,6 +29,8 @@ The winner of round 2 of the two-agent contest: Claude Code and Cursor each took
 | **machete 0.3** vs team claude's entry | 69 W · 86 D · 45 L · +42 ± 37 | 23 W · 61 D · 16 L · +24 ± 43 |
 | **machete 0.3** vs Koivisto 9.0 (CCRL ~3300) | — | 0 W · 8 D · 32 L · about 380 below (0.2: 0 W · 7 D · 33 L) |
 
+**On an external scale,** 0.3 rates about **3000-3100 on the CCRL Blitz scale** (one CPU), from 140 games against seven listed engines with their published ratings held fixed (`ASSESSMENT.md`). The anchors disagree among themselves by several hundred Elo on this hardware, so it is a range; on it the three releases sit within tens of Elo of each other, and the head-to-head gains in the table above are larger than the external ones.
+
 Team claude's official entry played as 0.2 does (its measured changes came out level or worse, so none shipped; 30 W · 140 D · 30 L against 0.2 at 10+0.1). The full table, both teams' `SYNTHESIS.md` and the referee's log are in `competition/round2/`.
 
 How the entry came to be, since the numbers alone would mislead: the king-bucket evaluation and its network were written and trained by team claude in **round 1** (`N-05`, then set aside as "level with 0.2" after 446 games with an earlier network). Round 2's rules made everything on disk fair game; team cursor rebuilt that work on Mach 6 with the later network, measured it properly, and delivered it - while team claude spent the round on search features that did not pass their tests. The engine is better for it, which was the point.

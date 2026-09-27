@@ -37,10 +37,14 @@ Against Koivisto 9.0 (CCRL 40/15 about 3300) at 60+0.6, 40 games:
   0 wins, 8 draws, 32 losses (0.2 scored 0 wins, 7 draws, 33 losses in the
   same match): roughly 380 Elo below it, and no wins yet against an engine
   of that class.
-Its rating on an external list has not been measured, and the two anchors
-do not agree: 0.2 beat Rybka 2.3.2a 10-0, yet 0.2 and 0.3 alike sit about
-380 Elo under Koivisto 9.0. The earlier estimate of 3100-3200 for 0.1 was
-too high; somewhere near 3000 on the CCRL 40/15 scale is the honest guess.
+On an external scale: about 3000-3100 on the CCRL Blitz scale (2'+1", one
+CPU), from 140 games against seven listed engines (Rybka 2.3.2a, Spike 1.4,
+Koivisto 9.0, Ruffian 1.05, Hermann 2.8, SOS 5.1, AnMon 5.75) with their
+published ratings held fixed. The anchors disagree among themselves by
+several hundred Elo on this hardware, so take the range, not a point; the
+three releases are within tens of Elo of each other on that scale, and the
+head-to-head gains above overstate the external ones. ASSESSMENT.md in the
+repository has the games and the arithmetic.
 
 
 What changed since 0.2
