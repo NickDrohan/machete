@@ -41,7 +41,6 @@ use std.simd.select.select_i16x8;
 use std.simd.shuffle.splat_i16x8;
 use std.simd.shuffle.splat_i32x4;
 
-use bb: machete.bitboard;
 use machete.rng;
 
 use fs:       std.filesystem;
@@ -140,50 +139,6 @@ pub fun stack(id: i64) *Acc {
     ret ?STACKS[id][0];
 }
 
-# A half rebuilt from the board costs a column per piece, up to 32. Most
-# rebuilds follow a king stepping between zones and back, over positions that
-# differ by a few pieces, so each thread keeps, for each side and orientation,
-# the half it last built there and the pieces it was built from; a rebuild
-# then applies only the pieces that differ (an accumulator cache, sometimes
-# called a Finny table). The result is the same sum, so evaluations do not
-# change. A loaded network empties the cache: its sums belong to the weights
-# they were made with.
-#[align(16)]
-rec Cached {
-    v:      [HIDDEN]i16;
-    pieces: [12]u64;
-    valid:  i64;
-}
-
-var CACHE: [STACK_COUNT][2][2 * KING_BUCKETS]Cached;
-
-# empty every thread's cache; to be called whenever the weights change
-pub fun forget_cache() {
-    var id: i64 = 0;
-    for (id < STACK_COUNT) {
-        var side: i64 = 0;
-        for (side < 2) {
-            var o: i64 = 0;
-            for (o < 2 * KING_BUCKETS) {
-                CACHE[id][side][o].valid = 0;
-                o                        = o + 1;
-            }
-            side = side + 1;
-        }
-        id = id + 1;
-    }
-}
-
-# which thread's stack `accs` is, for its cache
-fun stack_id(accs: *Acc) i64 {
-    var id: i64 = 0;
-    for (id < STACK_COUNT) {
-        if (stack(id) == accs) { ret id; }
-        id = id + 1;
-    }
-    ret 0;
-}
-
 # how one side reads the board with its king on `king`: the zone times two,
 # plus one when the board is mirrored left-right to put that king on a-d
 pub fun orient(perspective: i64, king: i64) i64 {
@@ -267,8 +222,8 @@ pub fun mark_refresh(a: *Acc, side: i64) {
     a.refresh[side] = 1;
 }
 
-# build both halves of slot `top`, the position whose piece bitboards are
-# `pieces` (12, by piece code) with the kings on `white_king` and `black_king`.
+# build both halves of slot `top`, the position on `board` (EMPTY is any
+# code past 11) with the kings on `white_king` and `black_king`.
 #
 # Each half is carried up from the deepest slot where it is built, applying
 # every slot's recorded changes on the way. If the way crosses a slot whose
@@ -276,7 +231,7 @@ pub fun mark_refresh(a: *Acc, side: i64) {
 # carried across it, and it is rebuilt at `top` from the board instead;
 # the slots in between stay unbuilt for that half, and whichever of them is
 # next evaluated, as the top, is rebuilt the same way.
-pub fun materialise(accs: *Acc, top: i64, pieces: *u64, white_king: i64, black_king: i64) {
+pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_king: i64) {
     var side: i64 = 0;
     for (side < 2) {
         var first: i64 = top;
@@ -290,7 +245,7 @@ pub fun materialise(accs: *Acc, top: i64, pieces: *u64, white_king: i64, black_k
         if (crossed) {
             var king: i64 = white_king;
             if (side == 1) { king = black_king; }
-            rebuild_side(?accs[top], side, king, pieces, stack_id(accs));
+            rebuild_side(?accs[top], side, king, board);
         }
         or {
             var at: i64 = first + 1;
@@ -311,68 +266,21 @@ pub fun materialise(accs: *Acc, top: i64, pieces: *u64, white_king: i64, black_k
     }
 }
 
-# one half for the pieces in `pieces`, oriented to `king`, through thread
-# `id`'s cache: only the pieces that differ from the cached half are applied
-fun rebuild_side(a: *Acc, side: i64, king: i64, pieces: *u64, id: i64) {
-    val o: i64     = orient(side, king);
-    val c: *Cached = ?CACHE[id][side][o];
-    if (c.valid == 0) {
-        var i: i64 = 0;
-        for (i < HIDDEN) {
-            c.v[i] = FEATURE_BIAS[i];
-            i      = i + 1;
-        }
-        var k: i64 = 0;
-        for (k < 12) {
-            c.pieces[k] = 0;
-            k           = k + 1;
-        }
-        c.valid = 1;
-    }
-    var pc: i64 = 0;
-    for (pc < 12) {
-        val now:  u64 = pieces[pc];
-        val was:  u64 = c.pieces[pc];
-        var gone: u64 = was & (0 - 1u64 ^ now);
-        var came: u64 = now & (0 - 1u64 ^ was);
-        for (gone != 0) {
-            sub_column(?c.v[0], index(side, o, pc::u8, bb.lsb(gone)));
-            gone = gone & (gone - 1);
-        }
-        for (came != 0) {
-            add_column(?c.v[0], index(side, o, pc::u8, bb.lsb(came)));
-            came = came & (came - 1);
-        }
-        c.pieces[pc] = now;
-        pc           = pc + 1;
-    }
-    val to: *i16 = ?a.v[side][0];
-    var i:  i64  = 0;
+# one half from the bias and every piece on `board`, oriented to `king`
+fun rebuild_side(a: *Acc, side: i64, king: i64, board: *u8) {
+    a.king[side] = orient(side, king);
+    var i: i64 = 0;
     for (i < HIDDEN) {
-        store8(to, i, load8(?c.v[0], i));
-        i = i + 8;
+        a.v[side][i] = FEATURE_BIAS[i];
+        i            = i + 1;
     }
-    a.king[side]    = o;
+    var sq: i64 = 0;
+    for (sq < 64) {
+        if (board[sq] < 12) { add_side(a, side, board[sq], sq); }
+        sq = sq + 1;
+    }
     a.ready[side]   = 1;
     a.refresh[side] = 0;
-}
-
-fun add_column(into: *i16, feature: i64) {
-    val base: i64 = feature * HIDDEN;
-    var i:    i64 = 0;
-    for (i < HIDDEN) {
-        store8(into, i, load8(into, i) + load8(?FEATURE_WEIGHTS[base], i));
-        i = i + 8;
-    }
-}
-
-fun sub_column(into: *i16, feature: i64) {
-    val base: i64 = feature * HIDDEN;
-    var i:    i64 = 0;
-    for (i < HIDDEN) {
-        store8(into, i, load8(into, i) - load8(?FEATURE_WEIGHTS[base], i));
-        i = i + 8;
-    }
 }
 
 # start from the bias, with no pieces on the board, each half oriented to
@@ -788,7 +696,6 @@ pub fun load(path: str) bool {
     val ok:   bool                = read_body(f);
     val shut: err[io_error.Error] = fs.close(?f);
     loaded = ok;
-    forget_cache();
     ret ok;
 }
 
