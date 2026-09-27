@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  MACH_VERSION: v6.0.0
+  MACH_VERSION: v6.5.0
 
 jobs:
   plan:

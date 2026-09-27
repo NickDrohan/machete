@@ -75,10 +75,10 @@ var SCALE: i64 = 400;
 #[align(16)]
 pub var FEATURE_WEIGHTS: [KING_BUCKETS * INPUTS * HIDDEN]i16;
 #[align(16)]
-pub var FEATURE_BIAS: [HIDDEN]i16;
+pub var FEATURE_BIAS:    [HIDDEN]i16;
 #[align(16)]
-pub var OUTPUT_WEIGHTS: [BUCKETS * 2 * HIDDEN]i16;
-pub var OUTPUT_BIAS:    [BUCKETS]i32;
+pub var OUTPUT_WEIGHTS:  [BUCKETS * 2 * HIDDEN]i16;
+pub var OUTPUT_BIAS:     [BUCKETS]i32;
 
 # whether a network file has been read; until it has, the engine uses the
 # hand-written evaluation
@@ -323,9 +323,9 @@ pub fun avx2_label() str {
 
 pub fun detect_avx2() bool {
     $if ($mach.build.arch == $mach.arch.x86_64) {
-        var leaf7: u64 = 0;
-        var leaf1: u64 = 0;
-        var xcr0:  u64 = 0;
+        var leaf7: u64  = 0;
+        var leaf1: u64  = 0;
+        var xcr0:  u64  = 0;
         val p7:    *u64 = ?leaf7;
         val p1:    *u64 = ?leaf1;
         val px:    *u64 = ?xcr0;
@@ -362,7 +362,7 @@ pub fun detect_avx2() bool {
 # into (rdx) += row (rcx). Callers check AVX2 first (see AVX2).
 fun add_column_avx2(into: *i16, row: *i16) {
     $if ($mach.build.arch == $mach.arch.x86_64) {
-    asm x86_64 {
+        asm x86_64 {
         mov rdx, {into}
         mov rcx, {row}
             .byte 0xC5, 0xFE, 0x6F, 0x82, 0x00, 0x00, 0x00, 0x00 :: writes(xmm0)
@@ -422,7 +422,7 @@ fun add_column_avx2(into: *i16, row: *i16) {
 # into (rdx) -= row (rcx). Callers check AVX2 first (see AVX2).
 fun sub_column_avx2(into: *i16, row: *i16) {
     $if ($mach.build.arch == $mach.arch.x86_64) {
-    asm x86_64 {
+        asm x86_64 {
         mov rdx, {into}
         mov rcx, {row}
             .byte 0xC5, 0xFE, 0x6F, 0x82, 0x00, 0x00, 0x00, 0x00 :: writes(xmm0)
@@ -481,7 +481,7 @@ fun sub_column_avx2(into: *i16, row: *i16) {
 # copy a half, 512 bytes, as 16 ymm registers: to (rdx) = from (rcx)
 fun copy_half_avx2(to: *i16, from: *i16) {
     $if ($mach.build.arch == $mach.arch.x86_64) {
-    asm x86_64 {
+        asm x86_64 {
         mov rdx, {to}
         mov rcx, {from}
             .byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00 :: writes(xmm0)
@@ -520,7 +520,6 @@ fun copy_half_avx2(to: *i16, from: *i16) {
     }
     }
 }
-
 
 pub fun add(a: *Acc, pc: u8, sq: i64) {
     add_side(a, 0, pc, sq);
@@ -968,11 +967,11 @@ test nnue_the_pmaddwd_kernel_sums_exactly_what_the_portable_loop_does {
 
 test avx2_kernels_match_the_sse2_loops {
     if (!detect_avx2()) { ret 0; }
-    var r: rng.Rng = rng.seeded(20260927);
-    var a:   [HIDDEN]i16;
-    var b:   [HIDDEN]i16;
-    var row: [HIDDEN]i16;
-    var round: i64 = 0;
+    var r:     rng.Rng = rng.seeded(20260927);
+    var a:     [HIDDEN]i16;
+    var b:     [HIDDEN]i16;
+    var row:   [HIDDEN]i16;
+    var round: i64     = 0;
     for (round < 200) {
         var i: i64 = 0;
         for (i < HIDDEN) {
