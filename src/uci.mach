@@ -338,7 +338,7 @@ pub fun loop(exe: str) i64 {
                 var path: [256]u8;
                 join_tokens(?t, 4, t.count, ?path[0], 256);
                 if (nn.load(?path[0])) {
-                    print.printlnf("info string network loaded from {}", ?path[0]);
+                    print.printlnf("info string network loaded from {}, {} accumulator", ?path[0], nn.avx2_label());
                 }
                 or {
                     print.printlnf("info string could not read {}, keeping the hand-written evaluation", ?path[0]);
