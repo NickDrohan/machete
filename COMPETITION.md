@@ -28,10 +28,16 @@ common start.
 ## What each team may use
 
 - Everything in the repository at the fork, including network A.
-- The data on disk at the fork, read-only: `E:/machete/corpora/`,
-  `E:/machete/subsets/`, `E:/machete/sizes/`, `data/*.bin` in the main
-  worktree, and the networks under `E:/machete/`. Copy what you need into your
-  own data folder, `E:/machete/<team>/`; never modify the originals.
+- The data on disk at the fork, read-only. Owner ruling 2026-09-25: **all of
+  it is fair game**, including:
+  - everything under `E:/machete/` (the Seagate: corpora, subsets, sizes,
+    nets, scalenets, games, releases, and any further trees there);
+  - the training corpora under
+    `D:/Dev/Claude/mach-portfolio/products/machete/data/` (`train*.bin`,
+    `theoden_*.bin`, and anything else already there).
+  Copy what you need into your own data folder, `E:/machete/<team>/`; never
+  modify the originals. An outside corpus with a different label scale has
+  already lost Elo once (HIST-06); consistency still matters more than depth.
 - The external engines on this machine (Arena's engines, Stockfish and the
   rest) as teachers, labellers, sparring partners and analysers.
 - **New data, within the budget:** at most **48 machine-hours** of data

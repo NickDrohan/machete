@@ -28,8 +28,13 @@ def random_records(count, seed):
     rng = np.random.RandomState(seed)
     rows = np.zeros(count, dtype=RECORD)
     rows["stm"] = rng.randint(0, 2, count)
-    rows["count"] = rng.randint(0, 33, count)
-    rows["pieces"] = rng.randint(0, 12, (count, 32))
+    # one king a side in the first two slots, as every real position has;
+    # everything else any other piece
+    rows["count"] = rng.randint(2, 33, count)
+    others = np.array([0, 1, 2, 3, 4, 6, 7, 8, 9, 10])
+    rows["pieces"] = others[rng.randint(0, len(others), (count, 32))]
+    rows["pieces"][:, 0] = 5
+    rows["pieces"][:, 1] = 11
     rows["squares"] = np.argsort(rng.rand(count, 64), axis=1)[:, :32]
     rows["score"] = rng.randint(-32000, 32001, count)
     rows["result"] = rng.randint(0, 3, count)
@@ -50,6 +55,19 @@ def main():
     args = parser.parse_args()
 
     rows = random_records(args.records, args.seed)
+
+    # the vectorised reference against the one-piece-at-a-time definition
+    # the engine is held to (reference.feature_index, via agree.py)
+    us_ref, them_ref = reference.feature_indices(rows[:2000])
+    for r, row in enumerate(rows[:2000]):
+        pieces = [(int(c) // 6, int(c) % 6, int(q))
+                  for c, q in zip(row["pieces"][:row["count"]], row["squares"][:row["count"]])]
+        kings = {colour: square for colour, kind, square in pieces if kind == 5}
+        for side, got in ((row["stm"], us_ref[r]), (row["stm"] ^ 1, them_ref[r])):
+            want = sorted(reference.feature_index(side, colour, kind, square, kings[side])
+                          for colour, kind, square in pieces)
+            if sorted(got[got != reference.KING_BUCKETS * reference.INPUTS].tolist()) != want:
+                raise SystemExit("reference.feature_indices disagrees with feature_index on record {}".format(r))
     corpus = train.Corpus([(rows, len(rows))], args.device)
     order = np.random.RandomState(args.seed).permutation(len(rows))
     index = np.sort(order[:len(rows) // 2])
