@@ -1,10 +1,10 @@
 # Where machete stands, measured from outside
 
-*2026-09-27, 02:50. Every previous strength figure for this engine came from games against its own earlier versions, or from an external anchor with an assumed rating; this is the first rating built only from engines with published ratings, and it changes the picture.*
+*2026-09-27, updated 04:05 with the second pass. Every previous strength figure for this engine came from games against its own earlier versions, or from an external anchor with an assumed rating; this is the first rating built only from engines with published ratings, and it changes the picture.*
 
 ## 1. What was measured
 
-Every release - 0.1.0 (network A), 0.2.0 (C2), 0.3.0 (N-05 king buckets, C7) - played 20 games against each of seven engines with entries on CCRL's lists, and four anchor pairs played each other, under CCRL Blitz's conditions as far as one machine allows: 2 minutes + 1 second, one thread each, 128 MB, own books off, balanced openings played from both sides, no adjudication, ten games at once on twelve physical cores. 500 games, 25 pairings, no time forfeits except three by Rybka against 0.2.0. Ratings are then fitted by maximum likelihood with the anchors held at their published ratings (`harness/rating.py`; the same estimator Ordo and BayesElo reduce to with anchors fixed and no draw model), with bootstrap intervals over games. The harness's own head-to-head Elo formula plays no part in it.
+Every release - 0.1.0 (network A), 0.2.0 (C2), 0.3.0 (N-05 king buckets, C7) - played 20 games against each of seven engines with entries on CCRL's lists, four anchor pairs played each other, and in a second pass 0.2.0 and 0.3.0 played 60 more games against each of the three anchors nearest their strength (Spike, Rybka, Koivisto), under CCRL Blitz's conditions as far as one machine allows: 2 minutes + 1 second, one thread each, 128 MB, own books off, balanced openings played from both sides, no adjudication, ten games at once on twelve physical cores. 860 games, 31 pairings, no time forfeits except three by Rybka against 0.2.0 in the first pass. Ratings are then fitted by maximum likelihood with the anchors held at their published ratings (`harness/rating.py`; the same estimator Ordo and BayesElo reduce to with anchors fixed and no draw model), with bootstrap intervals over games. The harness's own head-to-head Elo formula plays no part in it.
 
 The anchors and the ratings used, from CCRL's Blitz list (search snippets; the site itself is behind a bot wall and the figures should be re-read from the list directly):
 
@@ -30,6 +30,15 @@ Machete's score against each anchor (wins-draws-losses, its performance relative
 
 \* three of 0.2.0's wins against Rybka were Rybka losing on time; without them 10-5-2.
 
+The second pass, 60 games each against the three nearest anchors, with the totals over both passes (80 games a pairing):
+
+| | Spike 1.4 | Rybka 2.3.2a | Koivisto 9.0 | pooled, both passes |
+|---|---|---|---|---|
+| **0.2.0** second pass | 40-15-5 | 33-19-8 | 2-10-48 | |
+| **0.2.0** both passes | 54-19-7 (79.4%) | 46-24-10 (72.5%) | 2-13-65 (10.6%) | 54.2% of 240 |
+| **0.3.0** second pass | 36-19-5 | 40-16-4 | 0-8-52 | |
+| **0.3.0** both passes | 51-23-6 (78.1%) | 50-23-7 (76.9%) | 0-10-70 (6.2%) | 53.8% of 240 |
+
 The anchors against each other, which is what tests whether their published gaps hold here:
 
 | pairing | list gap | measured | games |
@@ -43,14 +52,14 @@ The anchors against each other, which is what tests whether their published gaps
 
 Refitting each anchor as if it were unrated, against everything else with the other five fixed, puts every one of them 330 to 560 Elo below its list rating (Rybka 2977 -> 2417, Spike 2946 -> 2521, Ruffian 2673 -> 2156, Hermann 2574 -> 2113, SOS 2541 -> 2208, AnMon 2504 -> 2151). The anchor pairs show the same thing in miniature: every measured gap is larger than the list's, by 1.2x to 3x. Two effects, both known: rating lists pool games across two decades of engines and compress the differences between eras, and a modern NNUE engine beats 2005-era engines by more than a 400-Elo gap predicts at a fast time control on modern hardware. A single external scale for this engine therefore does not exist; what exists is a range that depends on which anchors you trust.
 
-| anchors used | 0.1.0 | 0.2.0 | 0.3.0 | what it assumes |
+| anchors used (both passes, 860 games) | 0.1.0 (140 games) | 0.2.0 (320) | 0.3.0 (320) | what it assumes |
 |---|---|---|---|---|
-| all six listed | 3027 (2816-3092) | 3101 (2875-3174) | 3085 (2862-3158) | the weak anchors' 95-100% scores mean what the model says |
-| Spike and Rybka only | 2972 (2736-3059) | 3054 (2801-3146) | 3035 (2788-3127) | the two nearest anchors, the only informative games |
-| the four weakest only | 2785 | 2851 | 2837 | almost no information: 100% scores |
-| Koivisto alone, by direct performance | K - 436 | K - 436 | K - 512 | 20 games at 5-7.5%: +/-200 on its own; 3000-3110 if K = 3450-3550 |
+| all six listed | 2986 (2835-3084) | 3027 (2844-3108) | 3024 (2840-3105) | the weak anchors' 95-100% scores mean what the model says |
+| Spike and Rybka only | 2926 (2761-3053) | 3011 (2824-3098) | 3009 (2820-3095) | the two nearest anchors, the only informative games |
+| the four weakest only (first pass) | 2785 | 2851 | 2837 | almost no information: 100% scores |
+| Koivisto alone, by direct performance | K - 436 | K - 368 | K - 470 | 80 games at 6-11%; 3080-3180 for 0.2.0 and 2980-3080 for 0.3.0 if K = 3450-3550 |
 
-**The statement this supports:** machete 0.3.0 plays at about **3000-3100 on the CCRL Blitz scale, single CPU**, with a statistical uncertainty near +/-100 from 140 games and a systematic uncertainty of the same size from the anchors' era. The three releases are within a few tens of Elo of each other on this scale.
+**The statement this supports:** machete 0.3.0 plays at about **3000-3100 on the CCRL Blitz scale, single CPU**, with a statistical uncertainty near +/-70 from 320 games and a systematic uncertainty of about +/-100 from the anchors' era. 0.2.0 and 0.3.0 are indistinguishable on this scale (3027 against 3024; 54.2% against 53.8% over the same 240 games each), and 0.1.0 sits 40-85 below them.
 
 ## 4. Were the earlier estimates realistic?
 
@@ -58,7 +67,7 @@ Refitting each anchor as if it were unrated, against everything else with the ot
 |---|---|---|
 | 0.1 is "3100-3200 on the CCRL 40/15 scale" | 40 games each against Spike assumed at 2950 and Rybka assumed at 3050, at 3+2; an earlier ladder note retracted a Rybka result for running on every core | Rybka's list rating is 2960-2977, not 3050, and the anchors are worth less here than the list says; 0.1 measures about 2950-3050. Overstated by roughly 150 |
 | 0.2 is +209 +/- 94 (10+0.1) and +179 +/- 91 (60+0.6) over 0.1; +246 +/- 67 in the control match | head-to-head, same book | true as head-to-head numbers. Against the external field, pooled over 140 games each: +50 +/- 95 (0.1's 73.2% to 0.2's 78.6%). Family Elo overstated the gain against other engines by three to four times, which is the usual ratio for self-play-style gains |
-| 0.3 is +54 +/- 34 (10+0.1) and +60 +/- 41 (60+0.6) over 0.2 | the round 2 final, 300 games, same book | not visible here: 0.3.0 scored 77.5% to 0.2.0's 78.6% (-10 +/- 95). At 2+1 with 140 games each this cannot contradict +55, but it does not confirm it; a second pass of 360 games against the three nearest anchors is running to tighten it |
+| 0.3 is +54 +/- 34 (10+0.1) and +60 +/- 41 (60+0.6) over 0.2 | the round 2 final, 300 games, same book | not there against other engines: over 240 games each against Spike, Rybka and Koivisto at 2+1, 0.3.0 scored 53.8% to 0.2.0's 54.2%, a difference of -3 +/- 40. Either the king-bucket gain is specific to playing its own family (the two nets share their data, so 0.3 may exploit exactly 0.2's blind spots), or it is specific to the longer clocks it was measured at (its evaluation is 7% slower a node); this ladder cannot tell which, and a 10+0.1 pass would |
 | 0.2 and 0.3 are "about 380 below Koivisto" | 40 games each at 60+0.6 | consistent: -436 to -512 here at 2+1 |
 | "no wins yet against an engine of that class" | | still true: 0 wins in 60 games against Koivisto across the three releases |
 
@@ -78,7 +87,7 @@ What that buys, as estimates to be measured and not promises: more deep labels a
 
 ## 6. What happens next
 
-- A second ladder pass, 60 games each of 0.2.0 and 0.3.0 against Spike, Rybka and Koivisto (360 games), is queued now and will decide whether 0.3's +55 survives outside the family.
+- The second ladder pass is done: 0.3's +55 over 0.2 does not appear against other engines at 2+1 (-3 +/- 40 over 240 games each). The open question is whether it appears at 10+0.1, where it was measured, against the same anchors: 60 games each against Spike and Rybka at 10+0.1 is a two-hour job worth running.
 - The anchors' exact single-CPU Blitz ratings should be read from the CCRL pages once the site can be reached from the browser pane; the fit re-runs in seconds.
 - The ladder needs anchors *near* the engine: free, listed engines in the 3050-3350 band (Texel 1.07, Wasp 4.5, Igel 2.5, Defenchess 2.2, Laser 1.7, Xiphos 0.6, Ethereal 12.75 are candidates) would turn +/-100 into +/-40, and would also tell whether the era stretch flattens for engines closer in date. Each is a download to E:/ that needs your go-ahead.
 - The 0.3.0 release notes state the head-to-head numbers and the Koivisto anchor correctly; the README's "near 3000" becomes "3000-3100 on the CCRL Blitz scale, measured against seven listed engines", and the notes gain the same line. Nothing else in the release changes.
