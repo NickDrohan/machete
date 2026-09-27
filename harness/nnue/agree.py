@@ -85,6 +85,16 @@ def main():
             print("MISMATCH at {}".format(fen))
             print("  reference {}  engine {}".format(expected, got))
             return 1
+        # every side reads the board mirrored onto its king's half, so the
+        # board mirrored left-right is the same position to the network: a
+        # check that does not depend on the reference sharing the engine's
+        # reading of the zones
+        mirrored = board.transform(chess.flip_horizontal)
+        mirrored.castling_rights = 0
+        out = subprocess.check_output([engine, "nnue", net_path] + mirrored.fen().split())
+        if int(out.decode("ascii").strip()) != got:
+            print("MIRROR MISMATCH at {}: {} against {}".format(fen, got, out.decode("ascii").strip()))
+            return 1
         checked += 1
         sys.stdout.write("\r{} positions agree".format(checked))
         sys.stdout.flush()

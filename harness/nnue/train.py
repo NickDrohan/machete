@@ -32,12 +32,13 @@ import reference
 from reference import RECORD
 
 INPUTS = reference.INPUTS
+KING_BUCKETS = reference.KING_BUCKETS
 BUCKETS = reference.BUCKETS
 QA = reference.QA
 QB = reference.QB
 SCALE = reference.SCALE
 
-PAD = INPUTS            # a frozen all-zero row, so every position has 32 features
+PAD = KING_BUCKETS * INPUTS  # a frozen all-zero row, so every position has 32 features
 LAMBDA = 0.7            # how much of the target is the search score, the rest the result
 CLIP = 127.0 / QB       # the largest weight that survives quantization
 
@@ -45,7 +46,7 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 class Net(nn.Module):
     def __init__(self, hidden):
         super(Net, self).__init__()
-        self.features = nn.EmbeddingBag(INPUTS + 1, hidden, mode="sum", padding_idx=PAD)
+        self.features = nn.EmbeddingBag(PAD + 1, hidden, mode="sum", padding_idx=PAD)
         self.feature_bias = nn.Parameter(torch.zeros(hidden))
         # one output layer per band of piece counts (reference.bucket); all
         # are computed and the position's own is picked, which on a GPU costs
@@ -110,6 +111,7 @@ class Corpus(object):
         self.count = count
         self.squares = torch.arange(64, device=device)[None, :]
         self.slots = torch.arange(32, device=device)[None, :]
+        self.orient = torch.from_numpy(reference.ORIENT).to(device)
 
     def features(self, index):
         """reference.feature_indices, on the device, with the pieces in square
@@ -122,12 +124,20 @@ class Corpus(object):
         bucket = torch.clamp((count - 2) // 4, 0, BUCKETS - 1)
         codes = self.codes[index]
         pieces = torch.stack([codes & 15, codes >> 4], dim=2).reshape(-1, 32).long()
-        white = pieces * 64 + squares
-        black = ((pieces + 6) % 12) * 64 + (squares ^ 56)
+        # each side reads the inputs of its own king's zone, mirrored onto
+        # files a-d (reference.orient)
+        kings = []
+        for code in (5, 11):
+            slot = torch.argmax((live & (pieces == code)).to(torch.int32), dim=1)
+            kings.append(squares.gather(1, slot[:, None])[:, 0])
+        ow = self.orient[0][kings[0]][:, None]
+        ob = self.orient[1][kings[1]][:, None]
+        white = (ow >> 1) * INPUTS + pieces * 64 + (squares ^ ((ow & 1) * 7))
+        black = (ob >> 1) * INPUTS + ((pieces + 6) % 12) * 64 + (squares ^ 56 ^ ((ob & 1) * 7))
         black_to_move = (self.stm[index] == 1)[:, None]
         us = torch.where(black_to_move, black, white)
         them = torch.where(black_to_move, white, black)
-        pad = torch.full_like(us, INPUTS)
+        pad = torch.full_like(us, PAD)
         return torch.where(live, us, pad), torch.where(live, them, pad), bucket
 
     def targets(self, index):
@@ -175,7 +185,7 @@ def open_sources(specs):
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
     with torch.no_grad():
-        fw = model.features.weight[:INPUTS].cpu().numpy() * QA
+        fw = model.features.weight[:PAD].cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
         ow = model.out.weight.cpu().numpy() * QB
         ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * QB
@@ -187,8 +197,11 @@ def export(model, path):
             raise SystemExit("{} do not fit in int16 (max {:.0f})".format(
                 name, np.abs(array).max()))
     # the worst case an accumulator can reach: the bias plus the 32 largest
-    # weights in any one hidden unit
-    worst = np.abs(fb).max() + np.sort(np.abs(fw), axis=0)[-32:].sum(axis=0).max()
+    # weights in any one hidden unit, within one king zone, since a side
+    # reads one zone at a time
+    worst = np.abs(fb).max() + max(
+        np.sort(np.abs(fw[zone * INPUTS:(zone + 1) * INPUTS]), axis=0)[-32:].sum(axis=0).max()
+        for zone in range(KING_BUCKETS))
     if worst > 32767:
         raise SystemExit("an accumulator could reach {:.0f}, past int16".format(worst))
 

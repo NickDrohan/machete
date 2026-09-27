@@ -53,10 +53,16 @@ def hours(job):
 
 
 def watch_port(job):
+    """The live board a job serves: its --watch, or the script's default."""
     argv = job.get("argv") or []
     for i, word in enumerate(argv):
         if word == "--watch" and i + 1 < len(argv):
-            return argv[i + 1]
+            return None if argv[i + 1] == "0" else argv[i + 1]
+    script = " ".join(argv)
+    if "referee.py" in script:
+        return "8780"
+    if "match.py" in script:
+        return "8761"
     return None
 
 
