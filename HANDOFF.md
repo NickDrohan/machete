@@ -14,10 +14,14 @@ inputs); `harness/nnue/reference.py` defines it.
 
 Left for 0.3.1 and after, on 0.3.0's engine:
 
-- team claude's accumulator cache (`claude2/kb` 0484d54, a Finny table: a
-  rebuilt king-bucket half applies only the pieces that differ from the last
-  half built for that zone): +1.6% speed on the round-2 stack, tree identical;
-  never measured on 0.3.0 itself.
+- team claude's accumulator cache (`claude2/kb` 0484d54, a Finny table) was
+  measured on 0.3.0 the night of the release: no gain (median speed ratio
+  0.997 over 12 rounds on a quiet machine, SPEED-CACHE-030) and dropped.
+- the external ladder (ASSESSMENT.md): 0.3.0 and 0.2.0 are indistinguishable
+  against other engines at 2+1 and at 10+0.1, so the king-bucket gain is
+  family-specific; the next network work should be judged on the ladder,
+  not only head-to-head. Deep labels in place of our own lost (C10 -23, C11
+  -28); the seed noise floor is -2 +/- 14 (C7B).
 - team claude's search work on `claude2/search`: continuation history (-3 +/-
   19 on its own), exchange and history pruning (-7 +/- 24), and, never measured
   on their own, capture history, ProbCut, the table's score for pruning,
