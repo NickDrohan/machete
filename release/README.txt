@@ -41,9 +41,10 @@ On an external scale: about 3000-3100 on the CCRL Blitz scale (2'+1", one
 CPU), from 140 games against seven listed engines (Rybka 2.3.2a, Spike 1.4,
 Koivisto 9.0, Ruffian 1.05, Hermann 2.8, SOS 5.1, AnMon 5.75) with their
 published ratings held fixed. The anchors disagree among themselves by
-several hundred Elo on this hardware, so take the range, not a point; the
-three releases are within tens of Elo of each other on that scale, and the
-head-to-head gains above overstate the external ones. ASSESSMENT.md in the
+several hundred Elo on this hardware, so take the range, not a point. On
+that scale 0.3 and 0.2 are indistinguishable at both 2+1 and 10+0.1: the
+head-to-head gain above is real against 0.2 and not against other engines.
+What 0.3 delivers is the king-bucket network format; ASSESSMENT.md in the
 repository has the games and the arithmetic.
 
 

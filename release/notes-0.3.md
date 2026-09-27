@@ -29,7 +29,7 @@ The winner of round 2 of the two-agent contest: Claude Code and Cursor each took
 | **machete 0.3** vs team claude's entry | 69 W · 86 D · 45 L · +42 ± 37 | 23 W · 61 D · 16 L · +24 ± 43 |
 | **machete 0.3** vs Koivisto 9.0 (CCRL ~3300) | — | 0 W · 8 D · 32 L · about 380 below (0.2: 0 W · 7 D · 33 L) |
 
-**On an external scale,** 0.3 rates about **3000-3100 on the CCRL Blitz scale** (one CPU), from 140 games against seven listed engines with their published ratings held fixed (`ASSESSMENT.md`). The anchors disagree among themselves by several hundred Elo on this hardware, so it is a range; on it the three releases sit within tens of Elo of each other, and the head-to-head gains in the table above are larger than the external ones.
+**On an external scale,** 0.3 rates about **3000-3100 on the CCRL Blitz scale** (one CPU), from 140 games against seven listed engines with their published ratings held fixed (`ASSESSMENT.md`). The anchors disagree among themselves by several hundred Elo on this hardware, so it is a range; on it 0.3 and 0.2 are indistinguishable at both 2+1 and 10+0.1 (1,100 games in all). The head-to-head gain in the table above is real against 0.2 and does not appear against other engines: what 0.3 delivers is the king-bucket network format, on which the next networks build.
 
 Team claude's official entry played as 0.2 does (its measured changes came out level or worse, so none shipped; 30 W · 140 D · 30 L against 0.2 at 10+0.1). The full table, both teams' `SYNTHESIS.md` and the referee's log are in `competition/round2/`.
 
