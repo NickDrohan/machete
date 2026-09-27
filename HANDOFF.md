@@ -1,5 +1,35 @@
 # Handing off the Mach side
 
+## machete 0.3 (2026-09-27)
+
+0.3 is round 2's winner (COMPETITION_ROUND2.md): team cursor's entry, released
+from issue #15. It is 0.2's search, unchanged (bench 154591), with the
+king-bucket evaluation N-05 and network C7 - both team claude's round-1 work
+(`claude/kb`, TRAIN-C7), which team cursor rebuilt on Mach 6, measured and
+delivered. The final measured it at +54 +/- 34 (10+0.1, 200 games) and
++60 +/- 41 (60+0.6, 100 games) against v0.2.0; `release/notes-0.3.md` has the
+table, `competition/round2/` both teams' SYNTHESIS.md, the referee's log and
+the results. The network file format is MCHNNUE3 (8 king buckets x 768
+inputs); `harness/nnue/reference.py` defines it.
+
+Left for 0.3.1 and after, on 0.3.0's engine:
+
+- team claude's accumulator cache (`claude2/kb` 0484d54, a Finny table: a
+  rebuilt king-bucket half applies only the pieces that differ from the last
+  half built for that zone): +1.6% speed on the round-2 stack, tree identical;
+  never measured on 0.3.0 itself.
+- team claude's search work on `claude2/search`: continuation history (-3 +/-
+  19 on its own), exchange and history pruning (-7 +/- 24), and, never measured
+  on their own, capture history, ProbCut, the table's score for pruning,
+  singular +2/-1, LMP/LMR refinements, a fifty-move fade of the evaluation,
+  correction history by non-pawn pieces, and node-share time management. The
+  stack cost 26% of the nodes per second, unexplained. Its constants are UCI
+  options (U-01, U-03) and `harness/spsa.py` (U-02) tunes them.
+- the pruning constants are still 0.2's, never tuned for a network evaluation.
+- network C9 (C2's data + 30M Leela, without king buckets) trained but never
+  tested; a king-bucket network on C7's data plus Leela's is the obvious next
+  training.
+
 ## machete 0.2 (2026-09-26)
 
 0.2 is team claude's entry from the Claude-vs-Cursor contest (COMPETITION.md):

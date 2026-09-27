@@ -1,0 +1,9 @@
+=== 21:56:24 entry claude: aa27be7 claude2/main: machete 0.2.0 on mach 6.0.0 + C2, tunables at defaults; bench 154591. Anchor not run (owner stopped new jobs). exe 1625c17e net 3d7248be
+=== 21:56:24 entry cursor: dad58a0 exe d3a3ffe6 net 0a5f6e10
+=== 21:56:25 entry v020: v0.2.0 (65834eb, release asset) exe 62993787 net 3d7248be
+=== 21:56:25 entry lite: cb86dfe claude2/lite: exhibition entry, the unmeasured search stack with S-01 and S-02 off; network C2 exe 50b056de net 3d7248be
+=== 21:56:25 phase 10+0.1: 200 games per pairing, 4 at a time each, watch ports 8781-8786
+=== 22:23:21 phase 10+0.1 done
+=== 22:23:21 phase 60+0.6: 100 games per pairing, 4 at a time each, watch ports 8791-8796
+=== 23:33:35 phase 60+0.6 done
+=== 23:33:35 anchor: each entry against Koivisto 9.0, 40 games at 60+0.6, 6 at a time, watch ports 8787-8790

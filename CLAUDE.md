@@ -7,7 +7,7 @@ Start with [HANDOFF.md](HANDOFF.md) (boundary, house rules, how to build), then
 
 ## The competition
 
-**Round 2 is under way: read [COMPETITION_ROUND2.md](COMPETITION_ROUND2.md) first.**
+**Round 2 is over (2026-09-27): its rules are [COMPETITION_ROUND2.md](COMPETITION_ROUND2.md), its results `competition/round2/`, and its winner is 0.3.**
 Its queues, CPUs, ports and folders replace round 1's below.
 
 Claude Code and the Cursor agent are competing to make the strongest machete
