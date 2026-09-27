@@ -148,7 +148,7 @@ pub fun store(key: u64, move: Move, score: i64, depth: i64, flag: u8) {
     TABLE[victim].guard = key ^ data;
 }
 
-test "tt: stores, probes and prefers depth" {
+test stores_probes_prefers_depth {
     clear();
     var out: Entry;
     if (probe(12345, ?out)) { ret 1; }

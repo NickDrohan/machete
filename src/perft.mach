@@ -58,7 +58,7 @@ fun count(fen: *u8, depth: i64) u64 {
 }
 
 # shallow depths so the debug-profile test run stays quick; check.sh runs the deep ones
-test "perft: standard positions at shallow depth" {
+test standard_positions_shallow_depth {
     if (count(pos.START_FEN, 3) != 8902)                                                              { ret 1; }
     if (count("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 2) != 2039)     { ret 2; }
     if (count("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 3) != 2812)                                { ret 3; }

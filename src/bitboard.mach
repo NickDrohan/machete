@@ -100,7 +100,7 @@ pub fun rank_of(sq: i64) i64 {
     ret sq >> 3;
 }
 
-test "bitboard: hardware scans agree with the software ones" {
+test hardware_scans_agree_with_software_ones {
     # a splitmix64 stream, so the values are the same on every run
     var state: u64 = 0x1234567890ABCDEF;
     var i:     i64 = 0;
@@ -134,7 +134,7 @@ test "bitboard: hardware scans agree with the software ones" {
     ret 0;
 }
 
-test "bitboard: scans find the extreme squares" {
+test scans_find_extreme_squares {
     val b: u64 = bit(3) | bit(17) | bit(60);
     if (lsb(b) != 3)                            { ret 1; }
     if (msb(b) != 60)                           { ret 2; }

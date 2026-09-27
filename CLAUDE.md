@@ -7,6 +7,9 @@ Start with [HANDOFF.md](HANDOFF.md) (boundary, house rules, how to build), then
 
 ## The competition
 
+**Round 2 is over (2026-09-27): its rules are [COMPETITION_ROUND2.md](COMPETITION_ROUND2.md), its results `competition/round2/`, and its winner is 0.3.**
+Its queues, CPUs, ports and folders replace round 1's below.
+
 Claude Code and the Cursor agent are competing to make the strongest machete
 from tag `competition-fork` - read [COMPETITION.md](COMPETITION.md) before
 anything else. **Claude Code is team `claude`**: work in
@@ -14,6 +17,9 @@ anything else. **Claude Code is team `claude`**: work in
 `E:/machete/competition/claude/`, keep new data in `E:/machete/claude/`, and
 submit every job with `--team claude`. Nothing is shared with team `cursor`
 after the fork: do not read its branches, worktree, folders or queue logs.
+Owner ruling 2026-09-25: all of `E:/machete/` (the Seagate) and
+`D:/Dev/Claude/mach-portfolio/products/machete/data/` are fair game - copy into
+`E:/machete/claude/`, do not modify the originals. See COMPETITION.md.
 
 ## Measurements go through the job queue
 
@@ -67,7 +73,7 @@ Commit hashes quoted in docs must resolve in this repository.
 ## Practicalities on this machine
 
 - Compiler: `mach` is not on PATH; `$MACH` is
-  `D:/Dev/Claude/mach-portfolio/tools/mach-5.11.0/mach.exe`. `mach run` does not
+  `E:/machete/tools/mach-6.0.0/mach.exe`. `mach run` does not
   rebuild; check the build's exit code.
 - `bash` in PowerShell is a broken WSL; use `C:\Program Files\Git\bin\bash.exe`
   for `check.sh`, with `PYTHON` and `MACH` set.

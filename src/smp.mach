@@ -136,7 +136,7 @@ pub fun think(s: *search.Search, p: *Position, limits: *search.Limits, threads: 
     ret best;
 }
 
-test "smp: every thread has an accumulator stack of its own" {
+test every_thread_has_accumulator_stack_own {
     # nnue.mach sizes its stack array by a copy of this number, because it
     # cannot import this module without a cycle. If they ever drift, a helper
     # thread writes into another thread's accumulator and the only symptom is
@@ -145,7 +145,7 @@ test "smp: every thread has an accumulator stack of its own" {
     ret 0;
 }
 
-test "smp: a parallel search returns the same mate as a single thread" {
+test parallel_search_returns_same_mate_single_thread {
     pos.init();
     var p: Position;
     # a mate in one from fixtures/mate1.epd
@@ -164,7 +164,7 @@ test "smp: a parallel search returns the same mate as a single thread" {
     ret 0;
 }
 
-test "smp: helpers run and are joined" {
+test helpers_run_joined {
     pos.init();
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }

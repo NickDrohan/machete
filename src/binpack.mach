@@ -536,7 +536,7 @@ pub fun write_record(p: *Position, score: i64, result: i64, out: *u8) {
     out[69] = ENGINE_ID;
 }
 
-test "binpack: stored values decode as binpack.h does" {
+test stored_values_decode_binpack_h {
     if (unsigned_to_signed(0) != 0)                                                        { ret 1; }
     if (unsigned_to_signed(1) != -1)                                                       { ret 2; }
     if (unsigned_to_signed(2) != 1)                                                        { ret 3; }
@@ -547,7 +547,7 @@ test "binpack: stored values decode as binpack.h does" {
     ret 0;
 }
 
-test "binpack: bits come off the top of each byte, across byte edges" {
+test bits_come_off_top_each_byte_across_byte_edges {
     var data: [2]u8 = [2]u8{0b10110011, 0b01000000};
     var b:    Bits  = Bits{data: ?data[0], size: 2, offset: 0, left: 8, overrun: false};
     if (take(?b, 3) != 0b101)     { ret 1; }
@@ -559,7 +559,7 @@ test "binpack: bits come off the top of each byte, across byte edges" {
     ret 0;
 }
 
-test "binpack: rounding matches python's round" {
+test rounding_matches_python_round {
     if (round_even(2.5) != 2 || round_even(3.5) != 4)      { ret 1; }
     if (round_even(-2.5) != -2 || round_even(-3.5) != -4)  { ret 2; }
     if (round_even(2.4999) != 2 || round_even(-0.6) != -1) { ret 3; }

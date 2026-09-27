@@ -334,6 +334,13 @@ pub fun make(p: *Position, m: Move) {
     p.side = p.side ^ 1;
     p.key  = p.key ^ Z_SIDE;
     if (us == BLACK) { p.fullmove = p.fullmove + 1; }
+
+    # a king that changes zone or crosses the d/e line changes which inputs
+    # its whole side reads: that half cannot be carried across this move, and
+    # is rebuilt from the board when a position at or above it is evaluated
+    if (p.accs != nil && kind_of(pc) == KING && nn.orient(us::i64, from) != nn.orient(us::i64, to)) {
+        nn.mark_refresh(?p.accs[p.acc_top], us::i64);
+    }
 }
 
 # take back the most recent make()
@@ -443,10 +450,16 @@ pub fun compute_key(p: *Position) u64 {
 pub fun attach(p: *Position, stack: *nn.Acc) {
     p.accs    = stack;
     p.acc_top = 0;
-    nn.reset(?p.accs[0]);
+    rebuild(p);
+}
+
+# the top accumulator slot, built from the board with no history
+fun rebuild(p: *Position) {
+    val a: *nn.Acc = ?p.accs[p.acc_top];
+    nn.reset(a, king_square(p, WHITE), king_square(p, BLACK));
     var sq: i64 = 0;
     for (sq < 64) {
-        if (p.board[sq] != EMPTY) { nn.add(?p.accs[0], p.board[sq], sq); }
+        if (p.board[sq] != EMPTY) { nn.add(a, p.board[sq], sq); }
         sq = sq + 1;
     }
 }
@@ -737,7 +750,7 @@ fun fen_equals(p: *Position, want: str) bool {
     ret buf[i] == 0;
 }
 
-test "position: FEN round-trips" {
+test position_fen_round_trips {
     var p: Position;
     if (!set_fen(?p, START_FEN))    { ret 1; }
     if (!fen_equals(?p, START_FEN)) { ret 2; }
@@ -749,7 +762,7 @@ test "position: FEN round-trips" {
     ret 0;
 }
 
-test "position: malformed FEN is rejected" {
+test position_malformed_fen_is_rejected {
     var p: Position;
     if (set_fen(?p, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP w KQkq - 0 1"))          { ret 1; }
     if (set_fen(?p, "rnbqkbnr/pppppppp/9/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")) { ret 2; }
@@ -758,7 +771,7 @@ test "position: malformed FEN is rejected" {
     ret 0;
 }
 
-test "position: checks are detected" {
+test position_checks_are_detected {
     var p: Position;
     if (!set_fen(?p, "4k3/8/8/8/8/8/8/4K2r w - - 0 1"))  { ret 1; }
     if (!in_check(?p))                                   { ret 2; }
@@ -769,7 +782,7 @@ test "position: checks are detected" {
     ret 0;
 }
 
-test "position: special moves unmake exactly and keep the key incremental" {
+test position_special_moves_unmake_exactly_and_keep_the_key_incremental {
     var p:      Position;
     var before: Position;
     # castling both ways, en passant, and a promotion capture

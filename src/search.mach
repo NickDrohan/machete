@@ -1137,7 +1137,7 @@ fun finds_move(fen: *u8, depth: i64, expected: *u8) bool {
     ret spelled[i] == 0;
 }
 
-test "search: finds a verified mate in one" {
+test finds_verified_mate_one {
     tt.clear();
     # positions from fixtures/mate1.epd, each proved by python-chess to have
     # exactly one mating move
@@ -1146,25 +1146,25 @@ test "search: finds a verified mate in one" {
     ret 0;
 }
 
-test "search: finds a verified mate in two" {
+test finds_verified_mate_two {
     tt.clear();
     if (!finds_move("rnbqk3/ppppppr1/8/P7/4P3/1PB5/R1P2P2/1N2KBNR w Kq - 2 12", 4, "h1h8")) { ret 1; }
     ret 0;
 }
 
-test "search: finds a verified mate in three" {
+test finds_verified_mate_three {
     tt.clear();
     if (!finds_move("4Q3/2k3P1/8/2p5/2P5/2PK4/8/8 w - - 1 62", 6, "g7g8q")) { ret 1; }
     ret 0;
 }
 
-test "search: wins the hanging queen" {
+test wins_hanging_queen {
     tt.clear();
     if (!finds_move("q3k3/8/8/8/8/8/8/R3K3 w - - 0 1", 4, "a1a8")) { ret 1; }
     ret 0;
 }
 
-test "search: sees a stalemate as a draw, not a loss" {
+test sees_stalemate_draw_not_loss {
     tt.clear();
     var p: Position;
     # black to move, stalemated
@@ -1180,7 +1180,7 @@ test "search: sees a stalemate as a draw, not a loss" {
     ret 0;
 }
 
-test "search: a deeper search still returns a move" {
+test deeper_search_still_returns_move {
     tt.clear();
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
@@ -1203,7 +1203,7 @@ fun search_nodes(p: *Position, nodes: i64, s: *Search) {
     think(s, p, ?limits);
 }
 
-test "search: a node limit stops exactly there, and repeats exactly" {
+test node_limit_stops_exactly_there_repeats_exactly {
     var p: Position;
     if (!pos.set_fen(?p, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")) { ret 1; }
     var a: Search;
@@ -1217,7 +1217,7 @@ test "search: a node limit stops exactly there, and repeats exactly" {
     ret 0;
 }
 
-test "search: the clock budget" {
+test clock_budget {
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
     var limits: Limits;
@@ -1254,7 +1254,7 @@ test "search: the clock budget" {
     ret 0;
 }
 
-test "search: an unsettled move gets more time than a settled one" {
+test unsettled_move_gets_more_time_than_settled_one {
     if (time_scale(0, 0) <= time_scale(4, 0))      { ret 1; }
     if (time_scale(4, 50) <= time_scale(4, 0))     { ret 2; }
     if (time_scale(4, 0 - 50) != time_scale(4, 0)) { ret 3; }
