@@ -509,12 +509,21 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     ret s.history[p.board[mv.from(m)]][mv.to(m)];
 }
 
-# selection sort one move at a time: most searches never look at the tail
+# selection sort one move at a time: most searches never look at the tail.
+# The count and the best score so far are held in locals: mach 6.5 reloads
+# both from memory every iteration though nothing in the loop stores, and
+# holding them here is 3.9% of the whole engine's speed (SPEED-PICK).
 fun pick(list: *MoveList, scores: *i64, index: i64) {
-    var best: i64 = index;
-    var i:    i64 = index + 1;
-    for (i < list.count) {
-        if (scores[i] > scores[best]) { best = i; }
+    var best:  i64 = index;
+    var top:   i64 = scores[index];
+    val count: i64 = list.count;
+    var i:     i64 = index + 1;
+    for (i < count) {
+        val v: i64 = scores[i];
+        if (v > top) {
+            best = i;
+            top  = v;
+        }
         i = i + 1;
     }
     if (best != index) {
