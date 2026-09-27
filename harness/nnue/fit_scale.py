@@ -31,14 +31,11 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import RECORD
 
-ARENA = os.environ.get("MACHETE_ARENA", os.path.expanduser("~/Desktop/Games/Chess/arena_3.5.1"))
-TEACHERS = {
-    "Stockfish":   r"Engines\Stockfish\stockfish\stockfish-windows-x86-64-avx2.exe",
-    "PlentyChess": r"Engines\Plenty\PlentyChess-7.0.0-windows-ssse3.exe",
-    "Reckless":    r"Engines\Reckless 0.9.0 dev-2a847427\reckless-windows-avx2.exe",
-    "Obsidian":    r"Engines\Obsidian160-avx2.exe",
-    "Caissa":      r"Engines\Caissa\caissa-1.23-x64-sse2.exe",
-}
+import panel
+
+# the generator's five teachers, from the panel, so a new version is picked up
+# in one place
+TEACHERS = ("Stockfish", "PlentyChess", "Reckless", "Obsidian", "Caissa")
 SCALE = 150.0
 CLAMP = 2000
 
@@ -92,8 +89,8 @@ def main():
     print("{} positions sampled from {} ({} skipped as invalid or over)".format(len(boards), args.corpus, len(rows) - len(boards)))
 
     scores = {}
-    for name, rel in TEACHERS.items():
-        path = os.path.join(ARENA, rel)
+    for name in TEACHERS:
+        path = panel.path_of(name)
         engine = chess.engine.SimpleEngine.popen_uci(path, cwd=os.path.dirname(path))
         engine.configure({k: v for k, v in (("Threads", 1), ("Hash", 16)) if k in engine.options})
         got = []
