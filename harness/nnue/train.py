@@ -70,8 +70,12 @@ class Net(nn.Module):
             self.features.weight[PAD].zero_()
 
 
+COLUMNS = ("occupied", "codes", "stm", "score", "result")
+
+
 class Corpus(object):
-    """The whole corpus on the device, packed, as the columns training reads.
+    """The corpus packed as the columns training reads, on the device or,
+    with a window, in host memory with one window of it on the device.
 
     Gathering rows from a memmap and building features with numpy kept the GPU
     two-thirds idle: gen5 trained at ~110-330k positions/s with the card at
@@ -82,47 +86,85 @@ class Corpus(object):
     64-bit board and the pieces on them are 4-bit codes in square order, so
     the count is the board's population and the squares are its set bits.
     That puts about 190M positions on an 8 GB card rather than 80M.
+
+    Past what the card holds, the packed columns stay in host memory and
+    training walks the corpus in windows: each epoch visits the windows in a
+    shuffled order, copies one to the device (a few GB, a second or two),
+    and shuffles within it. A batch never mixes windows, so the shuffle is
+    coarser than a whole-corpus one; the windows are large enough that this
+    has not mattered. The held-out rows are gathered to the device once, and
+    a window skips them.
     """
 
     CHUNK = 1 << 22
     BYTES = 28
 
-    def __init__(self, sources, device):
-        """`sources` is a list of (records, how many to take from the front)."""
+    def __init__(self, sources, device, window=0):
+        """`sources` is a list of (records, how many to take from the front);
+        `window` is positions on the device at a time, 0 for all of them."""
         self.device = device
         count = sum(take for _, take in sources)
-        self.occupied = torch.empty(count, dtype=torch.int64, device=device)
-        self.codes = torch.empty((count, 16), dtype=torch.uint8, device=device)
-        self.stm = torch.empty(count, dtype=torch.uint8, device=device)
-        self.score = torch.empty(count, dtype=torch.int16, device=device)
-        self.result = torch.empty(count, dtype=torch.uint8, device=device)
+        self.count = count
+        self.window = window if 0 < window < count else 0
+        home = "cpu" if self.window else device
+        self.occupied = torch.empty(count, dtype=torch.int64, device=home)
+        self.codes = torch.empty((count, 16), dtype=torch.uint8, device=home)
+        self.stm = torch.empty(count, dtype=torch.uint8, device=home)
+        self.score = torch.empty(count, dtype=torch.int16, device=home)
+        self.result = torch.empty(count, dtype=torch.uint8, device=home)
         at = 0
         for data, take in sources:
             for first in range(0, take, self.CHUNK):
                 rows = np.asarray(data[first:min(take, first + self.CHUNK)])
                 occupied, codes = pack(rows)
                 end = at + len(rows)
-                self.occupied[at:end] = torch.from_numpy(occupied.view(np.int64)).to(device)
-                self.codes[at:end] = torch.from_numpy(codes).to(device)
+                self.occupied[at:end] = torch.from_numpy(occupied.view(np.int64)).to(home)
+                self.codes[at:end] = torch.from_numpy(codes).to(home)
                 for name in ("stm", "score", "result"):
                     column = torch.from_numpy(np.ascontiguousarray(rows[name]))
-                    getattr(self, name)[at:end] = column.to(device)
+                    getattr(self, name)[at:end] = column.to(home)
                 at = end
-        self.count = count
         self.squares = torch.arange(64, device=device)[None, :]
         self.slots = torch.arange(32, device=device)[None, :]
         self.orient = torch.from_numpy(reference.ORIENT).to(device)
+        # the device-side columns a batch gathers from: the corpus itself
+        # without a window, otherwise the window loaded last
+        self.live = {name: getattr(self, name) for name in COLUMNS}
+        self.loaded = None
+
+    def load_window(self, k):
+        """Copy window k's rows to the device; returns its first global row."""
+        first = k * self.window
+        last = min(self.count, first + self.window)
+        if self.loaded != k:
+            for name in COLUMNS:
+                self.live[name] = getattr(self, name)[first:last].to(self.device, non_blocking=True)
+            self.loaded = k
+        return first
+
+    def gather(self, index):
+        """Rows by global index as a small device-side corpus of their own,
+        for the held-out set."""
+        held = Corpus.__new__(Corpus)
+        held.device, held.window, held.loaded = self.device, 0, None
+        held.count = len(index)
+        picked = torch.from_numpy(np.sort(index))
+        for name in COLUMNS:
+            setattr(held, name, getattr(self, name)[picked].to(self.device))
+        held.live = {name: getattr(held, name) for name in COLUMNS}
+        held.squares, held.slots, held.orient = self.squares, self.slots, self.orient
+        return held
 
     def features(self, index):
         """reference.feature_indices, on the device, with the pieces in square
         order, and each position's output bucket (reference.bucket)."""
-        bits = (self.occupied[index][:, None] >> self.squares) & 1
+        bits = (self.live["occupied"][index][:, None] >> self.squares) & 1
         # occupied squares first, each group in ascending order
         squares = torch.argsort(1 - bits, dim=1, stable=True)[:, :32]
         count = bits.sum(dim=1)
         live = self.slots < count[:, None]
         bucket = torch.clamp((count - 2) // 4, 0, BUCKETS - 1)
-        codes = self.codes[index]
+        codes = self.live["codes"][index]
         pieces = torch.stack([codes & 15, codes >> 4], dim=2).reshape(-1, 32).long()
         # each side reads the inputs of its own king's zone, mirrored onto
         # files a-d (reference.orient)
@@ -134,7 +176,7 @@ class Corpus(object):
         ob = self.orient[1][kings[1]][:, None]
         white = (ow >> 1) * INPUTS + pieces * 64 + (squares ^ ((ow & 1) * 7))
         black = (ob >> 1) * INPUTS + ((pieces + 6) % 12) * 64 + (squares ^ 56 ^ ((ob & 1) * 7))
-        black_to_move = (self.stm[index] == 1)[:, None]
+        black_to_move = (self.live["stm"][index] == 1)[:, None]
         us = torch.where(black_to_move, black, white)
         them = torch.where(black_to_move, white, black)
         pad = torch.full_like(us, PAD)
@@ -142,15 +184,33 @@ class Corpus(object):
 
     def targets(self, index):
         """The number the network is asked to produce, as a win probability."""
-        from_search = torch.sigmoid(self.score[index].float() / SCALE)
-        result = self.result[index].float() / 2.0
+        from_search = torch.sigmoid(self.live["score"][index].float() / SCALE)
+        result = self.live["result"][index].float() / 2.0
         return LAMBDA * from_search + (1.0 - LAMBDA) * result
 
-    def batches(self, order, size):
-        for at in range(0, len(order) - size + 1, size):
-            index = torch.from_numpy(np.sort(order[at:at + size])).to(self.device)
-            us, them, bucket = self.features(index)
-            yield us, them, bucket, self.targets(index)
+    def batches(self, order, size, rng=None):
+        """Batches of `size` over the global rows in `order` (already
+        shuffled). With a window, `order` is walked window by window, in an
+        order `rng` shuffles, and each window's rows are shuffled again."""
+        if not self.window:
+            for at in range(0, len(order) - size + 1, size):
+                index = torch.from_numpy(np.sort(order[at:at + size])).to(self.device)
+                us, them, bucket = self.features(index)
+                yield us, them, bucket, self.targets(index)
+            return
+        windows = np.arange((self.count + self.window - 1) // self.window)
+        if rng is not None:
+            rng.shuffle(windows)
+        member = order // self.window
+        for k in windows:
+            local = order[member == k] - k * self.window
+            if rng is not None:
+                rng.shuffle(local)
+            self.load_window(int(k))
+            for at in range(0, len(local) - size + 1, size):
+                index = torch.from_numpy(np.sort(local[at:at + size])).to(self.device)
+                us, them, bucket = self.features(index)
+                yield us, them, bucket, self.targets(index)
 
 
 def pack(rows):
@@ -220,6 +280,9 @@ def main():
     parser.add_argument("--batch", type=int, default=16384)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--validation", type=int, default=200000)
+    parser.add_argument("--window", type=int, default=0,
+                        help="positions on the device at a time; 0 keeps the whole corpus there. "
+                             "The card holds about 150M; with a window the corpus is bounded by host memory")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--scale", type=int, default=0,
                         help="centipawn scale for the target; 0 keeps the default")
@@ -250,7 +313,12 @@ def main():
     held_out, training = order[:args.validation], order[args.validation:]
 
     partial = args.out + ".partial"
-    corpus = Corpus(sources, device)
+    corpus = Corpus(sources, device, args.window)
+    validation = corpus.gather(held_out) if corpus.window else corpus
+    held_out_index = np.arange(len(held_out)) if corpus.window else held_out
+    if corpus.window:
+        print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
+            corpus.window, corpus.window * Corpus.BYTES / 1e9))
     model = Net(args.hidden).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
@@ -262,7 +330,7 @@ def main():
         # the loss stays on the device and is read back every 100 steps;
         # reading it every step made the CPU wait on the GPU each batch
         started, seen, running = time.time(), 0, torch.zeros((), device=device)
-        for us, them, bucket, target in corpus.batches(training, args.batch):
+        for us, them, bucket, target in corpus.batches(training, args.batch, rng):
             predicted = torch.sigmoid(model(us, them, bucket))
             loss = loss_of(predicted, target)
             optimiser.zero_grad()
@@ -281,7 +349,7 @@ def main():
         model.eval()
         with torch.no_grad():
             error, count = 0.0, 0
-            for us, them, bucket, target in corpus.batches(held_out, args.batch):
+            for us, them, bucket, target in validation.batches(held_out_index, args.batch):
                 predicted = torch.sigmoid(model(us, them, bucket))
                 error += float(((predicted - target) ** 2).sum())
                 count += len(target)
