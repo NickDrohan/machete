@@ -14,6 +14,8 @@ use std.system.os;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
+use std.types.string.str;
+use std.types.string.str_equals;
 
 use machete.clock;
 use machete.eval;
@@ -36,10 +38,6 @@ pub val MAX_PLY: i64 = 64;
 
 # no static evaluation: the node was in check
 val NO_EVAL: i64 = 0 - 32000;
-
-# the shallowest node that tries a singular extension; below it the extra
-# search costs more than a ply of extension on one move can return
-val SINGULAR_DEPTH: i64 = 8;
 
 # How much to reduce the Nth quiet move at depth D.
 #
@@ -85,6 +83,121 @@ fun ln_f64(x: f64) f64 {
     ret log2_f64(x) * 0.6931471805599453;
 }
 
+# Search constants a tuner may set through UCI (see set_tunable). Each
+# default is the value the search was built and measured with; a UCI
+# setoption moves one, clamped to a range that keeps the search sane.
+# SPSA tunes them together; a tuned set is written back here as defaults.
+# reverse futility margin per ply
+pub var RFP_MARGIN: i64 = 85;
+# futility margin at depth 0
+pub var FUT_BASE: i64 = 120;
+# futility margin per ply
+pub var FUT_MUL: i64 = 110;
+# late move pruning: quiet moves tried before depth^2 more
+pub var LMP_BASE: i64 = 6;
+# null move reduction, fixed part
+pub var NMP_BASE: i64 = 3;
+# null move reduction: a ply more per this many of depth
+pub var NMP_DIV: i64 = 3;
+# null move reduction: a ply more per this many cp above beta
+pub var NMP_EVAL_DIV: i64 = 200;
+# late move reduction table, constant term, in hundredths
+pub var LMR_BASE: i64 = 75;
+# late move reduction table, divisor of ln(d) ln(m), in hundredths
+pub var LMR_DIV: i64 = 225;
+# quiet history worth one ply of reduction
+pub var LMR_HIST_DIV: i64 = 4096;
+# shallowest node that tries a singular extension
+pub var SE_DEPTH: i64 = 8;
+# singular bar: table score less this per ply
+pub var SE_MARGIN: i64 = 2;
+# aspiration window half-width
+pub var ASP_WINDOW: i64 = 25;
+# quiescence delta pruning margin
+pub var QS_DELTA: i64 = 200;
+# internal iterative reduction from this depth
+pub var IIR_DEPTH: i64 = 6;
+
+fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
+    if (!str_equals(name, want)) { ret false; }
+    var v: i64 = value;
+    if (v < low)  { v = low; }
+    if (v > high) { v = high; }
+    @slot = v;
+    ret true;
+}
+
+# set the search constant UCI calls `name`; false when there is none
+pub fun set_tunable(name: str, value: i64) bool {
+    if (tune_one(name, "RfpMargin", value, ?RFP_MARGIN, 20, 250)) {
+        ret true;
+    }
+    or (tune_one(name, "FutBase", value, ?FUT_BASE, 0, 400)) {
+        ret true;
+    }
+    or (tune_one(name, "FutMul", value, ?FUT_MUL, 20, 300)) {
+        ret true;
+    }
+    or (tune_one(name, "LmpBase", value, ?LMP_BASE, 1, 20)) {
+        ret true;
+    }
+    or (tune_one(name, "NmpBase", value, ?NMP_BASE, 1, 6)) {
+        ret true;
+    }
+    or (tune_one(name, "NmpDiv", value, ?NMP_DIV, 2, 8)) {
+        ret true;
+    }
+    or (tune_one(name, "NmpEvalDiv", value, ?NMP_EVAL_DIV, 50, 600)) {
+        ret true;
+    }
+    or (tune_one(name, "LmrBase", value, ?LMR_BASE, 0, 200)) {
+        table_ready = 0;
+        ret true;
+    }
+    or (tune_one(name, "LmrDiv", value, ?LMR_DIV, 100, 400)) {
+        table_ready = 0;
+        ret true;
+    }
+    or (tune_one(name, "LmrHistDiv", value, ?LMR_HIST_DIV, 1024, 16384)) {
+        ret true;
+    }
+    or (tune_one(name, "SeDepth", value, ?SE_DEPTH, 5, 12)) {
+        ret true;
+    }
+    or (tune_one(name, "SeMargin", value, ?SE_MARGIN, 1, 6)) {
+        ret true;
+    }
+    or (tune_one(name, "AspWindow", value, ?ASP_WINDOW, 8, 100)) {
+        ret true;
+    }
+    or (tune_one(name, "QsDelta", value, ?QS_DELTA, 50, 500)) {
+        ret true;
+    }
+    or (tune_one(name, "IirDepth", value, ?IIR_DEPTH, 3, 12)) {
+        ret true;
+    }
+    ret false;
+}
+
+# the tunables as UCI spin options, for the uci command
+pub fun print_tunables() {
+    print.printlnf("option name RfpMargin type spin default {} min 20 max 250", RFP_MARGIN);
+    print.printlnf("option name FutBase type spin default {} min 0 max 400", FUT_BASE);
+    print.printlnf("option name FutMul type spin default {} min 20 max 300", FUT_MUL);
+    print.printlnf("option name LmpBase type spin default {} min 1 max 20", LMP_BASE);
+    print.printlnf("option name NmpBase type spin default {} min 1 max 6", NMP_BASE);
+    print.printlnf("option name NmpDiv type spin default {} min 2 max 8", NMP_DIV);
+    print.printlnf("option name NmpEvalDiv type spin default {} min 50 max 600", NMP_EVAL_DIV);
+    print.printlnf("option name LmrBase type spin default {} min 0 max 200", LMR_BASE);
+    print.printlnf("option name LmrDiv type spin default {} min 100 max 400", LMR_DIV);
+    print.printlnf("option name LmrHistDiv type spin default {} min 1024 max 16384", LMR_HIST_DIV);
+    print.printlnf("option name SeDepth type spin default {} min 5 max 12", SE_DEPTH);
+    print.printlnf("option name SeMargin type spin default {} min 1 max 6", SE_MARGIN);
+    print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
+    print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
+    print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
+}
+
 pub fun init_tables() {
     if (table_ready != 0) { ret; }
     var depth: i64 = 0;
@@ -93,7 +206,7 @@ pub fun init_tables() {
         for (move < 64) {
             var r: i64 = 0;
             if (depth >= 3 && move >= 1) {
-                r = (0.75 + ln_f64(depth::f64) * ln_f64((move + 1)::f64) / 2.25)::i64;
+                r = (LMR_BASE::f64 / 100.0 + ln_f64(depth::f64) * ln_f64((move + 1)::f64) / (LMR_DIV::f64 / 100.0))::i64;
             }
             if (r < 0) { r = 0; }
             REDUCTION[depth][move] = r;
@@ -303,13 +416,6 @@ fun correction_update(s: *Search, p: *Position, raw: i64, found: i64, depth: i64
     s.correction[p.side][slot] = next;
 }
 
-# how much quiet history is worth one ply of late move reduction. The table
-# settles at +/-16384 for a move that always or never cuts (a bonus of b adds
-# 32b and decays b/512 of the value); history is cleared before every search,
-# so a ply per quarter of that lets a record built within this search count.
-# The adjustment is held to two plies either way.
-val HISTORY_PER_PLY: i64 = 4096;
-
 fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
     val piece: u8  = p.board[mv.from(m)];
     val to:    i64 = mv.to(m);
@@ -403,12 +509,21 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     ret s.history[p.board[mv.from(m)]][mv.to(m)];
 }
 
-# selection sort one move at a time: most searches never look at the tail
+# selection sort one move at a time: most searches never look at the tail.
+# The count and the best score so far are held in locals: mach 6.5 reloads
+# both from memory every iteration though nothing in the loop stores, and
+# holding them here is 3.9% of the whole engine's speed (SPEED-PICK).
 fun pick(list: *MoveList, scores: *i64, index: i64) {
-    var best: i64 = index;
-    var i:    i64 = index + 1;
-    for (i < list.count) {
-        if (scores[i] > scores[best]) { best = i; }
+    var best:  i64 = index;
+    var top:   i64 = scores[index];
+    val count: i64 = list.count;
+    var i:     i64 = index + 1;
+    for (i < count) {
+        val v: i64 = scores[i];
+        if (v > top) {
+            best = i;
+            top  = v;
+        }
         i = i + 1;
     }
     if (best != index) {
@@ -505,7 +620,7 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         # delta pruning: even winning this piece outright would not reach alpha
         if (!in_check && !mv.is_promotion(m) && p.board[mv.to(m)] != pos.EMPTY) {
             val gain: i64 = see.piece_value(pos.kind_of(p.board[mv.to(m)]));
-            if (stand + gain + 200 < alpha) {
+            if (stand + gain + QS_DELTA < alpha) {
                 i = i + 1;
                 cnt;
             }
@@ -617,14 +732,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # (Shrinking it for an improving position lost a mate in two in
     # fixtures/mate2.epd at depth 4, so improving is used by reductions only.)
     if (!is_pv && !in_check && depth <= 8) {
-        val margin: i64 = 85 * depth;
+        val margin: i64 = RFP_MARGIN * depth;
         if (static_eval - margin >= beta && static_eval < MATE_FOUND) { ret static_eval - margin; }
     }
 
     # internal iterative reduction, but never in a principal variation node:
     # losing a ply where the move actually gets chosen is not worth the
     # ordering it saves
-    if (tt_move == mv.NONE && depth >= 6 && !in_check && !is_pv) { depth = depth - 1; }
+    if (tt_move == mv.NONE && depth >= IIR_DEPTH && !in_check && !is_pv) { depth = depth - 1; }
 
     # null-move pruning: if passing still leaves the opponent unable to reach
     # beta, this position is good enough to cut. skipped in check, in pawn-only
@@ -637,9 +752,9 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         # final depth against 3 + depth/3. The further above beta the
         # position stands, the less the pass needs checking: a ply more per
         # 200 centipawns, up to three.
-        var margin: i64 = (static_eval - beta) / 200;
+        var margin: i64 = (static_eval - beta) / NMP_EVAL_DIV;
         if (margin > 3) { margin = 3; }
-        val reduction: i64 = 3 + depth / 3 + margin;
+        val reduction: i64 = NMP_BASE + depth / NMP_DIV + margin;
         pos.make_null(p);
         val score: i64 = 0 - search_node(s, p, depth - 1 - reduction, 0 - beta, 1 - beta, ply + 1, false);
         pos.unmake_null(p);
@@ -657,10 +772,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # A singular extension keeps a line at its depth, so a run of them could
     # carry it to the ply ceiling; no line is extended past twice the depth
     # the iteration set out to search.
-    if (ply > 0 && ply < 2 * s.root_depth && excluded == mv.NONE && tt_hit && tt_move != mv.NONE && depth >= SINGULAR_DEPTH
+    if (ply > 0 && ply < 2 * s.root_depth && excluded == mv.NONE && tt_hit && tt_move != mv.NONE && depth >= SE_DEPTH
         && entry.depth >= depth - 3 && entry.flag != tt.UPPER
         && entry.score < MATE_FOUND && entry.score > 0 - MATE_FOUND) {
-        val bar: i64 = entry.score - 2 * depth;
+        val bar: i64 = entry.score - SE_MARGIN * depth;
         s.excluded[ply] = tt_move;
         val score: i64 = search_node(s, p, (depth - 1) / 2, bar - 1, bar, ply, false);
         s.excluded[ply] = mv.NONE;
@@ -693,7 +808,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # a mate can still be found.
     var futile: bool = false;
     if (!is_pv && !in_check && depth <= 3) {
-        val margin: i64 = 120 + 110 * depth;
+        val margin: i64 = FUT_BASE + FUT_MUL * depth;
         futile = static_eval + margin <= alpha;
     }
 
@@ -729,7 +844,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         # late move pruning: near the horizon, once enough quiet moves have
         # failed, the rest almost never rescue the position
         if (!is_pv && !in_check && depth <= 4 && legal > 0 && !tactical
-            && best > 0 - MATE_FOUND && legal > 6 + depth * depth) {
+            && best > 0 - MATE_FOUND && legal > LMP_BASE + depth * depth) {
             pos.unmake(p);
             i = i + 1;
             cnt;
@@ -778,7 +893,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 # something before: a good record buys back up to two plies,
                 # a bad one costs up to two more. s.mover holds the piece on
                 # its new square, which is the piece that moved.
-                var credit: i64 = s.history[s.mover[ply]][mv.to(m)] / HISTORY_PER_PLY;
+                var credit: i64 = s.history[s.mover[ply]][mv.to(m)] / LMR_HIST_DIV;
                 if (credit > 2)     { credit = 2; }
                 if (credit < 0 - 2) { credit = 0 - 2; }
                 reduction = reduction - credit;
@@ -1030,7 +1145,7 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         # aspiration window: the score rarely moves far between iterations, so
         # search a narrow band around the last one and widen only on a fail.
         # shallow iterations are cheap and unstable, so they stay full-width.
-        var window: i64 = 25;
+        var window: i64 = ASP_WINDOW;
         var alpha:  i64 = 0 - INFINITE;
         var beta:   i64 = INFINITE;
         if (depth >= 4) {
@@ -1258,5 +1373,28 @@ test unsettled_move_gets_more_time_than_settled_one {
     if (time_scale(0, 0) <= time_scale(4, 0))      { ret 1; }
     if (time_scale(4, 50) <= time_scale(4, 0))     { ret 2; }
     if (time_scale(4, 0 - 50) != time_scale(4, 0)) { ret 3; }
+    ret 0;
+}
+
+test tunables_set_clamp_and_reach_the_search {
+    if (set_tunable("NoSuchOption", 1)) { ret 1; }
+    # clamped into range, and a table-backed one rebuilds its table
+    if (!set_tunable("LmrDiv", 99999) || LMR_DIV != 400) { ret 2; }
+    if (!set_tunable("LmrDiv", 225) || LMR_DIV != 225)   { ret 3; }
+    # a changed margin changes the tree; restoring it restores the tree (each
+    # search from an empty table, so none inherits another's entries)
+    var p: Position;
+    if (!pos.set_fen(?p, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")) { ret 4; }
+    var s: Search;
+    tt.clear();
+    val base: i64 = search_depth(?p, 7, ?s);
+    if (!set_tunable("RfpMargin", 40)) { ret 5; }
+    tt.clear();
+    val moved: i64 = search_depth(?p, 7, ?s);
+    if (!set_tunable("RfpMargin", 85)) { ret 6; }
+    tt.clear();
+    val again: i64 = search_depth(?p, 7, ?s);
+    if (moved == base) { ret 7; }
+    if (again != base) { ret 8; }
     ret 0;
 }

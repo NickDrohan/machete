@@ -337,6 +337,36 @@ def open_engine(path, options):
     return engine
 
 
+# what the wall's chart makes of a recorded score: centipawns from White's
+# side, a mate at +/-3000, which the chart draws as M
+def chart_cp(entry):
+    if entry is None:
+        return None
+    if entry.get("mate") is not None:
+        return 3000 if entry["mate"] > 0 else -3000
+    return entry.get("cp")
+
+
+# a critic scores positions for the chart and nothing else: a second opinion
+# beside each side's own, so a swindle or a blunder shows as the two lines
+# parting. It gets one thread and a small table where it has those options.
+def open_critic(path):
+    critic = chess.engine.SimpleEngine.popen_uci(path, cwd=os.path.dirname(path) or None)
+    critic.configure({name: value for name, value in (("Threads", 1), ("Hash", 16))
+                      if name in critic.options})
+    return critic
+
+
+def critic_cp(critic, board, ms):
+    try:
+        info = critic.analyse(board, chess.engine.Limit(time=ms / 1000.0))
+    except Exception:
+        return None
+    if "score" not in info:
+        return None
+    return info["score"].white().score(mate_score=3000)
+
+
 def worker(args, paths, tally, pairs, failures, live=None, slot=0):
     """Play whole pairs of games until the tally says to stop."""
     try:
@@ -346,6 +376,14 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
         failures.append("could not start engines: {}: {}".format(
             type(problem).__name__, problem))
         return
+    critic, critic_name = None, ""
+    if args.critic and live is not None:
+        try:
+            critic = open_critic(args.critic)
+            critic_name = critic.id.get("name", "critic")
+        except Exception as problem:
+            print("no critic: {}: {}".format(type(problem).__name__, problem))
+            sys.stdout.flush()
     try:
         while True:
             with pairs["lock"]:
@@ -362,16 +400,39 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
                                          args.opening_plies)
             for a_is_white in (True, False):
                 white, black = (a, b) if a_is_white else (b, a)
+                white_name = args.label_a if a_is_white else args.label_b
+                black_name = args.label_b if a_is_white else args.label_a
                 report = None
+                record = None
                 if live is not None:
-                    def report(board, result, _s=slot, _w=a_is_white):
-                        live.set_board(_s, board,
-                                       args.label_a if _w else args.label_b,
-                                       args.label_b if _w else args.label_a, result)
+                    # each side's own score per move, from White's side, and
+                    # the critic's, as the chart's lines; the record holds the
+                    # mover's score for the move just pushed
+                    record = []
+                    points = {"white": [], "black": [], "critic": []}
+                    seen = [0]
+
+                    def report(board, result, _s=slot, _wn=white_name, _bn=black_name,
+                               _r=record, _p=points, _seen=seen):
+                        if _r and board.ply() > _seen[0]:
+                            _seen[0] = board.ply()
+                            cp = chart_cp(_r[-1])
+                            if cp is not None:
+                                mover = "black" if board.turn == chess.WHITE else "white"
+                                _p[mover].append([board.ply(), cp])
+                            if critic is not None:
+                                verdict = critic_cp(critic, board, args.critic_ms)
+                                if verdict is not None:
+                                    _p["critic"].append([board.ply(), verdict])
+                        lines = [{"name": _wn, "points": _p["white"]},
+                                 {"name": _bn, "points": _p["black"]}]
+                        if critic is not None:
+                            lines.append({"name": critic_name, "points": _p["critic"]})
+                        live.set_board(_s, board, _wn, _bn, result, lines)
                 try:
                     outcome, final, how, clocks = play(
                         white, black, opening, limit_from(args), args.max_plies, report,
-                        adjudicate.from_arguments(args), clock_from(args))
+                        adjudicate.from_arguments(args), clock_from(args), record)
                 except Exception as problem:
                     failures.append("{}: {}".format(type(problem).__name__, problem))
                     return
@@ -395,6 +456,8 @@ def worker(args, paths, tally, pairs, failures, live=None, slot=0):
     finally:
         for side in (a, b):
             engines.shutdown(side)
+        if critic is not None:
+            engines.shutdown(critic)
 
 
 def check_network(path, options):
@@ -442,6 +505,10 @@ def main():
                         help="port for the live board wall; 0 turns it off")
     parser.add_argument("--pgn", default="data/games_match.pgn",
                         help="append every game here; empty string turns it off")
+    parser.add_argument("--critic", default="",
+                        help="a UCI engine that scores every position for the wall's chart, beside "
+                             "each side's own score; nothing it says reaches the result")
+    parser.add_argument("--critic-ms", type=int, default=30, help="milliseconds the critic gets a position")
     adjudicate.add_arguments(parser)
     parser.add_argument("--option-a", action="append", default=[],
                         help="UCI option for engine A as Name=Value; repeatable")
@@ -492,9 +559,10 @@ def main():
         print("note: {} games from {} openings, so openings repeat".format(
             args.games, len(args.openings)))
 
+    workers = max(1, min(args.concurrency, (args.games + 1) // 2))
     live = None
     if args.watch:
-        live = wall.Live(max(1, args.concurrency),
+        live = wall.Live(workers,
                          title="{} vs {}".format(args.label_a, args.label_b),
                          columns=("side", "games", "W", "D", "L", "score", "Elo"))
         live.say("{} vs {}".format(args.label_a, args.label_b), "{} games at {}".format(
@@ -506,7 +574,7 @@ def main():
     threads = [threading.Thread(target=worker,
                                 args=(args, (path_a, path_b), tally, pairs, failures,
                                       live, slot))
-               for slot in range(max(1, args.concurrency))]
+               for slot in range(workers)]
     for thread in threads:
         thread.start()
     for thread in threads:
