@@ -1,6 +1,6 @@
 """Generate src/kernels.mach: the network's hand-encoded x86-64 kernels.
 
-    python harness/nnuegen.py [--hidden 256] > src/kernels.mach
+    python harness/nnuegen.py [--hidden 256] [--out src/kernels.mach]
 
 mach 6.5 neither lowers vectors to 256 bits nor spells AVX2, pmaddwd,
 pmaxsw/pminsw or xgetbv in inline asm (briar-systems/mach#4128, MACH_FINDINGS
@@ -200,6 +200,7 @@ pub fun detect_avx2() bool {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hidden", type=int, default=256)
+    parser.add_argument("--out", default="src/kernels.mach")
     args = parser.parse_args()
     h = args.hidden
     assert h % 16 == 0
