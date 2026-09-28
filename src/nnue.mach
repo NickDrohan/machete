@@ -518,7 +518,7 @@ test nnue_the_pmaddwd_kernel_sums_exactly_what_the_portable_loop_does {
             }
         }
         val start: i32x4 = i32x4{trial::i32, 0 - 7, 11, 0};
-        val slow: i64 = hsum_i32x4(accumulate_portable(?TEST_VALUES[0], ?TEST_WEIGHTS[0], start))::i64;
+        val slow:  i64   = hsum_i32x4(accumulate_portable(?TEST_VALUES[0], ?TEST_WEIGHTS[0], start))::i64;
         AVX2 = false;
         val sse2: i64 = hsum_i32x4(accumulate(?TEST_VALUES[0], ?TEST_WEIGHTS[0], start))::i64;
         if (sse2 != slow) { ret 1; }
