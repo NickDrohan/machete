@@ -311,6 +311,15 @@ pub fun reset(a: *Acc, white_king: i64, black_king: i64) {
 # Set by load from kernels.detect_avx2.
 pub var AVX2: bool = false;
 
+# the UCI option Avx2: false keeps the SSE2 kernels on a CPU that has AVX2,
+# so the two can be timed in one binary on one search tree
+pub var ALLOW_AVX2: bool = true;
+
+pub fun allow_avx2(on: bool) {
+    ALLOW_AVX2 = on;
+    AVX2       = on && kernels.detect_avx2();
+}
+
 # which accumulator code runs, for the engine's info line
 pub fun avx2_label() str {
     if (AVX2) { ret "AVX2"; }
@@ -488,7 +497,7 @@ pub fun load(path: str) bool {
     val ok:   bool                = read_body(f);
     val shut: err[io_error.Error] = fs.close(?f);
     loaded = ok;
-    AVX2   = kernels.detect_avx2();
+    AVX2   = ALLOW_AVX2 && kernels.detect_avx2();
     ret ok;
 }
 

@@ -29,14 +29,18 @@ FENS = [
 ]
 
 
-def run(path, net, nodes):
+def run(path, net, nodes, options=()):
     """CPU seconds the engine spent on the searches, and what it found.
 
     CPU time, not wall time: on a machine running other jobs, wall time also
     counts the moments the engine waited for a core, which is noise here.
     """
     engine = chess.engine.SimpleEngine.popen_uci(path)
-    engine.configure({"EvalFile": net})
+    settings = {"EvalFile": net}
+    for option in options:
+        name, _, value = option.partition("=")
+        settings[name] = {"true": True, "false": False}.get(value, value)
+    engine.configure(settings)
     process = psutil.Process(engine.transport.get_pid())
     before = sum(process.cpu_times()[:2])
     trees = []
@@ -55,22 +59,26 @@ def main():
     parser.add_argument("--net", required=True)
     parser.add_argument("--nodes", type=int, default=1500000)
     parser.add_argument("--rounds", type=int, default=6)
+    parser.add_argument("--option-a", action="append", default=[], help="UCI option for A as Name=Value")
+    parser.add_argument("--option-b", action="append", default=[], help="UCI option for B as Name=Value")
     args = parser.parse_args()
 
     ratios, same = [], True
+    # sides, not paths: A and B may be one binary with different options
+    sides = {"A": (args.a, args.option_a), "B": (args.b, args.option_b)}
     for round_ in range(args.rounds):
-        order = (args.a, args.b, args.b, args.a)
-        times = {args.a: [], args.b: []}
+        times = {"A": [], "B": []}
         trees = {}
-        for path in order:
-            elapsed, tree = run(path, args.net, args.nodes)
-            times[path].append(elapsed)
-            trees[path] = tree
-        same = same and trees[args.a] == trees[args.b]
-        ratio = sum(times[args.a]) / sum(times[args.b])
+        for side in ("A", "B", "B", "A"):
+            path, options = sides[side]
+            elapsed, tree = run(path, args.net, args.nodes, options)
+            times[side].append(elapsed)
+            trees[side] = tree
+        same = same and trees["A"] == trees["B"]
+        ratio = sum(times["A"]) / sum(times["B"])
         ratios.append(ratio)
         print("round {}: A {:.2f}s  B {:.2f}s  A/B {:.3f}".format(
-            round_ + 1, sum(times[args.a]) / 2, sum(times[args.b]) / 2, ratio))
+            round_ + 1, sum(times["A"]) / 2, sum(times["B"]) / 2, ratio))
         sys.stdout.flush()
     print("B is {:.1%} faster than A (median ratio {:.3f}, spread {:.3f}-{:.3f})".format(
         statistics.median(ratios) - 1, statistics.median(ratios), min(ratios), max(ratios)))
