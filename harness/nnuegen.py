@@ -218,7 +218,9 @@ def main():
     for block in (accumulate_sse2(h), accumulate_avx2(h), column(PADDW, "add_column_avx2", "add", h),
                   column(PSUBW, "sub_column_avx2", "subtract", h), copy(h)):
         out += block + [""]
-    print("\n".join(out).rstrip("\n"))
+    # LF on every host, as .gitattributes wants; print() would write CRLF on Windows
+    with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(out).rstrip("\n") + "\n")
 
 
 if __name__ == "__main__":
