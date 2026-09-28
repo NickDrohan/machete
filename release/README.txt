@@ -52,9 +52,10 @@ Stockfish 16 depth 18-22 positions from the theoden8 corpus). The width alone
 measured +29 +/- 28 at equal time against a 256-wide network on the same data.
 
 Speed: the network's accumulator runs on AVX2 when the CPU has it, chosen at
-start-up (the engine's first info line names the path); +4.3% nodes per
-second on a Zen+ CPU, more on newer ones. The move picker keeps its loop
-bounds in registers: +3.9%. The search is 0.3's, unchanged.
+start-up (the engine's first info line names the path): 13-20% more nodes
+per second with this network, measured on AMD Zen 3, Zen 4 and Zen+ CPUs.
+The move picker keeps its loop bounds in registers: +3.9%. The search is
+0.3's, unchanged.
 
 Built with Mach 6.5.0 and mach-std 9.2.0.
 

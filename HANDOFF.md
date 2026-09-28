@@ -10,7 +10,8 @@ trainer (`train.py --window`). The engine's width is `HIDDEN` in
 its test networks at that width. Measured: +33 +/- 30 over 0.3.0 at 10+0.1
 (CONFIRM-031A), 61.4% against 54.2% for 0.3.0 against Spike, Rybka and
 Koivisto on the same openings (LADDER031, LADDER2), width alone +29 +/- 28
-(SPRT-WIDTH-512). Speed: AVX2 accumulator kernels +4.3% (SPEED-AVX2), the
+(SPRT-WIDTH-512). Speed: AVX2 accumulator kernels +13-20% with the 512-wide
+network on Zen 3, Zen 4 and Zen+ (SPEED-AVX2-CLOUD; +4.3% was at 256 wide), the
 move picker +3.9% (SPEED-PICK); Mach 6.5 itself neutral.
 
 Open when 0.3.1 shipped: C21 (512 wide, + 20M Stockfish 19 positions) and
