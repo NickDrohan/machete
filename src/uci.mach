@@ -21,6 +21,7 @@ use std.types.string.str;
 use std.types.string.str_equals;
 
 use machete.clock;
+use rep: machete.repertoire;
 use mv: machete.move;
 use machete.move.Move;
 use machete.movegen;
@@ -259,6 +260,8 @@ fun load_default_net(exe: str) {
 # exe: the executable's path (argv[0]); its folder is searched for machete.nnue
 pub fun loop(exe: str) i64 {
     pos.init();
+    # the repertoire is played out before any ucinewgame draws its systems
+    rep.init();
     tt.clear();
     pos.set_fen(?GAME, pos.START_FEN);
     search.reset(?ENGINE);
@@ -304,6 +307,8 @@ pub fun loop(exe: str) i64 {
             tt.clear();
             # a new game draws new variety bonuses (search.root_bonus)
             search.VARIETY_SEED = search.VARIETY_SEED * 6364136223846793005 + clock.now_ms()::u64 + 1442695040888963407;
+            # and its repertoire systems (repertoire.choose)
+            rep.choose(search.VARIETY_SEED);
             search.reset(?ENGINE);
             pos.set_fen(?GAME, pos.START_FEN);
         }

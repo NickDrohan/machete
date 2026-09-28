@@ -26,6 +26,7 @@ use machete.movegen.MoveList;
 use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
+use rep: machete.repertoire;
 use machete.see;
 use machete.tt;
 
@@ -182,6 +183,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "VarietyMoves", value, ?VARIETY_MOVES, 0, 40)) {
         ret true;
     }
+    or (tune_one(name, "Repertoire", value, ?REPERTOIRE, 0, 100)) {
+        ret true;
+    }
     ret false;
 }
 
@@ -204,6 +208,7 @@ pub fun print_tunables() {
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
     print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
     print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
+    print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
 }
 
 # Variety: in the first VARIETY_MOVES moves of a game, each root move gets
@@ -218,13 +223,22 @@ pub var VARIETY:       i64 = 0;
 pub var VARIETY_MOVES: i64 = 8;
 pub var VARIETY_SEED:  u64 = 0;
 
+# Repertoire: a root move that reaches a position of the author's repertoire
+# (see repertoire.mach) gets up to REPERTOIRE centipawns more - all of it for
+# the system this game aims for, half for the rest - through the same shifted
+# window as Variety's bonus. 0 turns it off.
+pub var REPERTOIRE: i64 = 0;
+
+# root_bonus: the bonus for root move m, called with m already made on p
 fun root_bonus(p: *Position, m: Move) i64 {
-    if (VARIETY <= 0 || p.fullmove > VARIETY_MOVES) { ret 0; }
+    var bonus: i64 = 0;
+    if (REPERTOIRE > 0) { bonus = rep.bonus(p.key, REPERTOIRE); }
+    if (VARIETY <= 0 || p.fullmove > VARIETY_MOVES) { ret bonus; }
     var h: u64 = VARIETY_SEED ^ (m::u64 * 0x9E3779B97F4A7C15);
     h = (h ^ (h >> 31)) * 0xBF58476D1CE4E5B9;
     h = (h ^ (h >> 29)) * 0x94D049BB133111EB;
     h = h ^ (h >> 32);
-    ret (h % (VARIETY::u64 + 1))::i64;
+    ret bonus + (h % (VARIETY::u64 + 1))::i64;
 }
 
 pub fun init_tables() {

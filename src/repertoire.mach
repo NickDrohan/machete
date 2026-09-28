@@ -1,0 +1,218 @@
+# The repertoire: positions the engine prefers to reach in the opening,
+# chosen by its author (repertoire.txt; harness/repgen.py writes the
+# lines into replines.mach). init plays every line out on the engine's own
+# board and keeps the key of each position its side's moves reach, with the
+# systems (the Vienna, the Nimzo-Indian ...) whose lines reach it. Keys, not
+# move orders, so a transposition into a repertoire position counts.
+#
+# Each game choose draws one system per side to aim for. bonus gives that
+# system's positions the full bonus and the rest of the repertoire half:
+# with an equal bonus for all, the engine's own taste picked the same system
+# every game (1.e4 six times in six, the Nimzo over the Grunfeld six in six).
+# search.root_bonus adds it at the root; nothing here decides a move.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.string.str;
+
+use mv: machete.move;
+use machete.move.Move;
+use machete.movegen;
+use pos: machete.position;
+use machete.position.Position;
+use lines: machete.replines;
+
+val CAPACITY: i64 = 1024;
+
+# KEYS[i]: a repertoire position; SYSTEMS_OF[i]: a bit per system reaching it
+var KEYS:       [1024]u64;
+var SYSTEMS_OF: [1024]u64;
+var COUNT:      i64 = 0;
+var READY:      i64 = 0;
+var BOARD:      Position;
+# the systems this game aims for, one bit per side
+var CHOSEN:     u64 = 0;
+
+fun remember(key: u64, system: u64) {
+    var i: i64 = 0;
+    for (i < COUNT) {
+        if (KEYS[i] == key) {
+            SYSTEMS_OF[i] = SYSTEMS_OF[i] | system;
+            ret;
+        }
+        i = i + 1;
+    }
+    if (COUNT < CAPACITY) {
+        KEYS[COUNT]       = key;
+        SYSTEMS_OF[COUNT] = system;
+        COUNT             = COUNT + 1;
+    }
+}
+
+# pick: the index of the which-th system of this side ('w' or 'b'), counting
+# which modulo how many the side has; -1 if it has none
+fun pick(side: u8, which: u64) i64 {
+    var total: u64 = 0;
+    var k:     i64 = 0;
+    for (k < lines.SYSTEMS) {
+        if (lines.SYSTEM_SIDE[k] == side) { total = total + 1; }
+        k = k + 1;
+    }
+    if (total == 0) { ret 0 - 1; }
+    var left: u64 = which % total;
+    k = 0;
+    for (k < lines.SYSTEMS) {
+        if (lines.SYSTEM_SIDE[k] == side) {
+            if (left == 0) { ret k; }
+            left = left - 1;
+        }
+        k = k + 1;
+    }
+    ret 0 - 1;
+}
+
+# choose: draw this game's system for each side from seed
+pub fun choose(seed: u64) {
+    var h: u64 = seed * 0x9E3779B97F4A7C15 + 0x632BE59BD9B4E019;
+    h = (h ^ (h >> 31)) * 0xBF58476D1CE4E5B9;
+    h = (h ^ (h >> 29)) * 0x94D049BB133111EB;
+    h = h ^ (h >> 32);
+    CHOSEN = 0;
+    val w: i64 = pick('w', h & 0xFFFFFFFF);
+    val b: i64 = pick('b', h >> 32);
+    if (w >= 0) { CHOSEN = CHOSEN | (1::u64 << w::u64); }
+    if (b >= 0) { CHOSEN = CHOSEN | (1::u64 << b::u64); }
+}
+
+# init: play out every line once; later calls do nothing. Returns false if a
+# move fails to parse, which repgen.py's check makes a bug in this file.
+pub fun init() bool {
+    if (READY != 0) { ret true; }
+    READY = 1;
+    choose(0);
+    val text: str = lines.LINES;
+    var ok:   bool = true;
+    var at:   i64 = 0;
+    for (text[at] != 0) {
+        # one line: its system's digit, then moves until ';' or the end
+        val system: i64 = (text[at] - '0')::i64;
+        var mine:   u8  = pos.WHITE;
+        if (lines.SYSTEM_SIDE[system] == 'b') { mine = pos.BLACK; }
+        at = at + 1;
+        pos.set_fen(?BOARD, pos.START_FEN);
+        for (text[at] != 0 && text[at] != ';') {
+            for (text[at] == ' ') { at = at + 1; }
+            var word: [8]u8;
+            var n:    i64 = 0;
+            for (text[at] != 0 && text[at] != ' ' && text[at] != ';' && n < 7) {
+                word[n] = text[at];
+                n       = n + 1;
+                at      = at + 1;
+            }
+            word[n] = 0;
+            if (n == 0) { cnt; }
+            val m: Move = movegen.parse_uci(?BOARD, ?word[0]);
+            if (m == mv.NONE) {
+                ok = false;
+                for (text[at] != 0 && text[at] != ';') { at = at + 1; }
+                brk;
+            }
+            val mover: u8 = BOARD.side;
+            pos.make(?BOARD, m);
+            if (mover == mine) { remember(BOARD.key, 1::u64 << system::u64); }
+        }
+        if (text[at] == ';') { at = at + 1; }
+    }
+    ret ok;
+}
+
+# bonus: full for a position of this game's systems, half for the rest of
+# the repertoire, 0 outside it
+pub fun bonus(key: u64, full: i64) i64 {
+    var i: i64 = 0;
+    for (i < COUNT) {
+        if (KEYS[i] == key) {
+            if ((SYSTEMS_OF[i] & CHOSEN) != 0) { ret full; }
+            ret full / 2;
+        }
+        i = i + 1;
+    }
+    ret 0;
+}
+
+pub fun count() i64 {
+    ret COUNT;
+}
+
+test repertoire_lines_all_play {
+    pos.init();
+    if (!init()) { ret 1; }
+    # every position repgen.py counted, and no more: the engine's board and
+    # python-chess agree on which positions the lines reach
+    if (COUNT != lines.POSITIONS) { ret 2; }
+    ret 0;
+}
+
+test repertoire_prefers_own_moves_only {
+    pos.init();
+    init();
+    var p: Position;
+    pos.set_fen(?p, pos.START_FEN);
+    # 1.c4 (the English) is White's; 1.Nf3 is in the Black lines only as the
+    # opponent's move, so it is not preferred for White
+    pos.make(?p, movegen.parse_uci(?p, "c2c4"));
+    if (bonus(p.key, 40) == 0) { ret 1; }
+    pos.set_fen(?p, pos.START_FEN);
+    pos.make(?p, movegen.parse_uci(?p, "g1f3"));
+    if (bonus(p.key, 40) != 0) { ret 2; }
+    # 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 - the Nimzo-Indian - is Black's
+    pos.set_fen(?p, "rnbqk2r/pppp1ppp/4pn2/8/1bPP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4");
+    if (bonus(p.key, 40) == 0) { ret 3; }
+    ret 0;
+}
+
+test repertoire_draws_every_system {
+    pos.init();
+    init();
+    # over many games each side's draw lands on each of its systems, and
+    # always on exactly one per side
+    var seen: u64 = 0;
+    var seed: u64 = 1;
+    for (seed < 300) {
+        choose(seed);
+        var bits: i64 = 0;
+        var k:    i64 = 0;
+        for (k < lines.SYSTEMS) {
+            if (((CHOSEN >> k::u64) & 1) != 0) { bits = bits + 1; }
+            k = k + 1;
+        }
+        if (bits != 2) { ret 1; }
+        seen = seen | CHOSEN;
+        seed = seed + 1;
+    }
+    if (seen != (1::u64 << lines.SYSTEMS::u64) - 1) { ret 2; }
+    # the drawn system's positions get the full bonus, the others half:
+    # 1.c4 is the English's, 1.e4 the Vienna's, and about a third of games
+    # draw the English
+    var p: Position;
+    pos.set_fen(?p, pos.START_FEN);
+    pos.make(?p, movegen.parse_uci(?p, "c2c4"));
+    var q: Position;
+    pos.set_fen(?q, pos.START_FEN);
+    pos.make(?q, movegen.parse_uci(?q, "e2e4"));
+    var english: i64 = 0;
+    seed = 1;
+    for (seed < 300) {
+        choose(seed);
+        val c: i64 = bonus(p.key, 40);
+        val e: i64 = bonus(q.key, 40);
+        if (c != 40 && c != 20) { ret 3; }
+        if (e != 40 && e != 20) { ret 4; }
+        if (c == 40 && e == 40) { ret 5; }
+        if (c == 40) { english = english + 1; }
+        seed = seed + 1;
+    }
+    if (english < 70 || english > 130) { ret 6; }
+    ret 0;
+}
