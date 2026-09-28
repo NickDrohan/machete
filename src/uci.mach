@@ -15,8 +15,6 @@ use std.sync.atomic;
 use std.sync.thread;
 use std.text.parse;
 use std.types.bool.bool;
-use std.types.bool.false;
-use std.types.bool.true;
 use std.types.result.res;
 use std.types.size.usize;
 use std.types.string.str;
@@ -279,13 +277,14 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete 0.3");
+            print.println("id name machete 0.3.1");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min {} max {}",
                 tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
             # tells the GUI it may send go ponder; nothing in the engine changes with it
             print.println("option name Ponder type check default false");
+            search.print_tunables();
             if (DEFAULT_NET[0] != 0) {
                 print.printlnf("option name EvalFile type string default {}", ?DEFAULT_NET[0]);
             }
@@ -327,6 +326,9 @@ pub fun loop(exe: str) i64 {
                 threads = wanted;
                 print.printlnf("info string threads set to {}", threads);
             }
+            or (t.count >= 5 && search.set_tunable(t.item[2], token_i64(?t, 4, 0))) {
+                print.printlnf("info string {} set", t.item[2]);
+            }
             or (t.count >= 3 && str_equals(t.item[2], "Hash")) {
                 print.printlnf("info string hash is fixed at {} MB", tt.MEGABYTES);
             }
@@ -334,7 +336,7 @@ pub fun loop(exe: str) i64 {
                 var path: [256]u8;
                 join_tokens(?t, 4, t.count, ?path[0], 256);
                 if (nn.load(?path[0])) {
-                    print.printlnf("info string network loaded from {}", ?path[0]);
+                    print.printlnf("info string network loaded from {}, {} accumulator", ?path[0], nn.avx2_label());
                 }
                 or {
                     print.printlnf("info string could not read {}, keeping the hand-written evaluation", ?path[0]);

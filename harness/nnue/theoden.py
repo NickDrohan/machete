@@ -119,6 +119,9 @@ def main():
     parser.add_argument("parquet")
     parser.add_argument("--out", required=True)
     parser.add_argument("--limit", type=int, default=40000000)
+    parser.add_argument("--groups", default="",
+                        help="row groups to read, FIRST:LAST (LAST excluded); the whole file by default. "
+                             "Several conversions over disjoint ranges share the corpus without repeating a row")
     parser.add_argument("--min-depth", type=int, default=0,
                         help="skip labels shallower than this")
     parser.add_argument("--max-cp", type=int, default=0,
@@ -129,7 +132,13 @@ def main():
 
     import pyarrow.parquet as pq
     source = pq.ParquetFile(args.parquet)
-    print("{:,} rows in {}".format(source.metadata.num_rows, args.parquet))
+    groups = list(range(source.metadata.num_row_groups))
+    if args.groups:
+        first, last = (int(x) for x in args.groups.split(":"))
+        groups = groups[first:last]
+    print("{:,} rows in {} row groups in {}; reading groups {}..{}".format(
+        source.metadata.num_rows, source.metadata.num_row_groups, args.parquet,
+        groups[0], groups[-1]))
 
     written = 0
     rejected = 0
@@ -137,7 +146,7 @@ def main():
     bad = 0
     buffer = []
     with open(args.out, "wb") as handle:
-        for batch in source.iter_batches(batch_size=200000,
+        for batch in source.iter_batches(batch_size=200000, row_groups=groups,
                                          columns=["fen", "score", "depth"]):
             data = batch.to_pydict()
             for blob, score, depth in zip(data["fen"], data["score"], data["depth"]):

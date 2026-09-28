@@ -1,5 +1,23 @@
 # Handing off the Mach side
 
+## machete 0.3.1 (2026-09-28)
+
+0.3.1 is 0.3's search with a network twice as wide: C20, 8 king buckets x 768
+-> 512 -> 8 output layers, trained on 262M positions through the streaming
+trainer (`train.py --window`). The engine's width is `HIDDEN` in
+`src/nnue.mach`, and every hand-encoded kernel comes from
+`harness/nnuegen.py --hidden N` into `src/kernels.mach`; `check.sh` generates
+its test networks at that width. Measured: +33 +/- 30 over 0.3.0 at 10+0.1
+(CONFIRM-031A), 61.4% against 54.2% for 0.3.0 against Spike, Rybka and
+Koivisto on the same openings (LADDER031, LADDER2), width alone +29 +/- 28
+(SPRT-WIDTH-512). Speed: AVX2 accumulator kernels +4.3% (SPEED-AVX2), the
+move picker +3.9% (SPEED-PICK); Mach 6.5 itself neutral.
+
+Open when 0.3.1 shipped: C21 (512 wide, + 20M Stockfish 19 positions) and
+C22 (768 wide) training; whether streaming itself costs strength (C7W -17
++/- 15 against C7, C7W8 pending); SPSA of the search constants at 4,209 of
+15,000 steps, never applied.
+
 ## machete 0.3 (2026-09-27)
 
 0.3 is round 2's winner (COMPETITION_ROUND2.md): team cursor's entry, released
