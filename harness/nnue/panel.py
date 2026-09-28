@@ -26,14 +26,16 @@ import engine as engines
 
 ARENA = arena.ENGINES
 
-# name -> path relative to the Arena engine folder
+# name -> path relative to the Arena engine folder. Updated 2026-09-27 to the
+# newest releases where label_check.py showed them labelling at least as well
+# (LABEL-02); Reckless stays on the dev build, which labelled better than 0.9.0.
 PANEL = {
-    "Stockfish":   r"Stockfish\stockfish\stockfish-windows-x86-64-avx2.exe",
-    "Berserk":     r"berserk\berserk-13-ssse3.exe",
-    "Alexandria":  r"Alexandria 8.1.12\Alexandria-8.1.12-avx2.exe",
+    "Stockfish":   r"Stockfish 19\stockfish\stockfish-windows-x86-64-universal.exe",
+    "Berserk":     r"berserk\berserk-14-avx2.exe",
+    "Alexandria":  r"Alexandria 9.0\Alexandria-9.0-avx2.exe",
     "Obsidian":    r"Obsidian160-avx2.exe",
-    "Caissa":      r"Caissa\caissa-1.23-x64-sse2.exe",
-    "PlentyChess": r"Plenty\PlentyChess-7.0.0-windows-ssse3.exe",
+    "Caissa":      r"Caissa\caissa-2.0-x64-avx2.exe",
+    "PlentyChess": r"Plenty\PlentyChess-8.0.0-windows-avx2.exe",
     "Dragon":      r"Dragon\dragon_05e2a7\Windows\dragon-64bit-avx2.exe",
     "Reckless":    r"Reckless 0.9.0 dev-2a847427\reckless-windows-avx2.exe",
     "Koivisto":    r"Koi\Koivisto_9.0-windows-sse2-pgo.exe",

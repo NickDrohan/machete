@@ -20,9 +20,6 @@
 
 use std.sync.atomic;
 use std.sync.thread;
-use std.types.bool.bool;
-use std.types.bool.false;
-use std.types.bool.true;
 
 use machete.clock;
 use mv: machete.move;

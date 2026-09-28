@@ -61,8 +61,11 @@ same "bench matches the recorded node count" "$here/fixtures/bench.expected" "$w
 # well as the code that reads it, and no 400 KB blob lives in git.
 # The incremental accumulator is checked by the Mach test suite above, which
 # compares it against a from-scratch recompute after every move of a game.
+# the test networks are generated at the width the engine is built for, which
+# src/nnue.mach fixes at compile time and a file of another width is refused
+hidden=$(sed -n 's/^pub val HIDDEN: i64 = \([0-9]*\);.*/\1/p' "$here/src/nnue.mach")
 if [[ -n "$python" ]]; then
-    "$python" "$here/harness/nnue/reference.py" random "$work/random.nnue" --seed 1 >/dev/null
+    "$python" "$here/harness/nnue/reference.py" random "$work/random.nnue" --seed 1 --hidden "$hidden" >/dev/null
     gate "network evaluation matches the numpy reference exactly" 0 \
         "$python" "$here/harness/nnue/agree.py" "$release" "$work/random.nnue" --positions 150
 fi
@@ -73,7 +76,7 @@ fi
 # notice if that widening were removed, so this gate exists to notice.
 if [[ -n "$python" ]]; then
     for sign in 1 -1; do
-        "$python" "$here/harness/nnue/reference.py" extreme "$work/extreme.nnue" --sign $sign >/dev/null
+        "$python" "$here/harness/nnue/reference.py" extreme "$work/extreme.nnue" --sign $sign --hidden "$hidden" >/dev/null
         gate "worst-case output arithmetic does not overflow (sign $sign)" 0 \
             "$python" "$here/harness/nnue/agree.py" "$release" "$work/extreme.nnue" --positions 12
     done

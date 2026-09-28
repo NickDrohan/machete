@@ -1,5 +1,5 @@
-machete 0.3
-===========
+machete 0.3.1
+=============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
 a low-level, explicitly typed systems language. Windows x86-64.
@@ -21,7 +21,8 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.3 reads network format 3 only; a 0.2 network will not load.
+            0.3.1 reads 512-wide format 3 networks only; a 0.3.0 or 0.2
+            network will not load.
   Ponder    supported: go ponder, ponderhit and stop.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
@@ -29,45 +30,37 @@ Not supported yet: opening books, endgame tablebases, Chess960.
 
 How strong
 ----------
-Against machete 0.2, head to head, one thread each, balanced openings, no
-books, real clocks:
-  +54 +/- 34 Elo over 200 games at 10+0.1 (66 wins, 99 draws, 35 losses)
-  +60 +/- 41 Elo over 100 games at 60+0.6 (27 wins, 63 draws, 10 losses)
-Against Koivisto 9.0 (CCRL 40/15 about 3300) at 60+0.6, 40 games:
-  0 wins, 8 draws, 32 losses (0.2 scored 0 wins, 7 draws, 33 losses in the
-  same match): roughly 380 Elo below it, and no wins yet against an engine
-  of that class.
-On an external scale: about 3000-3100 on the CCRL Blitz scale (2'+1", one
-CPU), from 140 games against seven listed engines (Rybka 2.3.2a, Spike 1.4,
-Koivisto 9.0, Ruffian 1.05, Hermann 2.8, SOS 5.1, AnMon 5.75) with their
-published ratings held fixed. The anchors disagree among themselves by
-several hundred Elo on this hardware, so take the range, not a point. On
-that scale 0.3 and 0.2 are indistinguishable at both 2+1 and 10+0.1: the
-head-to-head gain above is real against 0.2 and not against other engines.
-What 0.3 delivers is the king-bucket network format; ASSESSMENT.md in the
-repository has the games and the arithmetic.
+Against machete 0.3.0, head to head at 10+0.1: +33 +/- 30 Elo over 596 games
+(137 wins, 371 draws, 88 losses).
+Against three outside engines at 2+1, on the same openings 0.3.0 played:
+  Spike 1.4      49 wins,  9 draws,  2 losses   (0.3.0: 36, 19, 5)
+  Rybka 2.3.2a   43 wins, 11 draws,  6 losses   (0.3.0: 40, 16, 4)
+  Koivisto 9.0    1 win,  15 draws, 44 losses   (0.3.0:  0,  8, 52)
+61% against them together where 0.3.0 scored 54%: roughly +50 Elo outside
+machete's own family. On the CCRL Blitz scale (2+1, one CPU) that is somewhere
+around 3050-3150; the reference engines disagree among themselves by hundreds
+of Elo on modern hardware, so take the range, not a point. ASSESSMENT.md in
+the repository has the games and the arithmetic.
 
 
-What changed since 0.2
-----------------------
-Evaluation: king buckets. Each side reads the board through one of 8 zones
-chosen by where its own king stands, after mirroring the board so that king
-is on files a-d. A king move into another zone rebuilds that side's half of
-the network's first layer, only when the position is actually evaluated;
-every other move stays incremental.
+What changed since 0.3.0
+------------------------
+Network: C20 - 8 king buckets x 768 inputs -> 512 -> 8 output layers, twice
+0.3's width, trained on 262 million positions (C7's 154 million plus 10
+million from the engine's own games labelled by Stockfish, and 98 million
+Stockfish 16 depth 18-22 positions from the theoden8 corpus). The width alone
+measured +29 +/- 28 at equal time against a 256-wide network on the same data.
 
-Network: C7 - 8 king buckets x 768 inputs -> 256 -> 8 output layers chosen by
-the number of pieces left, int16, format 3. Trained on 153.7 million
-positions: 0.2's 118.6 million plus 35.1 million quiet positions from the
-theoden8 corpus (Lichess analysis at depth 18-22, mapped to our teachers'
-centipawn scale).
+Speed: the network's accumulator runs on AVX2 when the CPU has it, chosen at
+start-up (the engine's first info line names the path); +4.3% nodes per
+second on a Zen+ CPU, more on newer ones. The move picker keeps its loop
+bounds in registers: +3.9%. The search is 0.3's, unchanged.
 
-The search is 0.2's, unchanged. Built with Mach 6.0.0, 2.6% faster than the
-same code under 5.11.
+Built with Mach 6.5.0 and mach-std 9.2.0.
 
 
 Credits
 -------
-Built with the Mach compiler 6.0.0 and mach-std 9.0.0. The network's training
+Built with the Mach compiler 6.5.0 and mach-std 9.2.0. The network's training
 positions were labelled by Stockfish, Berserk, Alexandria, Obsidian, Caissa,
 PlentyChess and Reckless, and by the theoden8 corpus; no engine's code is used.

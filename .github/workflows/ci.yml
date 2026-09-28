@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  MACH_VERSION: v6.0.0
+  MACH_VERSION: v6.5.0
 
 jobs:
   plan:
@@ -95,8 +95,12 @@ jobs:
       - run: mach test . --profile release
       - if: matrix.leg.primary
         run: mach fmt --check .
+      # since mach 6.0 a build covers only the default artifact, so each
+      # executable is built by name (MACH_FINDINGS #14)
       - if: matrix.leg.primary
-        run: mach build . --all-targets --profile release
+        run: |
+          mach build . --all-targets --profile release --bin machete
+          mach build . --all-targets --profile release --bin binpack
       # a release run packages every executable for cd.yml, at the paths mach's
       # build plan reports, so artifact names and suffixes come from mach.toml
       - name: package
@@ -105,7 +109,7 @@ jobs:
           set -euo pipefail
           version=${GITHUB_REF_NAME#v}
           mkdir dist
-          mach build . --all-targets --profile release --plan | awk '
+          for bin in machete binpack; do mach build . --all-targets --profile release --plan --bin "$bin"; done | awk '
             /^unit / { name = $3; target = $6; goal = ""; os = "" }
             $1 == "goal" { goal = $2 }
             $1 == "tuple" { split($2, t, "-"); os = t[2] }

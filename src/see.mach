@@ -10,8 +10,6 @@
 # it, so the attacker set is recomputed from sliders after every capture.
 
 use std.types.bool.bool;
-use std.types.bool.false;
-use std.types.bool.true;
 
 use machete.attacks;
 use bb: machete.bitboard;
