@@ -88,12 +88,11 @@ class Corpus(object):
     That puts about 190M positions on an 8 GB card rather than 80M.
 
     Past what the card holds, the packed columns stay in host memory and
-    training walks the corpus in windows: each epoch visits the windows in a
-    shuffled order, copies one to the device (a few GB, a second or two),
-    and shuffles within it. A batch never mixes windows, so the shuffle is
-    coarser than a whole-corpus one; the windows are large enough that this
-    has not mattered. The held-out rows are gathered to the device once, and
-    a window skips them.
+    training walks the corpus in windows: each epoch shuffles every row, cuts
+    the shuffled order into windows, gathers each window's rows from host
+    memory to the device and shuffles within it. Every window is a random
+    sample of all the sources. The held-out rows are gathered to the device
+    once, and no window contains them.
     """
 
     CHUNK = 1 << 22
@@ -130,23 +129,19 @@ class Corpus(object):
         # the device-side columns a batch gathers from: the corpus itself
         # without a window, otherwise the window loaded last
         self.live = {name: getattr(self, name) for name in COLUMNS}
-        self.loaded = None
 
-    def load_window(self, k):
-        """Copy window k's rows to the device; returns its first global row."""
-        first = k * self.window
-        last = min(self.count, first + self.window)
-        if self.loaded != k:
-            for name in COLUMNS:
-                self.live[name] = getattr(self, name)[first:last].to(self.device, non_blocking=True)
-            self.loaded = k
-        return first
+    def load_rows(self, rows):
+        """Gather these global rows (sorted) from host memory onto the device
+        as the live window."""
+        picked = torch.from_numpy(rows)
+        for name in COLUMNS:
+            self.live[name] = getattr(self, name).index_select(0, picked).to(self.device)
 
     def gather(self, index):
         """Rows by global index as a small device-side corpus of their own,
         for the held-out set."""
         held = Corpus.__new__(Corpus)
-        held.device, held.window, held.loaded = self.device, 0, None
+        held.device, held.window = self.device, 0
         held.count = len(index)
         picked = torch.from_numpy(np.sort(index))
         for name in COLUMNS:
@@ -198,15 +193,17 @@ class Corpus(object):
                 us, them, bucket = self.features(index)
                 yield us, them, bucket, self.targets(index)
             return
-        windows = np.arange((self.count + self.window - 1) // self.window)
-        if rng is not None:
-            rng.shuffle(windows)
-        member = order // self.window
-        for k in windows:
-            local = order[member == k] - k * self.window
+        # Each window is a slice of `order`, which the caller has shuffled, so
+        # it is a random sample of the whole corpus. Windows used to be
+        # contiguous slices of the corpus itself, which is its sources laid
+        # end to end: the network trained on one source at a time, drifted to
+        # whichever came last, and C18 and C19 lost 54 and 60 Elo for it.
+        for first in range(0, len(order), self.window):
+            rows = np.sort(order[first:first + self.window])
+            self.load_rows(rows)
+            local = np.arange(len(rows))
             if rng is not None:
                 rng.shuffle(local)
-            self.load_window(int(k))
             for at in range(0, len(local) - size + 1, size):
                 index = torch.from_numpy(np.sort(local[at:at + size])).to(self.device)
                 us, them, bucket = self.features(index)
