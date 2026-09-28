@@ -176,6 +176,12 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "IirDepth", value, ?IIR_DEPTH, 3, 12)) {
         ret true;
     }
+    or (tune_one(name, "Variety", value, ?VARIETY, 0, 50)) {
+        ret true;
+    }
+    or (tune_one(name, "VarietyMoves", value, ?VARIETY_MOVES, 0, 40)) {
+        ret true;
+    }
     ret false;
 }
 
@@ -196,6 +202,29 @@ pub fun print_tunables() {
     print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
     print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
+    print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
+    print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
+}
+
+# Variety: in the first VARIETY_MOVES moves of a game, each root move gets
+# a bonus of 0..VARIETY centipawns, the same for a move throughout one search
+# and drawn afresh for each game (VARIETY_SEED, set at ucinewgame). The search
+# then chooses among moves it judges within that margin of the best, so two
+# games from the same position need not repeat, and nothing it judges worse
+# by more than the margin is ever played. VARIETY 0 turns it off, and then
+# the search is exactly what it was. The bonus is applied by shifting the
+# root move's window, so alpha-beta stays exact about the bonus-added scores.
+pub var VARIETY:       i64 = 0;
+pub var VARIETY_MOVES: i64 = 8;
+pub var VARIETY_SEED:  u64 = 0;
+
+fun root_bonus(p: *Position, m: Move) i64 {
+    if (VARIETY <= 0 || p.fullmove > VARIETY_MOVES) { ret 0; }
+    var h: u64 = VARIETY_SEED ^ (m::u64 * 0x9E3779B97F4A7C15);
+    h = (h ^ (h >> 31)) * 0xBF58476D1CE4E5B9;
+    h = (h ^ (h >> 29)) * 0x94D049BB133111EB;
+    h = h ^ (h >> 32);
+    ret (h % (VARIETY::u64 + 1))::i64;
 }
 
 pub fun init_tables() {
@@ -857,11 +886,17 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             quiet_n         = quiet_n + 1;
         }
         var score: i64 = 0;
+        # the root's variety bonus (see root_bonus): the child is searched
+        # against the window shifted down by it, and its score shifted back up
+        var bonus: i64 = 0;
+        if (ply == 0) { bonus = root_bonus(p, m); }
+        val lo: i64 = alpha - bonus;
+        val hi: i64 = beta - bonus;
         if (legal == 1) {
             var grow: i64 = 0;
             if (m == tt_move) { grow = extension; }
             s.known_check[ply + 1] = 1 + gives::i64;
-            score                  = 0 - search_node(s, p, depth - 1 + grow, 0 - beta, 0 - alpha, ply + 1, true);
+            score                  = 0 - search_node(s, p, depth - 1 + grow, 0 - hi, 0 - lo, ply + 1, true);
         }
         or {
             # late move reduction: quiet moves ordered last are searched
@@ -902,16 +937,17 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (reduction > depth - 2) { reduction = depth - 2; }
             }
             s.known_check[ply + 1] = 1 + gives::i64;
-            score                  = 0 - search_node(s, p, depth - 1 - reduction, 0 - alpha - 1, 0 - alpha, ply + 1, true);
-            if (score > alpha && reduction > 0) {
+            score                  = 0 - search_node(s, p, depth - 1 - reduction, 0 - lo - 1, 0 - lo, ply + 1, true);
+            if (score > lo && reduction > 0) {
                 s.known_check[ply + 1] = 1 + gives::i64;
-                score                  = 0 - search_node(s, p, depth - 1, 0 - alpha - 1, 0 - alpha, ply + 1, true);
+                score                  = 0 - search_node(s, p, depth - 1, 0 - lo - 1, 0 - lo, ply + 1, true);
             }
-            if (score > alpha && score < beta) {
+            if (score > lo && score < hi) {
                 s.known_check[ply + 1] = 1 + gives::i64;
-                score                  = 0 - search_node(s, p, depth - 1, 0 - beta, 0 - alpha, ply + 1, true);
+                score                  = 0 - search_node(s, p, depth - 1, 0 - hi, 0 - lo, ply + 1, true);
             }
         }
+        score = score + bonus;
         pos.unmake(p);
         if (s.stop != 0) { ret 0; }
 

@@ -20,6 +20,7 @@ use std.types.size.usize;
 use std.types.string.str;
 use std.types.string.str_equals;
 
+use machete.clock;
 use mv: machete.move;
 use machete.move.Move;
 use machete.movegen;
@@ -301,6 +302,8 @@ pub fun loop(exe: str) i64 {
         or (str_equals(command, "ucinewgame")) {
             halt();
             tt.clear();
+            # a new game draws new variety bonuses (search.root_bonus)
+            search.VARIETY_SEED = search.VARIETY_SEED * 6364136223846793005 + clock.now_ms()::u64 + 1442695040888963407;
             search.reset(?ENGINE);
             pos.set_fen(?GAME, pos.START_FEN);
         }
