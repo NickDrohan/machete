@@ -48,7 +48,7 @@ use fs:       std.filesystem;
 use io_error: std.io.error;
 
 pub val INPUTS: i64 = 768;
-pub val HIDDEN: i64 = 512;
+pub val HIDDEN: i64 = 768;
 
 # king zones, per side, after mirroring the king onto files a-d:
 #   rank 1: a-b, c-d     rank 2: a-b, c-d
