@@ -30,7 +30,9 @@ Not supported yet: opening books, endgame tablebases, Chess960.
 
 How strong
 ----------
-0.3.2 changes one thing from 0.3.1: the network (below). Against the same
+0.3.2 changes one thing from 0.3.1: the network (below). Against 0.3.1, head
+to head at 10+0.1: +28 +/- 27 Elo over 659 games (176 wins, 360 draws, 123
+losses). Against the same
 three outside engines at 2+1, on the openings 0.3.1 and 0.3.0 played:
   Spike 1.4      51 wins,  8 draws,  1 loss     (0.3.1: 49,  9, 2)
   Rybka 2.3.2a   45 wins, 12 draws,  3 losses   (0.3.1: 43, 11, 6)
