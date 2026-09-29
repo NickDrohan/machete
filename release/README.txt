@@ -1,4 +1,4 @@
-machete 0.3.1
+machete 0.3.2
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,8 +21,8 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.3.1 reads 512-wide format 3 networks only; a 0.3.0 or 0.2
-            network will not load.
+            0.3.2 reads 768-wide format 3 networks only; an earlier
+            version's network will not load.
   Ponder    supported: go ponder, ponderhit and stop.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
@@ -30,32 +30,28 @@ Not supported yet: opening books, endgame tablebases, Chess960.
 
 How strong
 ----------
-Against machete 0.3.0, head to head at 10+0.1: +33 +/- 30 Elo over 596 games
-(137 wins, 371 draws, 88 losses).
-Against three outside engines at 2+1, on the same openings 0.3.0 played:
-  Spike 1.4      49 wins,  9 draws,  2 losses   (0.3.0: 36, 19, 5)
-  Rybka 2.3.2a   43 wins, 11 draws,  6 losses   (0.3.0: 40, 16, 4)
-  Koivisto 9.0    1 win,  15 draws, 44 losses   (0.3.0:  0,  8, 52)
-61% against them together where 0.3.0 scored 54%: roughly +50 Elo outside
-machete's own family. On the CCRL Blitz scale (2+1, one CPU) that is somewhere
-around 3050-3150; the reference engines disagree among themselves by hundreds
-of Elo on modern hardware, so take the range, not a point. ASSESSMENT.md in
-the repository has the games and the arithmetic.
+0.3.2 changes one thing from 0.3.1: the network (below). Against the same
+three outside engines at 2+1, on the openings 0.3.1 and 0.3.0 played:
+  Spike 1.4      51 wins,  8 draws,  1 loss     (0.3.1: 49,  9, 2)
+  Rybka 2.3.2a   45 wins, 12 draws,  3 losses   (0.3.1: 43, 11, 6)
+  Koivisto 9.0    0 wins, 17 draws, 43 losses   (0.3.1:  1, 15, 44)
+63.6% against them together where 0.3.1 scored 61.4%: about +15 Elo, inside
+the noise of 180 games but in the direction the head-to-head test measured.
+On the CCRL Blitz scale (2+1, one CPU) that is still somewhere around
+3050-3150; ASSESSMENT.md in the repository explains why only a range.
 
 
-What changed since 0.3.0
+What changed since 0.3.1
 ------------------------
-Network: C20 - 8 king buckets x 768 inputs -> 512 -> 8 output layers, twice
-0.3's width, trained on 262 million positions (C7's 154 million plus 10
-million from the engine's own games labelled by Stockfish, and 98 million
-Stockfish 16 depth 18-22 positions from the theoden8 corpus). The width alone
-measured +29 +/- 28 at equal time against a 256-wide network on the same data.
+Network: C22 - 8 king buckets x 768 inputs -> 768 -> 8 output layers, half
+again 0.3.1's width, trained on 282 million positions: 0.3.1's 262 million
+plus 20 million from the engine's own games labelled by Stockfish 19. At
+equal time, 768 wide beat 512 wide on the same data by +13 +/- 17 Elo
+(SPRT accepted, 10+0.1). 1024 wide lost (-17 +/- 26): at that width the
+slower evaluation costs more than the network adds.
 
-Speed: the network's accumulator runs on AVX2 when the CPU has it, chosen at
-start-up (the engine's first info line names the path): 13-20% more nodes
-per second with this network, measured on AMD Zen 3, Zen 4 and Zen+ CPUs.
-The move picker keeps its loop bounds in registers: +3.9%. The search is
-0.3's, unchanged.
+Nothing else changed: the search, options and AVX2 kernels are 0.3.1's, the
+kernels generated for the new width.
 
 Built with Mach 6.5.0 and mach-std 9.2.0.
 
