@@ -10,7 +10,7 @@
 ![language](https://img.shields.io/badge/written%20in-Mach%206.5-8a2be2?style=for-the-badge)
 ![protocol](https://img.shields.io/badge/protocol-UCI-f39c12?style=for-the-badge)
 
-![width](https://img.shields.io/badge/768%20vs%20512%20wide-%2B13%20Elo-blue)
+![vs 0.3.1](https://img.shields.io/badge/vs%200.3.1-%2B28%20Elo-blue)
 ![outside](https://img.shields.io/badge/vs%20other%20engines-63.6%25%20(0.3.1%3A%2061.4%25)-blue)
 ![gates](https://img.shields.io/badge/acceptance%20gates-35%20passing-brightgreen)
 ![changes](https://img.shields.io/badge/changes-exactly%20one-lightgrey)
@@ -25,6 +25,7 @@
 
 | test | games | result |
 |---|---|---|
+| **machete 0.3.2** vs machete 0.3.1, both as released, 10+0.1 | 659 | 176 W · 360 D · 123 L · **+28 ± 27** (SPRT accepted) |
 | **768 wide** vs 512 wide, same 282M training positions, equal time, 10+0.1 | 1,704 | 366 W · 1035 D · 303 L · **+13 ± 17**, SPRT accepted |
 | vs Spike 1.4, 2+1, the openings 0.3.1 played | 60 | **51 W · 8 D · 1 L** (0.3.1: 49 · 9 · 2) |
 | vs Rybka 2.3.2a, 2+1, same openings | 60 | **45 W · 12 D · 3 L** (0.3.1: 43 · 11 · 6) |
