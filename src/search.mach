@@ -363,8 +363,12 @@ pub rec Search {
     # the quiet move that refuted the same reply last time, indexed by the
     # piece the opponent just moved and where it landed
     counter: [12][64]Move;
-    played:  [64]Move;
-    mover:   [64]u8;
+    # capture history: how a capture has fared, by the capturing piece, the
+    # square and the kind captured. SEE says what an exchange wins on the
+    # board; this says whether taking there has actually refuted things
+    capt:   [12][64][6]i16;
+    played: [64]Move;
+    mover:  [64]u8;
     # each node's static evaluation, by ply, or NO_EVAL when it was in check
     evals: [64]i64;
     # the move a singular-extension search at this ply leaves out, or NONE
@@ -390,7 +394,12 @@ pub fun reset(s: *Search) {
         for (sq < 64) {
             s.history[pc][sq] = 0;
             s.counter[pc][sq] = mv.NONE;
-            sq                = sq + 1;
+            var k: i64 = 0;
+            for (k < 6) {
+                s.capt[pc][sq][k] = 0;
+                k                 = k + 1;
+            }
+            sq = sq + 1;
         }
         pc = pc + 1;
     }
@@ -434,7 +443,12 @@ pub fun next_search(s: *Search) {
         var sq: i64 = 0;
         for (sq < 64) {
             s.history[pc][sq] = s.history[pc][sq] / 2;
-            sq                = sq + 1;
+            var k: i64 = 0;
+            for (k < 6) {
+                s.capt[pc][sq][k] = (s.capt[pc][sq][k]::i64 / 2)::i16;
+                k                 = k + 1;
+            }
+            sq = sq + 1;
         }
         pc = pc + 1;
     }
@@ -498,6 +512,30 @@ fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
     if (magnitude < 0) { magnitude = 0 - magnitude; }
     val current: i64 = s.history[piece][to];
     s.history[piece][to] = current + bonus * 32 - current * magnitude / 512;
+}
+
+# the kind a capture takes (a pawn for en passant), read before it is made
+fun victim_kind(p: *Position, m: Move) u8 {
+    if (mv.flag(m) == mv.EP_CAPTURE) { ret pos.PAWN; }
+    ret pos.kind_of(p.board[mv.to(m)]);
+}
+
+fun capt_value(s: *Search, p: *Position, m: Move) i64 {
+    ret s.capt[p.board[mv.from(m)]][mv.to(m)][victim_kind(p, m)]::i64;
+}
+
+# history_update's gravity, for a capture
+fun capt_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
+    var bonus: i64 = depth * depth;
+    if (bonus > 400) { bonus = 400; }
+    if (!good)       { bonus = 0 - bonus; }
+    var magnitude: i64 = bonus;
+    if (magnitude < 0) { magnitude = 0 - magnitude; }
+    val piece:   u8  = p.board[mv.from(m)];
+    val to:      i64 = mv.to(m);
+    val kind:    u8  = victim_kind(p, m);
+    val current: i64 = s.capt[piece][to][kind]::i64;
+    s.capt[piece][to][kind] = (current + bonus * 32 - current * magnitude / 512)::i16;
 }
 
 # the counter-move slot for whatever the opponent just played
@@ -572,8 +610,8 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
         # a capture that survives the recapture sequence is worth trying early;
         # one that loses material belongs below the quiet moves that might work
         val gain: i64 = see.evaluate(p, m);
-        if (gain >= 0) { ret GOOD_CAPTURE + gain * 100 + capture_score(p, m); }
-        ret LOSING_CAPTURE + gain;
+        if (gain >= 0) { ret GOOD_CAPTURE + gain * 100 + capture_score(p, m) + capt_value(s, p, m) / 16; }
+        ret LOSING_CAPTURE + gain + capt_value(s, p, m) / 64;
     }
     if (m == s.killers[ply][0])    { ret 700000000; }
     if (m == s.killers[ply][1])    { ret 600000000; }
@@ -873,6 +911,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var flag:      u8   = tt.UPPER;
     var quiets:    [64]Move;
     var quiet_n:   i64  = 0;
+    var captures:  [32]Move;
+    var capture_n: i64  = 0;
 
     # futility: near the horizon, a quiet move that cannot lift a losing
     # position to alpha is not worth a node. captures, promotions and checks
@@ -927,6 +967,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
             quiets[quiet_n] = m;
             quiet_n         = quiet_n + 1;
+        }
+        if (mv.is_capture(m) && capture_n < 32) {
+            captures[capture_n] = m;
+            capture_n           = capture_n + 1;
         }
         var score: i64 = 0;
         # the root's variety bonus (see root_bonus): the child is searched
@@ -1002,6 +1046,12 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 flag  = tt.EXACT;
                 copy_pv(s, m, ply);
                 if (alpha >= beta) {
+                    if (mv.is_capture(m)) { capt_update(s, p, m, depth, true); }
+                    var c: i64 = 0;
+                    for (c < capture_n) {
+                        if (captures[c] != m) { capt_update(s, p, captures[c], depth, false); }
+                        c = c + 1;
+                    }
                     if (!mv.is_capture(m) && !mv.is_promotion(m)) {
                         s.killers[ply][1] = s.killers[ply][0];
                         s.killers[ply][0] = m;
