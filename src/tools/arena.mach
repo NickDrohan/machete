@@ -1280,3 +1280,35 @@ fun main(argc: i64, argv: **u8) i64 {
     }
     ret 0;
 }
+
+# standard algebraic notation for one move from a FEN, for the tests
+fun san_of(fen: str, uci_move: str, out: *u8) i64 {
+    var p: Position;
+    if (!pos.set_fen(?p, fen)) { ret 0 - 1; }
+    val m: Move = movegen.parse_uci(?p, uci_move);
+    if (m == mv.NONE) { ret 0 - 1; }
+    ret san(?p, m, out);
+}
+
+fun same(a: *u8, b: str) bool {
+    ret str_equals(a, b);
+}
+
+test arena_writes_standard_notation {
+    pos.init();
+    var s: [16]u8;
+    # castling both ways
+    if (san_of("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1", ?s[0]) < 0 || !same(?s[0], "O-O"))   { ret 1; }
+    if (san_of("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1c1", ?s[0]) < 0 || !same(?s[0], "O-O-O")) { ret 2; }
+    # a promotion with capture and check
+    if (san_of("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7b8q", ?s[0]) < 0 || !same(?s[0], "axb8=Q+")) { ret 3; }
+    # two knights reach d2: the file tells them apart
+    if (san_of("4k3/8/8/8/8/8/8/1N2KN2 w - - 0 1", "b1d2", ?s[0]) < 0 || !same(?s[0], "Nbd2")) { ret 4; }
+    # two rooks on the a-file reach a4: the rank tells them apart
+    if (san_of("4k3/8/R7/8/8/8/R7/4K3 w - - 0 1", "a2a4", ?s[0]) < 0 || !same(?s[0], "R2a4")) { ret 5; }
+    # en passant is a pawn capture
+    if (san_of("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", ?s[0]) < 0 || !same(?s[0], "exd6")) { ret 6; }
+    # a mate
+    if (san_of("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", "a1a8", ?s[0]) < 0 || !same(?s[0], "Ra8#")) { ret 7; }
+    ret 0;
+}
