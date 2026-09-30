@@ -1,0 +1,75 @@
+name: Speed
+
+# The AVX2 kernels timed against the SSE2 ones on GitHub's runners, whose
+# CPUs execute 256-bit AVX2 natively (the development machine is Zen+, which
+# splits it in two). One binary, the Avx2 UCI option off for A and on for B,
+# so the search trees are identical and only the kernels differ. Runs on a
+# push to a bench/* branch, never on main; nothing here gates a merge.
+
+on:
+  push:
+    branches: ['bench/**']
+
+permissions:
+  contents: read
+
+env:
+  MACH_VERSION: v6.5.0
+  NET_RELEASE: v0.3.1
+
+jobs:
+  avx2:
+    name: avx2 on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: install mach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)   host=x86_64-linux;   ext=tar.gz ;;
+            Windows) host=x86_64-windows; ext=zip ;;
+          esac
+          asset="mach-${MACH_VERSION#v}-$host.$ext"
+          dir="$RUNNER_TEMP/mach"
+          gh release download "$MACH_VERSION" -R briar-systems/mach -p "$asset" -p SHA256SUMS -D "$dir"
+          (cd "$dir" && awk -v a="$asset" '$2 == a' SHA256SUMS | sha256sum -c -)
+          case "$ext" in
+            zip) pwsh -NoProfile -Command "Expand-Archive -Path '$dir/$asset' -DestinationPath '$dir'" ;;
+            *)   tar -xzf "$dir/$asset" -C "$dir" ;;
+          esac
+          echo "$dir" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install chess psutil
+      - run: mach dep pull .
+      - run: mach build . --profile release
+      - name: the network the release ships
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$NET_RELEASE" -p machete.nnue -D "$RUNNER_TEMP"
+      - name: the CPU
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            lscpu | grep -E 'Model name|^CPU\(s\)|Flags' | sed 's/Flags:.*\(avx2\).*/Flags: ... avx2 .../'
+          else
+            pwsh -NoProfile -Command "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"
+          fi
+      - name: SSE2 (A) against AVX2 (B), same binary, same tree
+        run: |
+          exe="$PWD/out/$(ls out)/release/bin/machete"
+          [ "$RUNNER_OS" = Windows ] && exe="$exe.exe"
+          python -u harness/speed_ab.py "$exe" "$exe" --net "$RUNNER_TEMP/machete.nnue" \
+            --option-a Avx2=false --rounds 12 | tee speed.txt
+          echo "## $(grep -E 'faster than A' speed.txt) on ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"

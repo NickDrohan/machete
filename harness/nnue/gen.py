@@ -220,7 +220,9 @@ def worker(index, args, counter):
     engine_id = index % len(names)
     engine = panel.open_engine(engine_name, args.hash)
     with open(args.book) as handle:
-        book = [line.strip() for line in handle if line.strip()]
+        # a book may open with comment lines (gen_book.py and rep_book.py write
+        # their provenance there); a worker that drew one died
+        book = [line.strip() for line in handle if line.strip() and not line.startswith("#")]
     if args.nodes > 0:
         limit = chess.engine.Limit(nodes=args.nodes)
         ending_limit = chess.engine.Limit(nodes=args.nodes * ENDGAME_NODES_FACTOR)
