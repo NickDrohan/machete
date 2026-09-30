@@ -132,8 +132,17 @@ class Corpus(object):
 
     def load_rows(self, rows):
         """Gather these global rows (sorted) from host memory onto the device
-        as the live window."""
+        as the live window.
+
+        The window it replaces is dropped first. Assigning over it kept both
+        on the card while the new one was copied: two 120M windows are 6.7 GB
+        of an 8 GB card, and on Windows the driver does not fail an
+        allocation past the card, it moves memory to system RAM behind the
+        PCIe bus. C30 then trained at a tenth of its speed with the GPU
+        reading 100% at 43 W, and v6's prefetched third window hung it."""
         picked = torch.from_numpy(rows)
+        for name in COLUMNS:
+            self.live[name] = None
         for name in COLUMNS:
             self.live[name] = getattr(self, name).index_select(0, picked).to(self.device)
 
