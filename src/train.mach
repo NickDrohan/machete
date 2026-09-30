@@ -21,7 +21,12 @@
 # BATCH_CAP positions. Nothing is allocated while training.
 
 use std.math.float.sqrt_f32;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
 
+use std.sync.condition;
+use std.sync.mutex;
 use std.sync.thread;
 use std.types.size.usize;
 use std.types.string.str;
@@ -630,35 +635,68 @@ fun run_share(i: i64) {
     or                               { adam(JOB_STEP, JOB_LR, h0, h1, i); }
 }
 
-fun worker_entry(arg: *u8) {
-    run_share(arg::usize::i64);
+# a pool of workers kept for the whole run: a phase bumps GENERATION and wakes
+# them; each runs its share if it has one (index < JOB_THREADS) and the last
+# to finish wakes the caller. Starting three sets of threads per step cost a
+# spawn and a join per thread per phase.
+var POOL_SIZE:  i64  = 1; # workers started, counting the caller as 0
+var GENERATION: i64  = 0;
+var REMAINING:  i64  = 0;
+var POOL_LOCK:  mutex.Mutex;
+var POOL_WAKE:  condition.Condition;
+var POOL_DONE:  condition.Condition;
+var POOL_READY: bool = false;
+
+fun pool_worker(arg: *u8) {
+    val i:    i64 = arg::usize::i64;
+    var seen: i64 = 0;
+    for {
+        mutex.lock(?POOL_LOCK);
+        for (GENERATION == seen) { condition.wait(?POOL_WAKE, ?POOL_LOCK); }
+        seen = GENERATION;
+        mutex.unlock(?POOL_LOCK);
+        if (i < JOB_THREADS) { run_share(i); }
+        mutex.lock(?POOL_LOCK);
+        REMAINING = REMAINING - 1;
+        if (REMAINING == 0) { condition.signal(?POOL_DONE); }
+        mutex.unlock(?POOL_LOCK);
+    }
 }
 
 # run the current phase on every share, the calling thread taking share 0
 fun run_phase(phase: i64) {
-    JOB_PHASE = phase;
-    var started: i64 = 0;
-    var i:       i64 = 1;
-    for (i < JOB_THREADS) {
+    if (!POOL_READY) {
+        POOL_LOCK  = mutex.make();
+        POOL_WAKE  = condition.make();
+        POOL_DONE  = condition.make();
+        POOL_READY = true;
+    }
+    # grow the pool to the threads this phase wants; a worker that cannot be
+    # started leaves the pool smaller, and its share falls to the caller below
+    for (POOL_SIZE < JOB_THREADS) {
         var config: thread.Config;
         thread.config_default(?config);
         config.name = "machete-train";
-        val op: thread.Operation = thread.spawn_with_config(worker_entry, i::usize::*u8, ?config, ?WORKERS[i]);
-        if (sel op.err) {
-            # do the share here rather than lose it
-            run_share(i);
-        }
-        or {
-            started = i;
-        }
-        i = i + 1;
+        val op: thread.Operation = thread.spawn_with_config(pool_worker, POOL_SIZE::usize::*u8, ?config, ?WORKERS[POOL_SIZE]);
+        if (sel op.err) { brk; }
+        POOL_SIZE = POOL_SIZE + 1;
     }
+    JOB_PHASE = phase;
+    mutex.lock(?POOL_LOCK);
+    REMAINING  = POOL_SIZE - 1;
+    GENERATION = GENERATION + 1;
+    condition.broadcast(?POOL_WAKE);
+    mutex.unlock(?POOL_LOCK);
     run_share(0);
-    i = 1;
-    for (i <= started) {
-        thread.join(?WORKERS[i]);
+    # shares no worker could take
+    var i: i64 = POOL_SIZE;
+    for (i < JOB_THREADS) {
+        run_share(i);
         i = i + 1;
     }
+    mutex.lock(?POOL_LOCK);
+    for (REMAINING > 0) { condition.wait(?POOL_DONE, ?POOL_LOCK); }
+    mutex.unlock(?POOL_LOCK);
 }
 
 # train on the n positions loaded into the batch: forward, loss, backward,

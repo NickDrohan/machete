@@ -53,8 +53,9 @@ about 11x short of the GPU. Adam is memory-bound: matching PyTorch means
 updating every weight every step, about 150 MB of traffic, whatever the thread
 count; a larger batch spreads it.
 
-Still open on the CPU: a persistent worker pool instead of three spawns per
-step. What was planned below:
+Then a persistent worker pool (a generation counter and two condition variables)
+instead of three thread spawns per step: ~61k positions/s, 3.2x the first cut,
+about 8x short of the GPU. What was planned below:
 
 SIMD (f32x8 where the target has AVX2) for the feature sums and the gradient
 scatter; Adam only on rows a batch touched, with the skipped decay applied
