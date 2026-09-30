@@ -1,0 +1,210 @@
+# machete.tools.train: train machete's network, in Mach
+#
+#   train check  <corpus.bin> <init.flat> <out.flat> <steps> <batch> <lr> <threads> <scale> <blend>
+#   train export <weights.flat> <out.nnue> <scale>
+#
+# the Mach counterpart of harness/nnue/train.py (see src/train.mach), and
+# checked against it. `check` starts from the weights in init.flat, trains
+# <steps> batches of <batch> positions taken from the front of the corpus in
+# file order, prints each step's loss and writes the weights to out.flat;
+# harness/nnue/trainer_check.py does the same in PyTorch and compares.
+# `export` quantizes a weights file into the format the engine reads.
+#
+# A .flat file is the weights as little-endian f32: the feature weights
+# (6144 x HIDDEN), their bias, the output weights (8 x 2 HIDDEN), their bias.
+
+use std.print;
+use std.runtime;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use fs:       std.filesystem;
+use io_error: std.io.error;
+
+use tr: machete.train;
+
+val EXIT_USAGE: i64 = 1;
+val EXIT_FAIL:  i64 = 2;
+
+var RECORDS: [1146880]u8; # BATCH_CAP * 70
+
+fun usage() i64 {
+    print.eprintln("usage: train check  <corpus.bin> <init.flat> <out.flat> <steps> <batch> <lr> <threads> <scale> <blend>");
+    print.eprintln("       train export <weights.flat> <out.nnue> <scale>");
+    ret EXIT_USAGE;
+}
+
+fun read_exact(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val got: res[usize, io_error.Error] = fs.read(f, ?buf[at], (len - at)::usize);
+        if (sel got.err)      { ret false; }
+        if (got.ok::i64 == 0) { ret false; }
+        at = at + got.ok::i64;
+    }
+    ret true;
+}
+
+fun write_all(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        var chunk: i64 = len - at;
+        if (chunk > 1073741824) { chunk = 1073741824; }
+        val put: res[usize, io_error.Error] = fs.write(f, ?buf[at], chunk::usize);
+        if (sel put.err)      { ret false; }
+        if (put.ok::i64 == 0) { ret false; }
+        at = at + put.ok::i64;
+    }
+    ret true;
+}
+
+fun load_flat(path: str) bool {
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f:    fs.File = opened.ok;
+    var ok:   bool    = true;
+    var part: i64     = 0;
+    for (part < 4) {
+        if (!read_exact(f, tr.flat_ptr(part), tr.flat_len(part))) { ok = false; }
+        part = part + 1;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    ret ok;
+}
+
+fun save_flat(path: str) bool {
+    val created: res[fs.File, io_error.Error] = fs.create(path, 420);
+    if (sel created.err) { ret false; }
+    var f:    fs.File = created.ok;
+    var ok:   bool    = true;
+    var part: i64     = 0;
+    for (part < 4) {
+        if (!write_all(f, tr.flat_ptr(part), tr.flat_len(part))) { ok = false; }
+        part = part + 1;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    ret ok;
+}
+
+fun int_arg(text: str, fallback: i64) i64 {
+    val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(text, 10);
+    if (sel parsed.err) { ret fallback; }
+    ret parsed.ok;
+}
+
+# a decimal number with an optional fraction, e.g. 0.001 or 150 or 0.7
+fun float_arg(text: str) f64 {
+    var value: f64  = 0.0;
+    var scale: f64  = 0.0;
+    var i:     i64  = 0;
+    var neg:   bool = false;
+    if (text[0] == '-') {
+        neg = true;
+        i   = 1;
+    }
+    for (text[i] != 0) {
+        val c: u8 = text[i];
+        if (c == '.') {
+            scale = 1.0;
+        }
+        or (c >= '0' && c <= '9') {
+            if (scale > 0.0) {
+                scale = scale / 10.0;
+                value = value + ((c - '0')::f64) * scale;
+            }
+            or {
+                value = value * 10.0 + (c - '0')::f64;
+            }
+        }
+        i = i + 1;
+    }
+    if (neg) { ret 0.0 - value; }
+    ret value;
+}
+
+fun check(argc: i64, argv: **u8) i64 {
+    if (argc < 11) { ret usage(); }
+    val steps:   i64 = int_arg(argv[5], 0);
+    val batch:   i64 = int_arg(argv[6], 0);
+    val lr:      f64 = float_arg(argv[7]);
+    val threads: i64 = int_arg(argv[8], 1);
+    tr.SCALE  = float_arg(argv[9]);
+    tr.LAMBDA = float_arg(argv[10]);
+    if (steps < 1 || batch < 1 || batch > tr.BATCH_CAP) { ret usage(); }
+    if (!load_flat(argv[3])) {
+        print.eprintlnf("cannot read {}", argv[3]);
+        ret EXIT_FAIL;
+    }
+    val opened: res[fs.File, io_error.Error] = fs.open(argv[2]);
+    if (sel opened.err) {
+        print.eprintlnf("cannot open {}", argv[2]);
+        ret EXIT_FAIL;
+    }
+    var f:    fs.File = opened.ok;
+    var step: i64     = 1;
+    for (step <= steps) {
+        if (!read_exact(f, ?RECORDS[0], batch * tr.RECORD)) {
+            print.eprintln("the corpus ran out");
+            ret EXIT_FAIL;
+        }
+        var p: i64 = 0;
+        for (p < batch) {
+            tr.load_position(?RECORDS[p * tr.RECORD], p);
+            p = p + 1;
+        }
+        val loss: f64 = tr.train_step(batch, threads, step, lr);
+        print.printlnf("step {} loss {}", step, (loss * 1000000000.0)::i64);
+        step = step + 1;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    if (!save_flat(argv[4])) {
+        print.eprintlnf("cannot write {}", argv[4]);
+        ret EXIT_FAIL;
+    }
+    ret 0;
+}
+
+fun export(argc: i64, argv: **u8) i64 {
+    if (argc < 5) { ret usage(); }
+    if (!load_flat(argv[2])) {
+        print.eprintlnf("cannot read {}", argv[2]);
+        ret EXIT_FAIL;
+    }
+    val worst: i64 = tr.quantize();
+    if (worst < 0 || worst > 32767) {
+        print.eprintlnf("the network does not fit in int16 (worst accumulator {})", worst);
+        ret EXIT_FAIL;
+    }
+    val created: res[fs.File, io_error.Error] = fs.create(argv[3], 420);
+    if (sel created.err) {
+        print.eprintlnf("cannot create {}", argv[3]);
+        ret EXIT_FAIL;
+    }
+    var f:    fs.File = created.ok;
+    var ok:   bool    = write_all(f, tr.header(int_arg(argv[4], 150)), 32);
+    var part: i64     = 0;
+    for (part < 4) {
+        if (!write_all(f, tr.quantized_ptr(part), tr.quantized_len(part))) { ok = false; }
+        part = part + 1;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    if (!ok) { ret EXIT_FAIL; }
+    print.printlnf("wrote {} (worst accumulator {} of 32767)", argv[3], worst);
+    ret 0;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    if (argc < 2) { ret usage(); }
+    val command: str = argv[1];
+    if (str_equals(command, "check"))  { ret check(argc, argv); }
+    if (str_equals(command, "export")) { ret export(argc, argv); }
+    ret usage();
+}

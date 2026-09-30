@@ -1,0 +1,758 @@
+# machete.train: the network trainer's arithmetic, in Mach
+#
+# The Mach counterpart of harness/nnue/train.py, held to it: the same network
+# (KING_BUCKETS x 768 inputs -> HIDDEN per side, clipped at 0 and 1, the two
+# sides concatenated into one of BUCKETS output layers chosen by piece count),
+# the same target (LAMBDA of sigmoid(score / SCALE), the rest the game result),
+# the same loss (mean squared error of the sigmoid of the output), PyTorch's
+# Adam, and the same clipping of every weight to what survives quantization.
+# harness/nnue/trainer_check.py runs both from the same weights over the same
+# batches and compares them step by step.
+#
+# The work of a batch is split between threads by hidden unit, not by
+# position: a thread owns hidden units [h0, h1) and is the only one to write
+# their pre-activations, their feature-weight gradients and their Adam state,
+# so no two threads ever write the same memory and nothing needs a lock. The
+# only shared step is the output: each thread leaves its part of every
+# position's dot product in PART, and finish() adds them up.
+#
+# Everything is static: the weights, their gradients and Adam's moments are
+# four arrays of the network's size, and a batch's activations are sized for
+# BATCH_CAP positions. Nothing is allocated while training.
+
+use std.math.float.sqrt_f32;
+
+use std.sync.thread;
+use std.types.size.usize;
+use std.types.string.str;
+
+use nn: machete.nnue;
+use machete.rng;
+
+pub val INPUTS:       i64 = 768;
+pub val KING_BUCKETS: i64 = 8;
+pub val FEATURES:     i64 = 6144;
+pub val BUCKETS:      i64 = 8;
+pub val HIDDEN:       i64 = 768;
+pub val SLOTS:        i64 = 32;
+pub val RECORD:       i64 = 70;
+pub val BATCH_CAP:    i64 = 16384;
+pub val MAX_THREADS:  i64 = 32;
+pub val NONE:         i32 = 0 - 1;
+pub val QA:           i64 = 255;
+pub val QB:           i64 = 64;
+
+# every weight is kept within what survives quantization to int16: 127 / QB
+val CLIP: f32 = 1.984375;
+
+# the target: LAMBDA of the search score through sigmoid(score / SCALE), the
+# rest the result (0 lost, 0.5 drew, 1 won, for the side to move)
+pub var LAMBDA: f64 = 0.7;
+pub var SCALE:  f64 = 150.0;
+
+# Adam, as torch.optim.Adam with its defaults
+val BETA1: f32 = 0.9;
+val BETA2: f32 = 0.999;
+val EPS:   f32 = 0.00000001;
+
+# the network
+pub var W1: [4718592]f32; # FEATURES rows of HIDDEN (w1_at)
+pub var B1: [768]f32;
+pub var W2: [12288]f32; # BUCKETS rows of 2 * HIDDEN: side to move first, then the other side
+pub var B2: [8]f32;
+
+# gradients and Adam's first and second moments, laid out as the weights
+var G1:  [4718592]f32;
+var GB1: [768]f32;
+var G2:  [12288]f32;
+var GB2: [8]f32;
+var M1:  [4718592]f32;
+var V1:  [4718592]f32;
+var MB1: [768]f32;
+var VB1: [768]f32;
+var M2:  [12288]f32;
+var V2:  [12288]f32;
+var MB2: [8]f32;
+var VB2: [8]f32;
+
+# a batch: each position's features for both sides (NONE past its pieces),
+# its output layer, target, the sum of the threads' output parts, the sigmoid
+# of the output, and the loss gradient at the output
+var US:       [524288]i32;
+var THEM:     [524288]i32;
+var BUCKET:   [16384]i64;
+var TARGET:   [16384]f32;
+var OUT:      [16384]f64;
+var PRED:     [16384]f32;
+var GRAD:     [16384]f32;
+var PRE_US:   [12582912]f32; # BATCH_CAP * HIDDEN
+var PRE_THEM: [12582912]f32;
+var PART:     [524288]f64; # MAX_THREADS * BATCH_CAP
+
+# where feature f's weight for hidden unit h lives
+fun w1_at(f: i64, h: i64) i64 {
+    ret f * HIDDEN + h;
+}
+
+# the network's width is fixed at compile time, the engine's own: a trainer
+# of another width would write files the engine refuses
+test train_width_is_the_engines {
+    if (HIDDEN != nn.HIDDEN)               { ret 1; }
+    if (FEATURES != KING_BUCKETS * INPUTS) { ret 2; }
+    ret 0;
+}
+
+# exp, which mach-std does not have: e^x as 2^k * e^r with r in [-ln2/2, ln2/2]
+# and a degree-13 Taylor series for e^r, good to a few ulp of f64 over the
+# range a sigmoid needs
+pub fun exp_f64(x: f64) f64 {
+    if (x > 700.0)       { ret 1.0e300; }
+    if (x < 0.0 - 700.0) { ret 0.0; }
+    val ln2: f64 = 0.6931471805599453;
+    var k:   i64 = (x / ln2)::i64;
+    if (x < 0.0 && (k::f64) * ln2 > x) { k = k - 1; }
+    var r: f64 = x - (k::f64) * ln2;
+    if (r > ln2 / 2.0) {
+        r = r - ln2;
+        k = k + 1;
+    }
+    var term: f64 = 1.0;
+    var sum:  f64 = 1.0;
+    var n:    i64 = 1;
+    for (n <= 13) {
+        term = term * r / (n::f64);
+        sum  = sum + term;
+        n    = n + 1;
+    }
+    # 2^k by the exponent field
+    val bits: u64 = ((k + 1023)::u64) << 52;
+    ret sum * (bits:~f64);
+}
+
+pub fun sigmoid_f64(x: f64) f64 {
+    if (x >= 0.0) { ret 1.0 / (1.0 + exp_f64(0.0 - x)); }
+    val e: f64 = exp_f64(x);
+    ret e / (1.0 + e);
+}
+
+test train_exp_matches_known_values {
+    # e, e^-1, e^10, e^-3.5 to 1e-13 relative
+    val cases: [4]f64 = [4]f64{1.0, 0.0 - 1.0, 10.0, 0.0 - 3.5};
+    val want:  [4]f64 = [4]f64{2.718281828459045, 0.36787944117144233, 22026.465794806718, 0.0301973834223185};
+    var i:     i64    = 0;
+    for (i < 4) {
+        val got: f64 = exp_f64(cases[i]);
+        var d:   f64 = (got - want[i]) / want[i];
+        if (d < 0.0)             { d = 0.0 - d; }
+        if (d > 0.0000000000001) { ret (1 + i)::i32; }
+        i = i + 1;
+    }
+    ret 0;
+}
+
+# how one side reads the board with its own king on `king`: zone * 2 + mirror
+# (reference.orient)
+pub fun orient(perspective: i64, king: i64) i64 {
+    var rel: i64 = king;
+    if (perspective == 1) { rel = king ^ 56; }
+    var mirror: i64 = 0;
+    if ((rel & 7) >= 4) {
+        mirror = 1;
+        rel    = rel ^ 7;
+    }
+    val rank: i64 = rel >> 3;
+    var zone: i64 = 0;
+    if ((rel & 7) >= 2)         { zone = 1; }
+    if (rank == 1)              { zone = zone + 2; }
+    or (rank == 2 || rank == 3) { zone = zone + 4; }
+    or (rank >= 4)              { zone = zone + 6; }
+    ret zone * 2 + mirror;
+}
+
+test train_orient_matches_the_reference {
+    # white king e1 mirrors to d1: zone 1, mirrored; black king e8 is black's
+    # e1, the same; white king a8 is in zone 6, unmirrored
+    if (orient(0, 4) != 3)   { ret 1; }
+    if (orient(1, 60) != 3)  { ret 2; }
+    if (orient(0, 56) != 12) { ret 3; }
+    if (orient(0, 9) != 4)   { ret 4; }
+    ret 0;
+}
+
+# read one 70-byte record into slot n of the batch (reference.feature_indices
+# and train.py's targets)
+pub fun load_position(rec: *u8, n: i64) {
+    val stm:   i64 = rec[0]::i64;
+    val count: i64 = rec[1]::i64;
+    var wk:    i64 = 0 - 1;
+    var bk:    i64 = 0 - 1;
+    var k:     i64 = 0;
+    for (k < count) {
+        if (rec[2 + k] == 5 && wk < 0)  { wk = rec[34 + k]::i64; }
+        if (rec[2 + k] == 11 && bk < 0) { bk = rec[34 + k]::i64; }
+        k = k + 1;
+    }
+    if (wk < 0) { wk = 0; }
+    if (bk < 0) { bk = 0; }
+    val ow: i64 = orient(0, wk);
+    val ob: i64 = orient(1, bk);
+    k = 0;
+    for (k < SLOTS) {
+        var us:   i32 = NONE;
+        var them: i32 = NONE;
+        if (k < count) {
+            val piece:  i64 = rec[2 + k]::i64;
+            val square: i64 = rec[34 + k]::i64;
+            val white:  i64 = (ow >> 1) * INPUTS + piece * 64 + (square ^ ((ow & 1) * 7));
+            val black:  i64 = (ob >> 1) * INPUTS + ((piece + 6) % 12) * 64 + (square ^ 56 ^ ((ob & 1) * 7));
+            if (stm == 1) {
+                us   = black::i32;
+                them = white::i32;
+            }
+            or {
+                us   = white::i32;
+                them = black::i32;
+            }
+        }
+        US[n * SLOTS + k]   = us;
+        THEM[n * SLOTS + k] = them;
+        k                   = k + 1;
+    }
+    var b: i64 = (count - 2) / 4;
+    if (count < 2)       { b = 0; }
+    if (b > BUCKETS - 1) { b = BUCKETS - 1; }
+    BUCKET[n] = b;
+    val score:  i64 = ((rec[66]::u64) | ((rec[67]::u64) << 8))::i16::i64;
+    val result: f64 = rec[68]::f64 / 2.0;
+    TARGET[n] = (LAMBDA * sigmoid_f64(score::f64 / SCALE) + (1.0 - LAMBDA) * result)::f32;
+}
+
+fun clamp01(x: f32) f32 {
+    if (x < 0.0) { ret 0.0; }
+    if (x > 1.0) { ret 1.0; }
+    ret x;
+}
+
+# the forward pass for hidden units [h0, h1) of positions [0, n): their
+# pre-activations, and this thread's part of every output in PART[t]
+pub fun forward(n: i64, h0: i64, h1: i64, t: i64) {
+    var p: i64 = 0;
+    for (p < n) {
+        val base: i64 = p * HIDDEN;
+        var h:    i64 = h0;
+        for (h < h1) {
+            PRE_US[base + h]   = B1[h];
+            PRE_THEM[base + h] = B1[h];
+            h                  = h + 1;
+        }
+        var k: i64 = 0;
+        for (k < SLOTS) {
+            val fu: i32 = US[p * SLOTS + k];
+            if (fu == NONE) { brk; }
+            val fthem: i32 = THEM[p * SLOTS + k];
+            val ru:    i64 = (fu::i64) * HIDDEN;
+            val rt:    i64 = (fthem::i64) * HIDDEN;
+            h = h0;
+            for (h < h1) {
+                PRE_US[base + h]   = PRE_US[base + h] + W1[ru + h];
+                PRE_THEM[base + h] = PRE_THEM[base + h] + W1[rt + h];
+                h                  = h + 1;
+            }
+            k = k + 1;
+        }
+        val row: i64 = BUCKET[p] * 2 * HIDDEN;
+        var dot: f64 = 0.0;
+        h = h0;
+        for (h < h1) {
+            dot = dot + (W2[row + h] * clamp01(PRE_US[base + h]))::f64 + (W2[row + HIDDEN + h] * clamp01(PRE_THEM[base + h]))::f64;
+            h   = h + 1;
+        }
+        PART[t * BATCH_CAP + p] = dot;
+        p                       = p + 1;
+    }
+}
+
+# the outputs from the threads' parts, the sigmoid, the loss and its gradient
+# at the output; returns the batch's summed squared error
+pub fun finish(n: i64, threads: i64) f64 {
+    var total: f64 = 0.0;
+    var p:     i64 = 0;
+    for (p < n) {
+        var out: f64 = B2[BUCKET[p]]::f64;
+        var t:   i64 = 0;
+        for (t < threads) {
+            out = out + PART[t * BATCH_CAP + p];
+            t   = t + 1;
+        }
+        OUT[p] = out;
+        val y: f64 = sigmoid_f64(out);
+        PRED[p] = y::f32;
+        val err: f64 = y - TARGET[p]::f64;
+        total = total + err * err;
+        # d(mean squared error)/d(output) = 2 * err / n * y * (1 - y)
+        GRAD[p]        = (2.0 * err / (n::f64) * y * (1.0 - y))::f32;
+        GB2[BUCKET[p]] = GB2[BUCKET[p]] + GRAD[p];
+        p              = p + 1;
+    }
+    ret total;
+}
+
+# the backward pass for hidden units [h0, h1): the output weights' gradient,
+# and through each clipped relu (whose gradient passes where 0 <= x <= 1, as
+# torch.clamp's does) the feature weights' and the bias's
+pub fun backward(n: i64, h0: i64, h1: i64) {
+    var p: i64 = 0;
+    for (p < n) {
+        val g:    f32 = GRAD[p];
+        val base: i64 = p * HIDDEN;
+        val row:  i64 = BUCKET[p] * 2 * HIDDEN;
+        var h:    i64 = h0;
+        for (h < h1) {
+            val xu: f32 = PRE_US[base + h];
+            val xt: f32 = PRE_THEM[base + h];
+            G2[row + h]          = G2[row + h] + g * clamp01(xu);
+            G2[row + HIDDEN + h] = G2[row + HIDDEN + h] + g * clamp01(xt);
+            var du: f32 = 0.0;
+            var dt: f32 = 0.0;
+            if (xu >= 0.0 && xu <= 1.0) { du = g * W2[row + h]; }
+            if (xt >= 0.0 && xt <= 1.0) { dt = g * W2[row + HIDDEN + h]; }
+            # the pre-activations are reused to carry the gradient into the
+            # feature pass below; forward writes them afresh each batch
+            PRE_US[base + h]   = du;
+            PRE_THEM[base + h] = dt;
+            GB1[h]             = GB1[h] + du + dt;
+            h                  = h + 1;
+        }
+        var k: i64 = 0;
+        for (k < SLOTS) {
+            val fu: i32 = US[p * SLOTS + k];
+            if (fu == NONE) { brk; }
+            val ru: i64 = (fu::i64) * HIDDEN;
+            val rt: i64 = (THEM[p * SLOTS + k]::i64) * HIDDEN;
+            h = h0;
+            for (h < h1) {
+                G1[ru + h] = G1[ru + h] + PRE_US[base + h];
+                G1[rt + h] = G1[rt + h] + PRE_THEM[base + h];
+                h          = h + 1;
+            }
+            k = k + 1;
+        }
+        p = p + 1;
+    }
+}
+
+# torch.optim.Adam's step for one weight, then the clip, and the gradient
+# cleared for the next batch
+fun adam_one(w: *f32, g: *f32, m: *f32, v: *f32, step_size: f32, bc2_sqrt: f32) {
+    val grad: f32 = @g;
+    val mm:   f32 = BETA1 * @m + (1.0 - BETA1) * grad;
+    val vv:   f32 = BETA2 * @v + (1.0 - BETA2) * grad * grad;
+    @m = mm;
+    @v = vv;
+    val denom: f32 = sqrt_f32(vv) / bc2_sqrt + EPS;
+    var x:     f32 = @w - step_size * mm / denom;
+    if (x > CLIP)       { x = CLIP; }
+    if (x < 0.0 - CLIP) { x = 0.0 - CLIP; }
+    @w = x;
+    @g = 0.0;
+}
+
+fun powf(base: f32, n: i64) f64 {
+    var r: f64 = 1.0;
+    var i: i64 = 0;
+    for (i < n) {
+        r = r * base::f64;
+        i = i + 1;
+    }
+    ret r;
+}
+
+# one Adam step (step counts from 1) at learning rate lr, for hidden units
+# [h0, h1); the thread with h0 == 0 also steps the output biases
+pub fun adam(step: i64, lr: f64, h0: i64, h1: i64) {
+    val bc1:       f64 = 1.0 - powf(BETA1, step);
+    val bc2:       f64 = 1.0 - powf(BETA2, step);
+    val step_size: f32 = (lr / bc1)::f32;
+    val bc2_sqrt:  f32 = sqrt_f32(bc2::f32);
+    var f:         i64 = 0;
+    for (f < FEATURES) {
+        var h: i64 = h0;
+        for (h < h1) {
+            val i: i64 = f * HIDDEN + h;
+            adam_one(?W1[i], ?G1[i], ?M1[i], ?V1[i], step_size, bc2_sqrt);
+            h = h + 1;
+        }
+        f = f + 1;
+    }
+    var h: i64 = h0;
+    for (h < h1) {
+        adam_one(?B1[h], ?GB1[h], ?MB1[h], ?VB1[h], step_size, bc2_sqrt);
+        var b: i64 = 0;
+        for (b < BUCKETS) {
+            val i: i64 = b * 2 * HIDDEN + h;
+            adam_one(?W2[i], ?G2[i], ?M2[i], ?V2[i], step_size, bc2_sqrt);
+            adam_one(?W2[i + HIDDEN], ?G2[i + HIDDEN], ?M2[i + HIDDEN], ?V2[i + HIDDEN], step_size, bc2_sqrt);
+            b = b + 1;
+        }
+        h = h + 1;
+    }
+    if (h0 == 0) {
+        var b: i64 = 0;
+        for (b < BUCKETS) {
+            adam_one(?B2[b], ?GB2[b], ?MB2[b], ?VB2[b], step_size, bc2_sqrt);
+            b = b + 1;
+        }
+    }
+}
+
+# the starting weights torch gives train.py's Net: feature weights uniform in
+# +-0.01, feature bias 0, and nn.Linear's default for the output layer,
+# uniform in +-1/sqrt(fan in) for weights and biases alike
+pub fun init_random(seed: u64) {
+    var r: rng.Rng = rng.seeded(seed);
+    var i: i64     = 0;
+    for (i < FEATURES * HIDDEN) {
+        W1[i] = ((rng.below(?r, 2000001)::f64 - 1000000.0) / 100000000.0)::f32;
+        i     = i + 1;
+    }
+    val bound: f64 = 1.0 / (2.0 * HIDDEN::f64);
+    val b:     f64 = bound;
+    i = 0;
+    for (i < BUCKETS * 2 * HIDDEN) {
+        W2[i] = ((rng.below(?r, 2000001)::f64 - 1000000.0) / 1000000.0 * sqrt_f32(b::f32)::f64)::f32;
+        i     = i + 1;
+    }
+    i = 0;
+    for (i < BUCKETS) {
+        B2[i] = ((rng.below(?r, 2000001)::f64 - 1000000.0) / 1000000.0 * sqrt_f32(b::f32)::f64)::f32;
+        i     = i + 1;
+    }
+}
+
+# the weights as one flat array of f32, the layout trainer_check.py reads and
+# writes: W1 (FEATURES x HIDDEN), B1, W2 (BUCKETS x 2 HIDDEN), B2
+pub val FLAT: i64 = 4718592 + 768 + 12288 + 8;
+
+pub fun flat_ptr(part: i64) *u8 {
+    if (part == 0) { ret (?W1[0]):~*u8; }
+    if (part == 1) { ret (?B1[0]):~*u8; }
+    if (part == 2) { ret (?W2[0]):~*u8; }
+    ret (?B2[0]):~*u8;
+}
+
+pub fun flat_len(part: i64) i64 {
+    if (part == 0) { ret FEATURES * HIDDEN * 4; }
+    if (part == 1) { ret HIDDEN * 4; }
+    if (part == 2) { ret BUCKETS * 2 * HIDDEN * 4; }
+    ret BUCKETS * 4;
+}
+
+pub fun pred(p: i64) f32 {
+    ret PRED[p];
+}
+
+pub fun target(p: i64) f32 {
+    ret TARGET[p];
+}
+
+test train_one_position_forward_and_back_are_consistent {
+    # a finite-difference check of the analytic gradient, on a tiny position,
+    # for a feature weight of a hidden unit whose clipped relu is active (an
+    # inactive one has gradient 0 either way and would prove nothing) and for
+    # an output weight
+    var rec: [70]u8;
+    rec[0]  = 0;
+    rec[1]  = 3;
+    rec[2]  = 5; # white king e1
+    rec[34] = 4;
+    rec[3]  = 11; # black king e8
+    rec[35] = 60;
+    rec[4]  = 3; # white rook a1
+    rec[36] = 0;
+    rec[66] = 100;
+    rec[68] = 2;
+    init_random(7);
+    var h: i64 = 0;
+    for (h < HIDDEN) {
+        B1[h] = 0.3;
+        h     = h + 1;
+    }
+    load_position(?rec[0], 0);
+    forward(1, 0, HIDDEN, 0);
+    val base: f64 = finish(1, 1);
+    backward(1, 0, HIDDEN);
+    val f:       i64 = US[2]::i64; # the white rook, from white's side
+    val row:     i64 = BUCKET[0] * 2 * HIDDEN;
+    val eps:     f32 = 0.001;
+    var checked: i64 = 0;
+    h = 0;
+    for (h < 8) {
+        # feature weight (f, h) and output weight (row, h)
+        var which: i64 = 0;
+        for (which < 2) {
+            var at:       *f32 = ?W1[f * HIDDEN + h];
+            var analytic: f64  = G1[f * HIDDEN + h]::f64;
+            if (which == 1) {
+                at       = ?W2[row + h];
+                analytic = G2[row + h]::f64;
+            }
+            val keep: f32 = @at;
+            @at = keep + eps;
+            forward(1, 0, HIDDEN, 0);
+            val up: f64 = finish(1, 1);
+            @at = keep - eps;
+            forward(1, 0, HIDDEN, 0);
+            val down: f64 = finish(1, 1);
+            @at = keep;
+            val numeric: f64 = (up - down) / (2.0 * eps::f64);
+            var d:       f64 = numeric - analytic;
+            if (d < 0.0) { d = 0.0 - d; }
+            var size: f64 = numeric;
+            if (size < 0.0)        { size = 0.0 - size; }
+            if (size < 0.00000001) { ret 1; } # nothing tested
+            if (d > 0.02 * size)   { ret 2; }
+            checked = checked + 1;
+            which   = which + 1;
+        }
+        h = h + 1;
+    }
+    if (checked != 16) { ret 3; }
+    ret 0;
+}
+
+# ---- one training step across threads ----------------------------------
+
+var WORKERS:     [32]thread.Thread;
+var JOB_PHASE:   i64 = 0;
+var JOB_N:       i64 = 0;
+var JOB_THREADS: i64 = 1;
+var JOB_STEP:    i64 = 0;
+var JOB_LR:      f64 = 0.0;
+
+val PHASE_FORWARD:  i64 = 0;
+val PHASE_BACKWARD: i64 = 1;
+val PHASE_ADAM:     i64 = 2;
+
+fun lo_of(i: i64, threads: i64) i64 {
+    ret i * HIDDEN / threads;
+}
+
+fun run_share(i: i64) {
+    val h0: i64 = lo_of(i, JOB_THREADS);
+    val h1: i64 = lo_of(i + 1, JOB_THREADS);
+    if (JOB_PHASE == PHASE_FORWARD)  { forward(JOB_N, h0, h1, i); }
+    or (JOB_PHASE == PHASE_BACKWARD) { backward(JOB_N, h0, h1); }
+    or                               { adam(JOB_STEP, JOB_LR, h0, h1); }
+}
+
+fun worker_entry(arg: *u8) {
+    run_share(arg::usize::i64);
+}
+
+# run the current phase on every share, the calling thread taking share 0
+fun run_phase(phase: i64) {
+    JOB_PHASE = phase;
+    var started: i64 = 0;
+    var i:       i64 = 1;
+    for (i < JOB_THREADS) {
+        var config: thread.Config;
+        thread.config_default(?config);
+        config.name = "machete-train";
+        val op: thread.Operation = thread.spawn_with_config(worker_entry, i::usize::*u8, ?config, ?WORKERS[i]);
+        if (sel op.err) {
+            # do the share here rather than lose it
+            run_share(i);
+        }
+        or {
+            started = i;
+        }
+        i = i + 1;
+    }
+    run_share(0);
+    i = 1;
+    for (i <= started) {
+        thread.join(?WORKERS[i]);
+        i = i + 1;
+    }
+}
+
+# train on the n positions loaded into the batch: forward, loss, backward,
+# Adam step number `step` at learning rate lr; returns the mean squared error
+pub fun train_step(n: i64, threads: i64, step: i64, lr: f64) f64 {
+    var t: i64 = threads;
+    if (t < 1)           { t = 1; }
+    if (t > MAX_THREADS) { t = MAX_THREADS; }
+    JOB_N       = n;
+    JOB_THREADS = t;
+    JOB_STEP    = step;
+    JOB_LR      = lr;
+    run_phase(PHASE_FORWARD);
+    val total: f64 = finish(n, t);
+    run_phase(PHASE_BACKWARD);
+    run_phase(PHASE_ADAM);
+    ret total / (n::f64);
+}
+
+# the loss of the loaded batch without training on it
+pub fun evaluate(n: i64, threads: i64) f64 {
+    var t: i64 = threads;
+    if (t < 1)           { t = 1; }
+    if (t > MAX_THREADS) { t = MAX_THREADS; }
+    JOB_N       = n;
+    JOB_THREADS = t;
+    run_phase(PHASE_FORWARD);
+    var total: f64 = 0.0;
+    var p:     i64 = 0;
+    for (p < n) {
+        var out: f64 = B2[BUCKET[p]]::f64;
+        var k:   i64 = 0;
+        for (k < t) {
+            out = out + PART[k * BATCH_CAP + p];
+            k   = k + 1;
+        }
+        val err: f64 = sigmoid_f64(out) - TARGET[p]::f64;
+        total = total + err * err;
+        p     = p + 1;
+    }
+    ret total / (n::f64);
+}
+
+# ---- export: the quantized file the engine reads (reference.save) -------
+
+# rounding half to even, as numpy's rint
+pub fun round_even(y: f64) i64 {
+    var f: f64 = y::i64::f64;
+    if (f > y) { f = f - 1.0; }
+    val frac: f64 = y - f;
+    var r:    i64 = f::i64;
+    if (frac > 0.5)                  { r = r + 1; }
+    or (frac == 0.5 && (r & 1) != 0) { r = r + 1; }
+    ret r;
+}
+
+test train_round_even_matches_numpy_rint {
+    if (round_even(2.5) != 2)           { ret 1; }
+    if (round_even(3.5) != 4)           { ret 2; }
+    if (round_even(0.0 - 2.5) != 0 - 2) { ret 3; }
+    if (round_even(0.0 - 2.6) != 0 - 3) { ret 4; }
+    if (round_even(1.49) != 1)          { ret 5; }
+    ret 0;
+}
+
+var QW1:  [4718592]i16;
+var QB1:  [768]i16;
+var QW2:  [12288]i16;
+var QB2:  [8]i32;
+var HEAD: [32]u8;
+
+fun put_u32(buf: *u8, at: i64, v: i64) {
+    buf[at]     = (v & 255)::u8;
+    buf[at + 1] = ((v >> 8) & 255)::u8;
+    buf[at + 2] = ((v >> 16) & 255)::u8;
+    buf[at + 3] = ((v >> 24) & 255)::u8;
+}
+
+# quantize the weights into QW1..QB2; returns the worst accumulator a side
+# could reach (the bias plus the 32 largest weights of one hidden unit in one
+# king zone), or -1 if a weight itself does not fit in int16
+pub fun quantize() i64 {
+    var i: i64 = 0;
+    for (i < FEATURES * HIDDEN) {
+        val q: i64 = round_even((W1[i] * (QA::f32))::f64);
+        if (q > 32767 || q < 0 - 32767) { ret 0 - 1; }
+        QW1[i] = q::i16;
+        i      = i + 1;
+    }
+    i = 0;
+    for (i < HIDDEN) {
+        val q: i64 = round_even((B1[i] * (QA::f32))::f64);
+        if (q > 32767 || q < 0 - 32767) { ret 0 - 1; }
+        QB1[i] = q::i16;
+        i      = i + 1;
+    }
+    i = 0;
+    for (i < BUCKETS * 2 * HIDDEN) {
+        val q: i64 = round_even((W2[i] * (QB::f32))::f64);
+        if (q > 32767 || q < 0 - 32767) { ret 0 - 1; }
+        QW2[i] = q::i16;
+        i      = i + 1;
+    }
+    i = 0;
+    for (i < BUCKETS) {
+        QB2[i] = round_even(B2[i]::f64 * (QA::f64) * (QB::f64))::i32;
+        i      = i + 1;
+    }
+    # the worst case: per zone and hidden unit, the 32 largest |weights|
+    var worst: i64 = 0;
+    var bias:  i64 = 0;
+    i = 0;
+    for (i < HIDDEN) {
+        var a: i64 = QB1[i]::i64;
+        if (a < 0)    { a = 0 - a; }
+        if (a > bias) { bias = a; }
+        i = i + 1;
+    }
+    var zone: i64 = 0;
+    for (zone < KING_BUCKETS) {
+        var h: i64 = 0;
+        for (h < HIDDEN) {
+            # the 32 largest of this zone's 768 inputs for unit h
+            var top: [32]i64;
+            var f:   i64 = zone * INPUTS;
+            for (f < (zone + 1) * INPUTS) {
+                var a: i64 = QW1[f * HIDDEN + h]::i64;
+                if (a < 0) { a = 0 - a; }
+                # insert into top if larger than its smallest
+                var low: i64 = 0;
+                var k:   i64 = 1;
+                for (k < 32) {
+                    if (top[k] < top[low]) { low = k; }
+                    k = k + 1;
+                }
+                if (a > top[low]) { top[low] = a; }
+                f = f + 1;
+            }
+            var sum: i64 = 0;
+            var k:   i64 = 0;
+            for (k < 32) {
+                sum = sum + top[k];
+                k   = k + 1;
+            }
+            if (sum > worst) { worst = sum; }
+            h = h + 1;
+        }
+        zone = zone + 1;
+    }
+    ret bias + worst;
+}
+
+# the 32-byte header: magic, then u32 inputs, hidden, qa, qb, scale, buckets
+pub fun header(scale: i64) *u8 {
+    val magic: str = "MCHNNUE3";
+    var i:     i64 = 0;
+    for (i < 8) {
+        HEAD[i] = magic[i];
+        i       = i + 1;
+    }
+    put_u32(?HEAD[0], 8, FEATURES);
+    put_u32(?HEAD[0], 12, HIDDEN);
+    put_u32(?HEAD[0], 16, QA);
+    put_u32(?HEAD[0], 20, QB);
+    put_u32(?HEAD[0], 24, scale);
+    put_u32(?HEAD[0], 28, BUCKETS);
+    ret ?HEAD[0];
+}
+
+pub fun quantized_ptr(part: i64) *u8 {
+    if (part == 0) { ret (?QW1[0]):~*u8; }
+    if (part == 1) { ret (?QB1[0]):~*u8; }
+    if (part == 2) { ret (?QW2[0]):~*u8; }
+    ret (?QB2[0]):~*u8;
+}
+
+pub fun quantized_len(part: i64) i64 {
+    if (part == 0) { ret FEATURES * HIDDEN * 2; }
+    if (part == 1) { ret HIDDEN * 2; }
+    if (part == 2) { ret BUCKETS * 2 * HIDDEN * 2; }
+    ret BUCKETS * 4;
+}

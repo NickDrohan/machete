@@ -39,6 +39,15 @@ targets = ["*"]
 link = ["kernel32"]
 need = []
 
+# trains the network in Mach (src/train.mach), checked against harness/nnue/train.py
+[artifact.trainer]
+kind = "bin"
+entry = "tools/train.mach"
+out = "bin/train{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
 # decodes Leela training data (binpack) into training records; see src/binpack.mach
 [artifact.binpack]
 kind = "bin"
