@@ -19,9 +19,16 @@ by force, usually by attacking its king. Two things are taken from each.
 
 Pass 1 scores every position of a game with SF19 at PASS1_NODES; pass 2 runs
 the MultiPV-2 depth-20 check only where the winner's score climbed.
+
+Each finished game is appended to --progress as one JSON line, and a restart
+skips the games already there, so a crash or a reboot costs one game per
+worker, not the night. A game whose engine fails (a slow start on a busy
+machine timed out once and took the whole first run with it) is retried once
+and otherwise recorded as failed and skipped.
 """
 import argparse
 import collections
+import json
 import multiprocessing
 import os
 import sys
@@ -57,12 +64,21 @@ def miniatures(paths, lo, hi):
                 moves = [m.uci() for m in game.mainline_moves()]
                 if lo <= len(moves) < hi:
                     name = "%s-%s %s" % (game.headers.get("White", "?")[:20], game.headers.get("Black", "?")[:20], game.headers.get("Event", "")[:30])
-                    out.append((name, result, moves))
+                    out.append(("%d:%d" % (paths.index(path), len(out)), name, result, moves))
     return out
 
 
 def work(item):
-    name, result, moves = item
+    for attempt in range(2):
+        try:
+            return item[0], analyse(item)
+        except Exception as problem:  # noqa: BLE001 - one bad game must not end the run
+            last = repr(problem)
+    return item[0], {"failed": last}
+
+
+def analyse(item):
+    _, name, result, moves = item
     winner = chess.WHITE if result == "1-0" else chess.BLACK
     engine = panel.open_engine("Stockfish", 64)
     board = chess.Board()
@@ -92,7 +108,7 @@ def work(item):
         if best.uci() == moves[ply] and s1 - s2 >= MARGIN and s1 < 600:
             suite.append((fen, b.san(best), s1, s1 - s2, name, ply + 1))
     engine.quit()
-    return suite, book
+    return {"suite": suite, "book": book}
 
 
 def main():
@@ -103,18 +119,34 @@ def main():
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--min-plies", type=int, default=40)
     parser.add_argument("--max-plies", type=int, default=100)
+    parser.add_argument("--progress", default=None, help="one JSON line per finished game; resumes from it")
     args = parser.parse_args()
 
     games = miniatures(args.pgn, args.min_plies, args.max_plies)
-    print("%d miniatures" % len(games), flush=True)
-    suite, book, done = [], [], 0
-    with multiprocessing.Pool(args.workers) as pool:
-        for s, b in pool.imap_unordered(work, games, chunksize=4):
-            suite += s
-            book += b
-            done += 1
-            if done % 50 == 0:
-                print("%d/%d games, %d suite positions, %d book positions" % (done, len(games), len(suite), len(book)), flush=True)
+    progress = args.progress or args.suite + ".progress.jsonl"
+    finished = {}
+    if os.path.exists(progress):
+        for line in open(progress, encoding="utf-8"):
+            row = json.loads(line)
+            finished[row["key"]] = row
+    todo = [g for g in games if g[0] not in finished]
+    print("%d miniatures, %d already done, %d to go" % (len(games), len(finished), len(todo)), flush=True)
+    with open(progress, "a", encoding="utf-8") as log, multiprocessing.Pool(args.workers) as pool:
+        for key, out in pool.imap_unordered(work, todo, chunksize=1):
+            out["key"] = key
+            log.write(json.dumps(out) + "\n")
+            log.flush()
+            finished[key] = out
+            if len(finished) % 50 == 0:
+                print("%d/%d games" % (len(finished), len(games)), flush=True)
+    suite, book, failed = [], [], 0
+    for row in finished.values():
+        if "failed" in row:
+            failed += 1
+            continue
+        suite += [tuple(x) for x in row["suite"]]
+        book += row["book"]
+    print("%d games failed twice and were skipped" % failed, flush=True)
     seen = set()
     with open(args.suite, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("# %d attack positions from %d engine miniatures, written by harness/nnue/attack_suite.py:\n" % (len(suite), len(games)))
