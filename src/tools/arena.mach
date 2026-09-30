@@ -3,7 +3,7 @@
 #   arena <engine_a> <engine_b> [--tc 10+0.1 | --depth N | --nodes N] [--book file]
 #         [--games N] [--concurrency N] [--sprt ELO0 ELO1] [--pgn file]
 #         [--option-a Name=Value]... [--option-b Name=Value]... [--name-a X] [--name-b Y]
-#         [--max-plies 300] [--margin 100]
+#         [--max-plies 300] [--margin 100] [--watch PORT]
 #
 # the Mach counterpart of harness/match.py, and held to it: each book position
 # (in order, one per pair) is played twice with colours swapped; on a clock
@@ -17,7 +17,9 @@
 # reads. Games are written to --pgn in standard notation.
 #
 # Legality is machete's own perft-verified move generator; the engines are
-# driven by src/uci_driver.mach. harness/arena_check.py plays the same match
+# driven by src/uci_driver.mach. --watch serves http://127.0.0.1:PORT/, a
+# page of every live board with its clocks and the running score, refreshed
+# every second from /state (match.py's board wall, in Mach). harness/arena_check.py plays the same match
 # through match.py at a fixed depth - where the games are deterministic - and
 # requires the same games, move for move.
 
@@ -50,6 +52,8 @@ use machete.movegen.MoveList;
 use pos: machete.position;
 use machete.position.Position;
 use uci: machete.uci_driver;
+use std.net.ip;
+use std.net.tcp;
 
 val EXIT_USAGE:  i64 = 1;
 val EXIT_FAIL:   i64 = 2;
@@ -83,6 +87,7 @@ var ELO1:      f64  = 0.0;
 var LOWER:     f64  = 0.0;
 var UPPER:     f64  = 0.0;
 var PGN:       str  = nil;
+var WATCH:     i64  = 0;
 
 # ---- the book ----
 
@@ -121,6 +126,14 @@ rec Worker {
     nmoves:  i64;
     pgn:     [32768]u8;
     pgnlen:  i64;
+    # what the watch page shows: the live position, the players, the clocks
+    live_fen:    [128]u8;
+    live_white:  str;
+    live_black:  str;
+    live_wclock: i64;
+    live_bclock: i64;
+    live_plies:  i64;
+    live_on:     i64;
 }
 
 var W:       [32]Worker;
@@ -537,7 +550,12 @@ fun play(w: *Worker, white: *uci.Engine, black: *uci.Engine, how: *i64) i64 {
     w.nkeys   = 1;
     var remaining_w: i64 = BASE_MS;
     var remaining_b: i64 = BASE_MS;
-    @how = 0;
+    val sfen:        i64 = pos.to_fen(?w.p, ?w.live_fen[0]);
+    w.live_wclock = remaining_w;
+    w.live_bclock = remaining_b;
+    w.live_plies  = 0;
+    w.live_on     = 1;
+    @how          = 0;
     for {
         val over: i64 = game_over(w);
         if (over != 2) { ret over; }
@@ -631,6 +649,10 @@ fun play(w: *Worker, white: *uci.Engine, black: *uci.Engine, how: *i64) i64 {
         append(w, " ");
         append(w, ?report.best[0]);
         pos.make(?w.p, m);
+        val flen: i64 = pos.to_fen(?w.p, ?w.live_fen[0]);
+        w.live_wclock = remaining_w;
+        w.live_bclock = remaining_b;
+        w.live_plies  = w.live_plies + 1;
         if (w.nkeys < HIST_CAP) {
             w.keys[w.nkeys] = w.p.key;
             w.nkeys         = w.nkeys + 1;
@@ -845,10 +867,14 @@ fun worker_entry(arg: *u8) {
             var how:    i64 = 0;
             var result: i64 = 0;
             if (a_white == 0) {
-                result = play(w, ?w.a, ?w.b, ?how);
+                w.live_white = NAME_A;
+                w.live_black = NAME_B;
+                result       = play(w, ?w.a, ?w.b, ?how);
             }
             or {
-                result = play(w, ?w.b, ?w.a, ?how);
+                w.live_white = NAME_B;
+                w.live_black = NAME_A;
+                result       = play(w, ?w.b, ?w.a, ?how);
             }
             if (result == 2) {
                 FAILED = 1;
@@ -865,6 +891,199 @@ fun worker_entry(arg: *u8) {
     }
     uci.stop(?w.a);
     uci.stop(?w.b);
+}
+
+# ---- the watch page ----
+
+var WATCH_THREAD: thread.Thread;
+var ACTIVE:       i64 = 0;
+var OUTBUF:       [131072]u8;
+var OUTLEN:       i64 = 0;
+
+val PAGE: str = "<!doctype html><html><head><meta charset=utf-8><title>machete arena</title><style>body{font:14px system-ui,sans-serif;background:#f4f4f1;color:#222;margin:16px}h1{font-size:20px;margin:0 0 8px}#s{margin:0 0 14px;font-variant-numeric:tabular-nums}.g{display:flex;flex-wrap:wrap;gap:14px}.b{background:#fff;border:1px solid #ccc;padding:8px}.n{font-size:12px;margin:3px 0;display:flex;justify-content:space-between;gap:10px}table{border-collapse:collapse}td{width:30px;height:30px;text-align:center;font-size:24px;line-height:30px;padding:0}.l{background:#eeeed2}.d{background:#b5c38c}@media (prefers-color-scheme:dark){body{background:#16181b;color:#ddd}.b{background:#202328;border-color:#333}.l{background:#8a8f7a}.d{background:#5b6b4a}}</style></head><body><h1 id=t>machete arena</h1><div id=s></div><div class=g id=g></div><script>const P={K:'\\u2654',Q:'\\u2655',R:'\\u2656',B:'\\u2657',N:'\\u2658',P:'\\u2659',k:'\\u265a',q:'\\u265b',r:'\\u265c',b:'\\u265d',n:'\\u265e',p:'\\u265f'};function board(f){let h='<table>',rows=f.split(' ')[0].split('/');for(let r=0;r<8;r++){h+='<tr>';let c=0;for(const ch of rows[r]){if(ch>='1'&&ch<='8'){for(let i=0;i<+ch;i++){h+='<td class='+((r+c)%2?'d':'l')+'></td>';c++}}else{h+='<td class='+((r+c)%2?'d':'l')+'>'+P[ch]+'</td>';c++}}h+='</tr>'}return h+'</table>'}function clk(ms){if(ms<0)return'';const s=Math.max(0,ms)/1000;return s>=60?Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0'):s.toFixed(1)}async function tick(){try{const r=await fetch('/state',{cache:'no-store'});const j=await r.json();document.getElementById('t').textContent=j.a+' vs '+j.b;let s=j.games+' of '+j.total+' games \\u00b7 '+j.a+': '+j.w+' W '+j.d+' D '+j.l+' L';if(j.sprt)s+=' \\u00b7 LLR '+j.llr.toFixed(2)+' ('+j.lower.toFixed(2)+' .. '+j.upper.toFixed(2)+')';if(j.verdict)s+=' \\u00b7 '+j.verdict;document.getElementById('s').textContent=s;document.getElementById('g').innerHTML=j.boards.map(x=>'<div class=b><div class=n><span>\\u265f '+x.black+'</span><span>'+clk(x.bclock)+'</span></div>'+board(x.fen)+'<div class=n><span>\\u2659 '+x.white+'</span><span>'+clk(x.wclock)+'</span></div><div class=n><span>ply '+x.plies+'</span></div></div>').join('')}catch(e){}setTimeout(tick,1000)}tick()</script></body></html>";
+
+fun out_text(text: str) {
+    var i: i64 = 0;
+    for (text[i] != 0 && OUTLEN < 131000) {
+        OUTBUF[OUTLEN] = text[i];
+        OUTLEN         = OUTLEN + 1;
+        i              = i + 1;
+    }
+}
+
+fun out_int(v: i64) {
+    var digits: [24]u8;
+    val n:      i64 = uci.put_int(?digits[0], v);
+    digits[n] = 0;
+    out_text(?digits[0]);
+}
+
+# a number with two decimals, for the LLR
+fun out_fixed2(x: f64) {
+    var v: i64 = 0;
+    if (x >= 0.0) { v = (x * 100.0 + 0.5)::i64; }
+    or            { v = 0 - ((0.0 - x) * 100.0 + 0.5)::i64; }
+    if (v < 0) {
+        out_text("-");
+        v = 0 - v;
+    }
+    out_int(v / 100);
+    out_text(".");
+    if (v % 100 < 10) { out_text("0"); }
+    out_int(v % 100);
+}
+
+# a JSON string: the names and FENs are plain ASCII without quotes or
+# backslashes, but they are escaped anyway rather than trusted
+fun out_json_string(text: str) {
+    out_text("\"");
+    var i: i64 = 0;
+    for (text != nil && text[i] != 0 && OUTLEN < 131000) {
+        val c: u8 = text[i];
+        if (c == '"' || c == '\\') {
+            OUTBUF[OUTLEN] = '\\';
+            OUTLEN         = OUTLEN + 1;
+        }
+        if (c >= 32) {
+            OUTBUF[OUTLEN] = c;
+            OUTLEN         = OUTLEN + 1;
+        }
+        i = i + 1;
+    }
+    out_text("\"");
+}
+
+fun state_json() {
+    OUTLEN = 0;
+    val played: i64 = WINS + DRAWS + LOSSES;
+    out_text("{\"a\":");
+    out_json_string(NAME_A);
+    out_text(",\"b\":");
+    out_json_string(NAME_B);
+    out_text(",\"games\":");
+    out_int(played);
+    out_text(",\"total\":");
+    out_int(GAMES);
+    out_text(",\"w\":");
+    out_int(WINS);
+    out_text(",\"d\":");
+    out_int(DRAWS);
+    out_text(",\"l\":");
+    out_int(LOSSES);
+    if (SPRT) {
+        var l: f64 = llr(WINS, DRAWS, LOSSES);
+        if (played < 40) { l = 0.0; }
+        out_text(",\"sprt\":true,\"llr\":");
+        out_fixed2(l);
+        out_text(",\"lower\":");
+        out_fixed2(LOWER);
+        out_text(",\"upper\":");
+        out_fixed2(UPPER);
+    }
+    or { out_text(",\"sprt\":false"); }
+    out_text(",\"verdict\":");
+    if (VERDICT == 1) { out_json_string("accepted H1"); }
+    or (VERDICT == 2) { out_json_string("accepted H0"); }
+    or                { out_json_string(""); }
+    out_text(",\"boards\":[");
+    var first: bool = true;
+    var i:     i64  = 0;
+    for (i < ACTIVE) {
+        val w: *Worker = ?W[i];
+        if (w.live_on != 0) {
+            if (!first) { out_text(","); }
+            first = false;
+            out_text("{\"fen\":");
+            out_json_string(?w.live_fen[0]);
+            out_text(",\"white\":");
+            out_json_string(w.live_white);
+            out_text(",\"black\":");
+            out_json_string(w.live_black);
+            out_text(",\"wclock\":");
+            if (DEPTH > 0 || NODES > 0) { out_int(0 - 1); }
+            or                          { out_int(w.live_wclock); }
+            out_text(",\"bclock\":");
+            if (DEPTH > 0 || NODES > 0) { out_int(0 - 1); }
+            or                          { out_int(w.live_bclock); }
+            out_text(",\"plies\":");
+            out_int(w.live_plies);
+            out_text("}");
+        }
+        i = i + 1;
+    }
+    out_text("]}");
+}
+
+fun send_all(s: *tcp.Stream, buf: *u8, len: i64) {
+    var at: i64 = 0;
+    for (at < len) {
+        val put: res[usize, io_error.Error] = tcp.stream_write(s, ?buf[at], (len - at)::usize);
+        if (sel put.err)      { ret; }
+        if (put.ok::i64 == 0) { ret; }
+        at = at + put.ok::i64;
+    }
+}
+
+fun respond(s: *tcp.Stream, kind: str, body: *u8, len: i64) {
+    var head: [256]u8;
+    var n:    i64 = 0;
+    val a:    str = "HTTP/1.1 200 OK\r\nContent-Type: ";
+    var i:    i64 = 0;
+    for (a[i] != 0) {
+        head[n] = a[i];
+        n       = n + 1;
+        i       = i + 1;
+    }
+    i = 0;
+    for (kind[i] != 0) {
+        head[n] = kind[i];
+        n       = n + 1;
+        i       = i + 1;
+    }
+    val b: str = "\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: ";
+    i = 0;
+    for (b[i] != 0) {
+        head[n] = b[i];
+        n       = n + 1;
+        i       = i + 1;
+    }
+    n           = n + uci.put_int(?head[n], len);
+    head[n]     = '\r';
+    head[n + 1] = '\n';
+    head[n + 2] = '\r';
+    head[n + 3] = '\n';
+    send_all(s, ?head[0], n + 4);
+    send_all(s, body, len);
+}
+
+fun watch_server(arg: *u8) {
+    val listening: res[tcp.Listener, io_error.Error] = tcp.listen(ip.endpoint(127, 0, 0, 1, WATCH::u16), 16);
+    if (sel listening.err) {
+        print.eprintlnf("no watch page: cannot listen on port {}", WATCH);
+        ret;
+    }
+    var ln: tcp.Listener = listening.ok;
+    for {
+        val accepted: res[tcp.Stream, io_error.Error] = tcp.accept(?ln);
+        if (sel accepted.err) { cnt; }
+        var s:   tcp.Stream                 = accepted.ok;
+        var req: [2048]u8;
+        val got: res[usize, io_error.Error] = tcp.stream_read(?s, ?req[0], 2047);
+        var n:   i64                        = 0;
+        if (sel got.ok) { n = got.ok::i64; }
+        req[n] = 0;
+        # "GET /state ..." asks for the data, anything else for the page
+        if (n > 10 && req[4] == '/' && req[5] == 's' && req[6] == 't' && req[7] == 'a') {
+            state_json();
+            respond(?s, "application/json", ?OUTBUF[0], OUTLEN);
+        }
+        or {
+            var len: i64 = 0;
+            for (PAGE[len] != 0) { len = len + 1; }
+            respond(?s, "text/html; charset=utf-8", PAGE, len);
+        }
+        val shut: err[io_error.Error] = tcp.stream_close(?s);
+    }
 }
 
 #[symbol("main")]
@@ -905,6 +1124,10 @@ fun main(argc: i64, argv: **u8) i64 {
         or (str_equals(a, "--pgn") && more) {
             PGN = argv[i + 1];
             i   = i + 1;
+        }
+        or (str_equals(a, "--watch") && more) {
+            WATCH = int_arg(argv[i + 1], 0);
+            i     = i + 1;
         }
         or (str_equals(a, "--name-a") && more) {
             NAME_A = argv[i + 1];
@@ -975,10 +1198,20 @@ fun main(argc: i64, argv: **u8) i64 {
     TALLY_LOCK = mutex.make();
     PGN_LOCK   = mutex.make();
     var workers: i64 = WORKERS;
+    ACTIVE = WORKERS;
+    if (WATCH > 0) {
+        var config: thread.Config;
+        thread.config_default(?config);
+        config.name = "machete-watch";
+        val op: thread.Operation = thread.spawn_with_config(watch_server, nil, ?config, ?WATCH_THREAD);
+        if (sel op.err) { print.eprintln("no watch page: the server thread did not start"); }
+        or              { print.printlnf("watch the match at http://127.0.0.1:{}", WATCH); }
+    }
     if (workers > (GAMES + 1) / 2) { workers = (GAMES + 1) / 2; }
     if (workers < 1)               { workers = 1; }
     if (workers > MAX_WORKERS)     { workers = MAX_WORKERS; }
-    i = 0;
+    ACTIVE = workers;
+    i      = 0;
     for (i < workers) {
         var config: thread.Config;
         thread.config_default(?config);
