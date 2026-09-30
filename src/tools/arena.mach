@@ -922,6 +922,11 @@ fun main(argc: i64, argv: **u8) i64 {
             MARGIN = int_arg(argv[i + 1], 100);
             i      = i + 1;
         }
+        # match.py's seed picks random openings when there is no book; with a
+        # book the openings are the book's, in order, so it changes nothing
+        or (str_equals(a, "--seed") && more) {
+            i = i + 1;
+        }
         or (str_equals(a, "--option-a") && more && N_OPT_A < MAX_OPTIONS) {
             OPT_A[N_OPT_A] = argv[i + 1];
             N_OPT_A        = N_OPT_A + 1;
