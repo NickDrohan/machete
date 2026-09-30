@@ -1,0 +1,386 @@
+# machete.uci_driver: run another UCI engine as a child process and talk to it
+#
+# The Mach side of what python-chess's chess.engine does for the harness:
+# start an engine with its standard input and output on pipes, send it lines,
+# read its lines back, and run a search to a node limit, returning what its
+# last info lines said - the score (centipawns or mate) and the first move of
+# its principal variation - and its bestmove.
+#
+# Built on std.system.os's pipe and spawn_redirected: the public std.process
+# API leaves a child's standard input inherited, which a UCI engine cannot
+# work with.
+
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+use std.types.string.str_len;
+
+use std.system.os;
+
+pub val LINE_CAP: i64 = 8192;
+val     BUF_CAP:  i64 = 65536;
+
+# a running engine
+# ---
+# pid:   the child's process id
+# to:    the write end of its standard input
+# from:  the read end of its standard output
+# buf:   bytes read from it and not yet returned as lines
+# start: where the unread bytes begin in buf
+# len:   where they end
+# line:  the last line read
+pub rec Engine {
+    pid:   i64;
+    to:    usize;
+    from:  usize;
+    buf:   [65536]u8;
+    start: i64;
+    len:   i64;
+    line:  [8192]u8;
+}
+
+# what a search reported
+# ---
+# mate:  true if the score is a mate
+# score: centipawns, or moves to mate (negative when the side to move is mated), from the side to move
+# pv:    the first move of the principal variation, as UCI text, "" if none
+# best:  the bestmove
+pub rec Report {
+    mate:      bool;
+    score:     i64;
+    has_score: bool;
+    pv:        [8]u8;
+    best:      [8]u8;
+}
+
+# start the engine at path, in directory cwd (nil for ours); false if it
+# cannot be started
+pub fun start(e: *Engine, path: str, cwd: str) bool {
+    var in_read:   usize = 0;
+    var in_write:  usize = 0;
+    var out_read:  usize = 0;
+    var out_write: usize = 0;
+    if (os.pipe(?in_read, ?in_write) < 0)   { ret false; }
+    if (os.pipe(?out_read, ?out_write) < 0) { ret false; }
+    var argv: [2]*u8;
+    argv[0] = path;
+    argv[1] = nil;
+    var pid: i64 = 0;
+    if (cwd == nil) {
+        pid = os.spawn_redirected(path, ?argv[0], nil, in_read, out_write, out_write);
+    }
+    or {
+        pid = os.spawn_redirected_in(path, ?argv[0], nil, cwd, in_read, out_write, out_write);
+    }
+    # the child holds its own copies; ours of its ends must close, or its
+    # output never sees end of file
+    val c1: i64 = os.close(in_read);
+    val c2: i64 = os.close(out_write);
+    if (pid < 0) {
+        val c3: i64 = os.close(in_write);
+        val c4: i64 = os.close(out_read);
+        ret false;
+    }
+    e.pid   = pid;
+    e.to    = in_write;
+    e.from  = out_read;
+    e.start = 0;
+    e.len   = 0;
+    ret true;
+}
+
+# send one line (a newline is added)
+pub fun send(e: *Engine, text: str) bool {
+    val n:  i64 = str_len(text)::i64;
+    var at: i64 = 0;
+    for (at < n) {
+        val put: i64 = os.write(e.to, ?text[at], (n - at)::usize);
+        if (put <= 0) { ret false; }
+        at = at + put;
+    }
+    var nl: [1]u8;
+    nl[0] = '\n';
+    ret os.write(e.to, ?nl[0], 1) == 1;
+}
+
+# read the next line into e.line (without its line ending); false at end of
+# output
+pub fun read_line(e: *Engine) bool {
+    var n: i64 = 0;
+    for {
+        if (e.start >= e.len) {
+            val got: i64 = os.read(e.from, ?e.buf[0], BUF_CAP::usize);
+            if (got <= 0) {
+                e.line[n] = 0;
+                ret n > 0;
+            }
+            e.start = 0;
+            e.len   = got;
+        }
+        val c: u8 = e.buf[e.start];
+        e.start = e.start + 1;
+        if (c == '\n') {
+            if (n > 0 && e.line[n - 1] == '\r') { n = n - 1; }
+            e.line[n] = 0;
+            ret true;
+        }
+        if (n < LINE_CAP - 1) {
+            e.line[n] = c;
+            n         = n + 1;
+        }
+    }
+}
+
+# the line starts with the word w
+fun starts_with(line: *u8, w: str) bool {
+    var i: i64 = 0;
+    for (w[i] != 0) {
+        if (line[i] != w[i]) { ret false; }
+        i = i + 1;
+    }
+    ret line[i] == ' ' || line[i] == 0;
+}
+
+# read lines until one starting with the word w
+pub fun wait_for(e: *Engine, w: str) bool {
+    for (read_line(e)) {
+        if (starts_with(?e.line[0], w)) { ret true; }
+    }
+    ret false;
+}
+
+# the uci handshake, then Threads and Hash if given (0 leaves them)
+pub fun init(e: *Engine, threads: i64, hash_mb: i64) bool {
+    if (!send(e, "uci"))       { ret false; }
+    if (!wait_for(e, "uciok")) { ret false; }
+    var cmd: [64]u8;
+    if (threads > 0) {
+        fill(?cmd[0], "setoption name Threads value ", threads);
+        if (!send(e, ?cmd[0])) { ret false; }
+    }
+    if (hash_mb > 0) {
+        fill(?cmd[0], "setoption name Hash value ", hash_mb);
+        if (!send(e, ?cmd[0])) { ret false; }
+    }
+    ret ready(e);
+}
+
+pub fun ready(e: *Engine) bool {
+    if (!send(e, "isready")) { ret false; }
+    ret wait_for(e, "readyok");
+}
+
+# out = prefix followed by the decimal value
+pub fun fill(out: *u8, prefix: str, value: i64) {
+    var n: i64 = 0;
+    for (prefix[n] != 0) {
+        out[n] = prefix[n];
+        n      = n + 1;
+    }
+    n      = n + put_int(?out[n], value);
+    out[n] = 0;
+}
+
+# write value in decimal at out; returns the digits written
+pub fun put_int(out: *u8, value: i64) i64 {
+    var v: i64 = value;
+    var n: i64 = 0;
+    if (v < 0) {
+        out[0] = '-';
+        n      = 1;
+        v      = 0 - v;
+    }
+    var digits: [24]u8;
+    var d:      i64 = 0;
+    if (v == 0) {
+        digits[0] = '0';
+        d         = 1;
+    }
+    for (v > 0) {
+        digits[d] = ('0'::i64 + v % 10)::u8;
+        d         = d + 1;
+        v         = v / 10;
+    }
+    for (d > 0) {
+        d      = d - 1;
+        out[n] = digits[d];
+        n      = n + 1;
+    }
+    ret n;
+}
+
+# the next space-separated word of line at *at, into word; false at the end
+fun next_word(line: *u8, at: *i64, word: *u8, cap: i64) bool {
+    var i: i64 = @at;
+    for (line[i] == ' ') { i = i + 1; }
+    if (line[i] == 0) {
+        @at = i;
+        ret false;
+    }
+    var n: i64 = 0;
+    for (line[i] != 0 && line[i] != ' ') {
+        if (n < cap - 1) {
+            word[n] = line[i];
+            n       = n + 1;
+        }
+        i = i + 1;
+    }
+    word[n] = 0;
+    @at     = i;
+    ret true;
+}
+
+fun parse_int(word: *u8) i64 {
+    var i:   i64  = 0;
+    var neg: bool = false;
+    if (word[0] == '-') {
+        neg = true;
+        i   = 1;
+    }
+    var v: i64 = 0;
+    for (word[i] >= '0' && word[i] <= '9') {
+        v = v * 10 + (word[i] - '0')::i64;
+        i = i + 1;
+    }
+    if (neg) { ret 0 - v; }
+    ret v;
+}
+
+fun copy_word(dst: *u8, src: *u8, cap: i64) {
+    var i: i64 = 0;
+    for (src[i] != 0 && i < cap - 1) {
+        dst[i] = src[i];
+        i      = i + 1;
+    }
+    dst[i] = 0;
+}
+
+# take what an info line says into r: its score if it has one (for multipv
+# line `want`, 1 for the main line), and its first pv move
+pub fun take_info(line: *u8, r: *Report, want: i64) {
+    var at:      i64  = 0;
+    var word:    [64]u8;
+    var line_pv: i64  = 1;
+    var has:     bool = false;
+    var mate:    bool = false;
+    var val_:    i64  = 0;
+    var pv:      [8]u8;
+    pv[0] = 0;
+    if (!next_word(line, ?at, ?word[0], 64)) { ret; }
+    if (!str_equals(?word[0], "info"))       { ret; }
+    for (next_word(line, ?at, ?word[0], 64)) {
+        if (str_equals(?word[0], "multipv")) {
+            if (next_word(line, ?at, ?word[0], 64)) { line_pv = parse_int(?word[0]); }
+        }
+        or (str_equals(?word[0], "score")) {
+            if (next_word(line, ?at, ?word[0], 64)) {
+                if (str_equals(?word[0], "mate")) { mate = true; }
+                if (next_word(line, ?at, ?word[0], 64)) {
+                    val_ = parse_int(?word[0]);
+                    has  = true;
+                }
+            }
+        }
+        or (str_equals(?word[0], "pv")) {
+            if (next_word(line, ?at, ?word[0], 64)) { copy_word(?pv[0], ?word[0], 8); }
+            brk;
+        }
+        or (str_equals(?word[0], "string")) {
+            ret;
+        }
+    }
+    if (line_pv != want) { ret; }
+    if (has) {
+        r.has_score = true;
+        r.mate      = mate;
+        r.score     = val_;
+    }
+    if (pv[0] != 0) { copy_word(?r.pv[0], ?pv[0], 8); }
+}
+
+# run "go" with the given limit words ("nodes 1500") and read to bestmove;
+# the report holds the main line's last score and pv move
+pub fun go(e: *Engine, limit: str, r: *Report) bool {
+    r.has_score = false;
+    r.mate      = false;
+    r.score     = 0;
+    r.pv[0]     = 0;
+    r.best[0]   = 0;
+    var cmd: [64]u8;
+    var n:   i64 = 0;
+    val g:   str = "go ";
+    for (g[n] != 0) {
+        cmd[n] = g[n];
+        n      = n + 1;
+    }
+    var i: i64 = 0;
+    for (limit[i] != 0 && n < 62) {
+        cmd[n] = limit[i];
+        n      = n + 1;
+        i      = i + 1;
+    }
+    cmd[n] = 0;
+    if (!send(e, ?cmd[0])) { ret false; }
+    for (read_line(e)) {
+        if (starts_with(?e.line[0], "bestmove")) {
+            var at:    i64  = 0;
+            var word:  [64]u8;
+            val first: bool = next_word(?e.line[0], ?at, ?word[0], 64);
+            if (next_word(?e.line[0], ?at, ?word[0], 64)) { copy_word(?r.best[0], ?word[0], 8); }
+            ret true;
+        }
+        take_info(?e.line[0], r, 1);
+    }
+    ret false;
+}
+
+# ask the engine to quit and wait for it
+pub fun stop(e: *Engine) {
+    val sent: bool = send(e, "quit");
+    val c1:   i64  = os.close(e.to);
+    # drain until it exits, so it never blocks on a full pipe
+    for (read_line(e)) {}
+    val c2: i64 = os.close(e.from);
+}
+
+test uci_driver_reads_scores_and_moves_from_info_lines {
+    var r:    Report;
+    var line: [200]u8;
+    val text: str = "info depth 12 seldepth 18 multipv 1 score cp -37 nodes 1500 nps 300000 pv e7e5 g1f3 b8c6";
+    var i:    i64 = 0;
+    for (text[i] != 0) {
+        line[i] = text[i];
+        i       = i + 1;
+    }
+    line[i] = 0;
+    take_info(?line[0], ?r, 1);
+    if (!r.has_score || r.mate || r.score != 0 - 37) { ret 1; }
+    if (!str_equals(?r.pv[0], "e7e5"))               { ret 2; }
+    # a second line's mate score, and one for another multipv line, which the
+    # main line ignores
+    val mate: str = "info depth 20 score mate -3 pv h7h8q";
+    i = 0;
+    for (mate[i] != 0) {
+        line[i] = mate[i];
+        i       = i + 1;
+    }
+    line[i] = 0;
+    take_info(?line[0], ?r, 1);
+    if (!r.mate || r.score != 0 - 3 || !str_equals(?r.pv[0], "h7h8q")) { ret 3; }
+    val other: str = "info depth 20 multipv 2 score cp 50 pv a2a3";
+    i = 0;
+    for (other[i] != 0) {
+        line[i] = other[i];
+        i       = i + 1;
+    }
+    line[i] = 0;
+    take_info(?line[0], ?r, 1);
+    if (!str_equals(?r.pv[0], "h7h8q")) { ret 4; }
+    var digits: [32]u8;
+    fill(?digits[0], "go nodes ", 1500);
+    if (!str_equals(?digits[0], "go nodes 1500")) { ret 5; }
+    ret 0;
+}

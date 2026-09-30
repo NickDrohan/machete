@@ -39,6 +39,15 @@ targets = ["*"]
 link = ["kernel32"]
 need = []
 
+# generates labelled positions in Mach (src/tools/gen.mach), held to harness/nnue/gen.py
+[artifact.gen]
+kind = "bin"
+entry = "tools/gen.mach"
+out = "bin/gen{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
 # trains the network in Mach (src/train.mach), checked against harness/nnue/train.py
 [artifact.trainer]
 kind = "bin"
