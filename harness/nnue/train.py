@@ -19,6 +19,7 @@ it a net can train beautifully and then evaluate garbage once quantized.
 """
 
 import argparse
+import concurrent.futures
 import os
 import sys
 import time
@@ -130,12 +131,21 @@ class Corpus(object):
         # without a window, otherwise the window loaded last
         self.live = {name: getattr(self, name) for name in COLUMNS}
 
-    def load_rows(self, rows):
-        """Gather these global rows (sorted) from host memory onto the device
-        as the live window."""
+    def host_rows(self, rows):
+        """Gather these global rows (sorted) in host memory, pinned for a fast
+        copy to the device. Runs on a helper thread while the device trains on
+        the window before: torch's index_select releases the interpreter lock."""
         picked = torch.from_numpy(rows)
+        out = {}
         for name in COLUMNS:
-            self.live[name] = getattr(self, name).index_select(0, picked).to(self.device)
+            column = getattr(self, name).index_select(0, picked)
+            out[name] = column.pin_memory() if torch.cuda.is_available() else column
+        return out
+
+    def load_rows(self, host):
+        """Make a gathered window (see host_rows) the live one on the device."""
+        for name in COLUMNS:
+            self.live[name] = host[name].to(self.device, non_blocking=True)
 
     def gather(self, index):
         """Rows by global index as a small device-side corpus of their own,
@@ -198,16 +208,29 @@ class Corpus(object):
         # contiguous slices of the corpus itself, which is its sources laid
         # end to end: the network trained on one source at a time, drifted to
         # whichever came last, and C18 and C19 lost 54 and 60 Elo for it.
-        for first in range(0, len(order), self.window):
-            rows = np.sort(order[first:first + self.window])
-            self.load_rows(rows)
-            local = np.arange(len(rows))
+        # The next window is gathered on a helper thread while this one
+        # trains: the gather is the CPU's work (a sort and an index_select over
+        # the corpus in host memory), and doing it in line left the GPU idle
+        # for about a quarter of every epoch (C22, 2026-09-28).
+        starts = list(range(0, len(order), self.window))
+        rows_of = lambda first: np.sort(order[first:first + self.window])
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        pending = pool.submit(lambda: self.host_rows(rows_of(starts[0])))
+        for k, first in enumerate(starts):
+            host = pending.result()
+            count = len(host["stm"])
+            if k + 1 < len(starts):
+                pending = pool.submit(lambda f=starts[k + 1]: self.host_rows(rows_of(f)))
+            self.load_rows(host)
+            del host
+            local = np.arange(count)
             if rng is not None:
                 rng.shuffle(local)
             for at in range(0, len(local) - size + 1, size):
                 index = torch.from_numpy(np.sort(local[at:at + size])).to(self.device)
                 us, them, bucket = self.features(index)
                 yield us, them, bucket, self.targets(index)
+        pool.shutdown()
 
 
 def pack(rows):

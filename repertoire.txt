@@ -1,0 +1,88 @@
+# machete's repertoire: the openings it prefers, chosen by its author.
+#
+# White: the Vienna, the English and the Catalan.
+# Black: the Marshall against 1.e4, the Nimzo-Indian and the Grunfeld
+#        against 1.d4 and 1.c4.
+#
+# Each line is "white <system>:" or "black <system>:" and then moves in
+# standard notation. A line gives the engine a preference for its own side's
+# moves in it - never the opponent's - as a bonus at the root, so a move the
+# search judges worse by more than the bonus is still not played. Each game
+# one system per side is drawn to be the one it aims for, and its positions
+# get the full Repertoire bonus; the rest of the repertoire gets half, so a
+# game that leaves that system stays in the repertoire where it can.
+# Positions, not move orders, are matched, so transpositions count.
+# harness/repgen.py checks every move and writes src/repertoire.mach.
+
+# ---- White: the Vienna -------------------------------------------------
+white vienna: 1.e4 e5 2.Nc3 Nf6 3.f4 d5 4.fxe5 Nxe4 5.Nf3 Be7 6.d4 O-O 7.Bd3
+white vienna: 1.e4 e5 2.Nc3 Nf6 3.f4 exf4 4.e5 Ng8 5.Nf3
+white vienna: 1.e4 e5 2.Nc3 Nc6 3.f4 exf4 4.Nf3 g5 5.h4
+white vienna: 1.e4 e5 2.Nc3 Nc6 3.Bc4 Nf6 4.d3 Bb4 5.Nge2
+white vienna: 1.e4 e5 2.Nc3 Bc5 3.Nf3 d6 4.d4 exd4 5.Nxd4
+# after 1.e4, when Black declines ...e5: Nc3 set-ups in the Vienna's spirit
+white vienna: 1.e4 c5 2.Nc3 Nc6 3.g3 g6 4.Bg2 Bg7 5.d3 d6 6.f4
+white vienna: 1.e4 e6 2.d4 d5 3.Nc3 Nf6 4.e5 Nfd7 5.f4
+white vienna: 1.e4 c6 2.Nc3 d5 3.Nf3 Bg4 4.h3 Bxf3 5.Qxf3
+white vienna: 1.e4 d5 2.exd5 Qxd5 3.Nc3 Qa5 4.d4 Nf6 5.Nf3
+
+# ---- White: the English ------------------------------------------------
+white english: 1.c4 e5 2.Nc3 Nf6 3.g3 d5 4.cxd5 Nxd5 5.Bg2 Nb6 6.Nf3 Nc6 7.O-O
+white english: 1.c4 e5 2.Nc3 Nc6 3.g3 g6 4.Bg2 Bg7 5.d3 d6 6.e4
+white english: 1.c4 c5 2.Nc3 Nc6 3.g3 g6 4.Bg2 Bg7 5.Nf3 Nf6 6.O-O O-O
+white english: 1.c4 Nf6 2.Nc3 g6 3.g3 Bg7 4.Bg2 O-O 5.e4 d6 6.Nge2
+white english: 1.c4 e6 2.Nc3 d5 3.d4 Nf6 4.Nf3
+white english: 1.c4 c6 2.Nf3 d5 3.e3 Nf6 4.Nc3
+
+# ---- White: the Catalan ------------------------------------------------
+white catalan: 1.d4 Nf6 2.c4 e6 3.g3 d5 4.Bg2 dxc4 5.Nf3 a6 6.O-O b5 7.Ne5
+white catalan: 1.d4 Nf6 2.c4 e6 3.g3 d5 4.Bg2 Be7 5.Nf3 O-O 6.O-O dxc4 7.Qc2 a6 8.a4
+white catalan: 1.d4 Nf6 2.c4 e6 3.g3 Bb4+ 4.Bd2 Be7 5.Bg2 d5 6.Nf3 O-O 7.O-O
+white catalan: 1.d4 d5 2.c4 e6 3.Nf3 Nf6 4.g3 Be7 5.Bg2 O-O 6.O-O
+white catalan: 1.d4 d5 2.c4 c6 3.Nf3 Nf6 4.g3 dxc4 5.Bg2
+# when Black avoids ...e6: the same fianchetto against the Indians
+white catalan: 1.d4 Nf6 2.c4 g6 3.g3 Bg7 4.Bg2 O-O 5.Nf3 d6 6.O-O
+white catalan: 1.d4 Nf6 2.c4 g6 3.g3 d5 4.cxd5 Nxd5 5.Bg2 Bg7 6.e4 Nb6 7.Ne2
+white catalan: 1.d4 Nf6 2.c4 c5 3.d5 e6 4.Nc3 exd5 5.cxd5 d6 6.e4
+
+# ---- Black: the Marshall, and the rest of 1.e4 e5 -----------------------
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 O-O 8.c3 d5 9.exd5 Nxd5 10.Nxe5 Nxe5 11.Rxe5 c6 12.d4 Bd6 13.Re1 Qh4 14.g3 Qh3
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 O-O 8.a4 b4
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 O-O 8.h3 Bb7 9.d3 d6
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.d3 b5 7.Bb3 d6
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Bxc6 dxc6 5.O-O f6
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6 5.d3 d6 6.O-O a6
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.d4 exd4 4.Nxd4 Nf6 5.Nxc6 bxc6 6.e5 Qe7
+black marshall: 1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.Bb5 Nd4
+black marshall: 1.e4 e5 2.Nc3 Nf6 3.f4 d5
+black marshall: 1.e4 e5 2.Nc3 Nf6 3.Bc4 Nxe4
+black marshall: 1.e4 e5 2.Bc4 Nf6 3.d3 c6
+black marshall: 1.e4 e5 2.f4 exf4 3.Nf3 d5
+
+# ---- Black: the Nimzo-Indian ---------------------------------------------
+black nimzo: 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 4.e3 O-O 5.Bd3 d5 6.Nf3 c5 7.O-O
+black nimzo: 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 4.Qc2 O-O 5.a3 Bxc3+ 6.Qxc3 d5
+black nimzo: 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 4.f3 d5 5.a3 Be7
+black nimzo: 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 4.Nf3 c5 5.g3 cxd4
+black nimzo: 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 4.Bg5 h6 5.Bh4 c5
+black nimzo: 1.d4 Nf6 2.c4 e6 3.Nf3 Bb4+ 4.Bd2 Qe7
+black nimzo: 1.d4 Nf6 2.c4 e6 3.g3 d5 4.Bg2 Be7
+
+# ---- Black: the Grunfeld -------------------------------------------------
+black grunfeld: 1.d4 Nf6 2.c4 g6 3.Nc3 d5 4.cxd5 Nxd5 5.e4 Nxc3 6.bxc3 Bg7 7.Nf3 c5 8.Rb1 O-O 9.Be2
+black grunfeld: 1.d4 Nf6 2.c4 g6 3.Nc3 d5 4.cxd5 Nxd5 5.e4 Nxc3 6.bxc3 Bg7 7.Bc4 c5 8.Ne2 Nc6
+black grunfeld: 1.d4 Nf6 2.c4 g6 3.Nc3 d5 4.Bf4 Bg7 5.e3 c5
+black grunfeld: 1.d4 Nf6 2.c4 g6 3.Nc3 d5 4.Nf3 Bg7 5.Qb3 dxc4 6.Qxc4 O-O
+black grunfeld: 1.d4 Nf6 2.c4 g6 3.Nf3 Bg7 4.g3 d5 5.cxd5 Nxd5 6.Bg2
+black grunfeld: 1.d4 Nf6 2.c4 g6 3.f3 d5 4.cxd5 Nxd5 5.e4 Nb6
+# when White keeps c4 back, the same pieces head for the same squares
+black grunfeld: 1.d4 Nf6 2.Nf3 g6 3.g3 Bg7 4.Bg2 d5
+black grunfeld: 1.d4 Nf6 2.Bf4 g6 3.e3 Bg7 4.Nf3 d6
+black grunfeld: 1.d4 Nf6 2.Bg5 e6 3.e4 h6
+
+# ---- Black: against the flank openings, toward the same structures ------
+black nimzo: 1.c4 Nf6 2.Nc3 e6 3.e4 d5
+black nimzo: 1.c4 Nf6 2.Nc3 e6 3.Nf3 Bb4
+black grunfeld: 1.c4 Nf6 2.g3 g6 3.Bg2 Bg7 4.Nc3 d5
+black nimzo: 1.Nf3 Nf6 2.c4 e6 3.Nc3 Bb4
+black grunfeld: 1.Nf3 Nf6 2.g3 g6 3.Bg2 Bg7 4.O-O O-O
