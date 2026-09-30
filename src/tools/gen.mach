@@ -622,6 +622,10 @@ fun main(argc: i64, argv: **u8) i64 {
     }
     if (cut > 0) { ENGINE_DIR[cut] = 0; }
     or           { ENGINE_DIR[0] = 0; }
+    # a relative path is relative to where gen was started, not to the
+    # engine's folder: start such an engine where we are
+    val absolute: bool = ENGINE[0] == '/' || ENGINE[0] == '\\' || (ENGINE[0] != 0 && ENGINE[1] == ':');
+    if (!absolute) { ENGINE_DIR[0] = 0; }
     print.printlnf("{} book positions, {} workers, {} nodes, teacher {}", NLINES, workers, NODES, ENGINE);
     atomic.store(?TOTAL, 0);
     i = 0;
