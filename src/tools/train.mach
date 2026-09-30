@@ -179,6 +179,7 @@ fun check(argc: i64, argv: **u8) i64 {
         step = step + 1;
     }
     val shut: err[io_error.Error] = fs.close(?f);
+    print.printlnf("time: forward {} ms, finish {} ms, backward {} ms, adam {} ms", tr.MS_FORWARD, tr.MS_FINISH, tr.MS_BACKWARD, tr.MS_ADAM);
     if (!save_flat(argv[4])) {
         print.eprintlnf("cannot write {}", argv[4]);
         ret EXIT_FAIL;

@@ -26,6 +26,7 @@ use std.sync.thread;
 use std.types.size.usize;
 use std.types.string.str;
 
+use machete.clock;
 use nn: machete.nnue;
 use machete.rng;
 
@@ -56,21 +57,33 @@ val BETA2: f32 = 0.999;
 val EPS:   f32 = 0.00000001;
 
 # the network
+#[align(16)]
 pub var W1: [4718592]f32; # FEATURES rows of HIDDEN (w1_at)
+#[align(16)]
 pub var B1: [768]f32;
+#[align(16)]
 pub var W2: [12288]f32; # BUCKETS rows of 2 * HIDDEN: side to move first, then the other side
 pub var B2: [8]f32;
 
 # gradients and Adam's first and second moments, laid out as the weights
+#[align(16)]
 var G1:  [4718592]f32;
+#[align(16)]
 var GB1: [768]f32;
+#[align(16)]
 var G2:  [12288]f32;
 var GB2: [8]f32;
+#[align(16)]
 var M1:  [4718592]f32;
+#[align(16)]
 var V1:  [4718592]f32;
+#[align(16)]
 var MB1: [768]f32;
+#[align(16)]
 var VB1: [768]f32;
+#[align(16)]
 var M2:  [12288]f32;
+#[align(16)]
 var V2:  [12288]f32;
 var MB2: [8]f32;
 var VB2: [8]f32;
@@ -85,7 +98,9 @@ var TARGET:   [16384]f32;
 var OUT:      [16384]f64;
 var PRED:     [16384]f32;
 var GRAD:     [16384]f32;
+#[align(16)]
 var PRE_US:   [12582912]f32; # BATCH_CAP * HIDDEN
+#[align(16)]
 var PRE_THEM: [12582912]f32;
 var PART:     [524288]f64; # MAX_THREADS * BATCH_CAP
 
@@ -227,10 +242,64 @@ pub fun load_position(rec: *u8, n: i64) {
     TARGET[n] = (LAMBDA * sigmoid_f64(score::f64 / SCALE) + (1.0 - LAMBDA) * result)::f32;
 }
 
-fun clamp01(x: f32) f32 {
-    if (x < 0.0) { ret 0.0; }
-    if (x > 1.0) { ret 1.0; }
-    ret x;
+# ---- the hot loops, four hidden units at a time (SSE on x86-64) ----
+#
+# Every loop over hidden units runs in f32x4 lanes. A thread's share of the
+# hidden layer is a multiple of four units (lo_of), and the arrays are 16-byte
+# aligned, so every lane group is one aligned load. The pre-activations are
+# summed feature by feature in registers rather than in memory: each group of
+# four units reads its (up to) 32 feature rows once and writes once.
+
+#[inline]
+fun ld(p: *f32, at: i64) f32x4 {
+    ret @((?p[at]):~*f32x4);
+}
+
+#[inline]
+fun st(p: *f32, at: i64, v: f32x4) {
+    @((?p[at]):~*f32x4) = v;
+}
+
+#[inline]
+fun splat(x: f32) f32x4 {
+    ret f32x4{x, x, x, x};
+}
+
+#[align(16)]
+var SQRT_LANES: [32][4]f32;
+
+# the square root of four lanes: sqrtps, correctly rounded as sqrtss is, so
+# each lane equals sqrt_f32's. Mach's inline assembly has no vector operands,
+# so the vector goes through a per-thread slot of memory; the instruction is
+# hand-encoded, as src/kernels.mach's are. Elsewhere, four scalar roots.
+#[inline]
+fun sqrt4(v: f32x4, slot: i64) f32x4 {
+    $if ($mach.build.arch == $mach.arch.x86_64) {
+        st(?SQRT_LANES[slot][0], 0, v);
+        val p: *f32 = ?SQRT_LANES[slot][0];
+        asm x86_64 {
+            mov rax, {p}
+            # movaps xmm0, [rax]; sqrtps xmm0, xmm0; movaps [rax], xmm0
+            .byte 0x0F, 0x28, 0x00 :: writes(xmm0)
+            .byte 0x0F, 0x51, 0xC0 :: writes(xmm0)
+            .byte 0x0F, 0x29, 0x00
+        }
+        ret ld(?SQRT_LANES[slot][0], 0);
+    }
+    $or {
+        ret f32x4{sqrt_f32(v[0]), sqrt_f32(v[1]), sqrt_f32(v[2]), sqrt_f32(v[3])};
+    }
+}
+
+# clamp to [0, 1] lane by lane
+#[inline]
+fun clamp01x(x: f32x4) f32x4 {
+    val zero: f32x4 = splat(0.0);
+    val one:  f32x4 = splat(1.0);
+    val low:  u32x4 = x < zero;
+    val high: u32x4 = x > one;
+    val a:    f32x4 = ((low & zero:~u32x4) | (~low & x:~u32x4)):~f32x4;
+    ret ((high & one:~u32x4) | (~high & a:~u32x4)):~f32x4;
 }
 
 # the forward pass for hidden units [h0, h1) of positions [0, n): their
@@ -238,36 +307,28 @@ fun clamp01(x: f32) f32 {
 pub fun forward(n: i64, h0: i64, h1: i64, t: i64) {
     var p: i64 = 0;
     for (p < n) {
-        val base: i64 = p * HIDDEN;
-        var h:    i64 = h0;
+        val base:  i64 = p * HIDDEN;
+        val fb:    i64 = p * SLOTS;
+        var count: i64 = 0;
+        for (count < SLOTS && US[fb + count] != NONE) { count = count + 1; }
+        val row: i64   = BUCKET[p] * 2 * HIDDEN;
+        var dot: f32x4 = splat(0.0);
+        var h:   i64   = h0;
         for (h < h1) {
-            PRE_US[base + h]   = B1[h];
-            PRE_THEM[base + h] = B1[h];
-            h                  = h + 1;
-        }
-        var k: i64 = 0;
-        for (k < SLOTS) {
-            val fu: i32 = US[p * SLOTS + k];
-            if (fu == NONE) { brk; }
-            val fthem: i32 = THEM[p * SLOTS + k];
-            val ru:    i64 = (fu::i64) * HIDDEN;
-            val rt:    i64 = (fthem::i64) * HIDDEN;
-            h = h0;
-            for (h < h1) {
-                PRE_US[base + h]   = PRE_US[base + h] + W1[ru + h];
-                PRE_THEM[base + h] = PRE_THEM[base + h] + W1[rt + h];
-                h                  = h + 1;
+            var su: f32x4 = ld(?B1[0], h);
+            var sm: f32x4 = su;
+            var k:  i64   = 0;
+            for (k < count) {
+                su = su + ld(?W1[0], (US[fb + k]::i64) * HIDDEN + h);
+                sm = sm + ld(?W1[0], (THEM[fb + k]::i64) * HIDDEN + h);
+                k  = k + 1;
             }
-            k = k + 1;
+            st(?PRE_US[0], base + h, su);
+            st(?PRE_THEM[0], base + h, sm);
+            dot = dot + ld(?W2[0], row + h) * clamp01x(su) + ld(?W2[0], row + HIDDEN + h) * clamp01x(sm);
+            h   = h + 4;
         }
-        val row: i64 = BUCKET[p] * 2 * HIDDEN;
-        var dot: f64 = 0.0;
-        h = h0;
-        for (h < h1) {
-            dot = dot + (W2[row + h] * clamp01(PRE_US[base + h]))::f64 + (W2[row + HIDDEN + h] * clamp01(PRE_THEM[base + h]))::f64;
-            h   = h + 1;
-        }
-        PART[t * BATCH_CAP + p] = dot;
+        PART[t * BATCH_CAP + p] = (dot[0]::f64 + dot[1]::f64) + (dot[2]::f64 + dot[3]::f64);
         p                       = p + 1;
     }
 }
@@ -301,48 +362,63 @@ pub fun finish(n: i64, threads: i64) f64 {
 # and through each clipped relu (whose gradient passes where 0 <= x <= 1, as
 # torch.clamp's does) the feature weights' and the bias's
 pub fun backward(n: i64, h0: i64, h1: i64) {
-    var p: i64 = 0;
+    val zero: f32x4 = splat(0.0);
+    val one:  f32x4 = splat(1.0);
+    var p:    i64   = 0;
     for (p < n) {
-        val g:    f32 = GRAD[p];
-        val base: i64 = p * HIDDEN;
-        val row:  i64 = BUCKET[p] * 2 * HIDDEN;
-        var h:    i64 = h0;
+        val g:     f32x4 = splat(GRAD[p]);
+        val base:  i64   = p * HIDDEN;
+        val row:   i64   = BUCKET[p] * 2 * HIDDEN;
+        val fb:    i64   = p * SLOTS;
+        var count: i64   = 0;
+        for (count < SLOTS && US[fb + count] != NONE) { count = count + 1; }
+        var h: i64 = h0;
         for (h < h1) {
-            val xu: f32 = PRE_US[base + h];
-            val xt: f32 = PRE_THEM[base + h];
-            G2[row + h]          = G2[row + h] + g * clamp01(xu);
-            G2[row + HIDDEN + h] = G2[row + HIDDEN + h] + g * clamp01(xt);
-            var du: f32 = 0.0;
-            var dt: f32 = 0.0;
-            if (xu >= 0.0 && xu <= 1.0) { du = g * W2[row + h]; }
-            if (xt >= 0.0 && xt <= 1.0) { dt = g * W2[row + HIDDEN + h]; }
-            # the pre-activations are reused to carry the gradient into the
-            # feature pass below; forward writes them afresh each batch
-            PRE_US[base + h]   = du;
-            PRE_THEM[base + h] = dt;
-            GB1[h]             = GB1[h] + du + dt;
-            h                  = h + 1;
-        }
-        var k: i64 = 0;
-        for (k < SLOTS) {
-            val fu: i32 = US[p * SLOTS + k];
-            if (fu == NONE) { brk; }
-            val ru: i64 = (fu::i64) * HIDDEN;
-            val rt: i64 = (THEM[p * SLOTS + k]::i64) * HIDDEN;
-            h = h0;
-            for (h < h1) {
-                G1[ru + h] = G1[ru + h] + PRE_US[base + h];
-                G1[rt + h] = G1[rt + h] + PRE_THEM[base + h];
-                h          = h + 1;
+            val xu: f32x4 = ld(?PRE_US[0], base + h);
+            val xt: f32x4 = ld(?PRE_THEM[0], base + h);
+            st(?G2[0], row + h, ld(?G2[0], row + h) + g * clamp01x(xu));
+            st(?G2[0], row + HIDDEN + h, ld(?G2[0], row + HIDDEN + h) + g * clamp01x(xt));
+            val pass_u: u32x4 = (xu >= zero) & (xu <= one);
+            val pass_t: u32x4 = (xt >= zero) & (xt <= one);
+            val du:     f32x4 = (pass_u & (g * ld(?W2[0], row + h)):~u32x4):~f32x4;
+            val dt:     f32x4 = (pass_t & (g * ld(?W2[0], row + HIDDEN + h)):~u32x4):~f32x4;
+            st(?GB1[0], h, ld(?GB1[0], h) + du + dt);
+            var k: i64 = 0;
+            for (k < count) {
+                val ru: i64 = (US[fb + k]::i64) * HIDDEN + h;
+                val rt: i64 = (THEM[fb + k]::i64) * HIDDEN + h;
+                st(?G1[0], ru, ld(?G1[0], ru) + du);
+                st(?G1[0], rt, ld(?G1[0], rt) + dt);
+                k = k + 1;
             }
-            k = k + 1;
+            h = h + 4;
         }
         p = p + 1;
     }
 }
 
-# torch.optim.Adam's step for one weight, then the clip, and the gradient
-# cleared for the next batch
+# torch.optim.Adam's step for four weights at once, then the clip, and the
+# gradients cleared for the next batch
+#[inline]
+fun adam4(w: *f32, g: *f32, m: *f32, v: *f32, at: i64, step_size: f32x4, bc2_sqrt: f32, slot: i64) {
+    val grad: f32x4 = ld(g, at);
+    val mm:   f32x4 = splat(BETA1) * ld(m, at) + splat(1.0 - BETA1) * grad;
+    val vv:   f32x4 = splat(BETA2) * ld(v, at) + splat(1.0 - BETA2) * grad * grad;
+    st(m, at, mm);
+    st(v, at, vv);
+    val denom: f32x4 = sqrt4(vv, slot) / splat(bc2_sqrt) + splat(EPS);
+    var x:     f32x4 = ld(w, at) - step_size * mm / denom;
+    val hi:    f32x4 = splat(CLIP);
+    val lo:    f32x4 = splat(0.0 - CLIP);
+    val over:  u32x4 = x > hi;
+    val under: u32x4 = x < lo;
+    x = ((over & hi:~u32x4) | (~over & x:~u32x4)):~f32x4;
+    x = ((under & lo:~u32x4) | (~under & x:~u32x4)):~f32x4;
+    st(w, at, x);
+    st(g, at, splat(0.0));
+}
+
+# the scalar step, for the output biases
 fun adam_one(w: *f32, g: *f32, m: *f32, v: *f32, step_size: f32, bc2_sqrt: f32) {
     val grad: f32 = @g;
     val mm:   f32 = BETA1 * @m + (1.0 - BETA1) * grad;
@@ -369,40 +445,48 @@ fun powf(base: f32, n: i64) f64 {
 
 # one Adam step (step counts from 1) at learning rate lr, for hidden units
 # [h0, h1); the thread with h0 == 0 also steps the output biases
-pub fun adam(step: i64, lr: f64, h0: i64, h1: i64) {
-    val bc1:       f64 = 1.0 - powf(BETA1, step);
-    val bc2:       f64 = 1.0 - powf(BETA2, step);
-    val step_size: f32 = (lr / bc1)::f32;
-    val bc2_sqrt:  f32 = sqrt_f32(bc2::f32);
-    var f:         i64 = 0;
+pub fun adam(step: i64, lr: f64, h0: i64, h1: i64, slot: i64) {
+    val bc1:       f64   = 1.0 - powf(BETA1, step);
+    val bc2:       f64   = 1.0 - powf(BETA2, step);
+    val size:      f32   = (lr / bc1)::f32;
+    val step_size: f32x4 = splat(size);
+    val bc2_sqrt:  f32   = sqrt_f32(bc2::f32);
+    var f:         i64   = 0;
     for (f < FEATURES) {
+        val r: i64 = f * HIDDEN;
         var h: i64 = h0;
         for (h < h1) {
-            val i: i64 = f * HIDDEN + h;
-            adam_one(?W1[i], ?G1[i], ?M1[i], ?V1[i], step_size, bc2_sqrt);
-            h = h + 1;
+            adam4(?W1[0], ?G1[0], ?M1[0], ?V1[0], r + h, step_size, bc2_sqrt, slot);
+            h = h + 4;
         }
         f = f + 1;
     }
     var h: i64 = h0;
     for (h < h1) {
-        adam_one(?B1[h], ?GB1[h], ?MB1[h], ?VB1[h], step_size, bc2_sqrt);
+        adam4(?B1[0], ?GB1[0], ?MB1[0], ?VB1[0], h, step_size, bc2_sqrt, slot);
         var b: i64 = 0;
         for (b < BUCKETS) {
             val i: i64 = b * 2 * HIDDEN + h;
-            adam_one(?W2[i], ?G2[i], ?M2[i], ?V2[i], step_size, bc2_sqrt);
-            adam_one(?W2[i + HIDDEN], ?G2[i + HIDDEN], ?M2[i + HIDDEN], ?V2[i + HIDDEN], step_size, bc2_sqrt);
+            adam4(?W2[0], ?G2[0], ?M2[0], ?V2[0], i, step_size, bc2_sqrt, slot);
+            adam4(?W2[0], ?G2[0], ?M2[0], ?V2[0], i + HIDDEN, step_size, bc2_sqrt, slot);
             b = b + 1;
         }
-        h = h + 1;
+        h = h + 4;
     }
     if (h0 == 0) {
         var b: i64 = 0;
         for (b < BUCKETS) {
-            adam_one(?B2[b], ?GB2[b], ?MB2[b], ?VB2[b], step_size, bc2_sqrt);
+            adam_one(?B2[b], ?GB2[b], ?MB2[b], ?VB2[b], size, bc2_sqrt);
             b = b + 1;
         }
     }
+}
+
+# a scalar clamp, for the gradient check below
+fun clamp01(x: f32) f32 {
+    if (x < 0.0) { ret 0.0; }
+    if (x > 1.0) { ret 1.0; }
+    ret x;
 }
 
 # the starting weights torch gives train.py's Net: feature weights uniform in
@@ -534,7 +618,8 @@ val PHASE_BACKWARD: i64 = 1;
 val PHASE_ADAM:     i64 = 2;
 
 fun lo_of(i: i64, threads: i64) i64 {
-    ret i * HIDDEN / threads;
+    # whole groups of four hidden units, so every lane load is aligned
+    ret i * (HIDDEN / 4) / threads * 4;
 }
 
 fun run_share(i: i64) {
@@ -542,7 +627,7 @@ fun run_share(i: i64) {
     val h1: i64 = lo_of(i + 1, JOB_THREADS);
     if (JOB_PHASE == PHASE_FORWARD)  { forward(JOB_N, h0, h1, i); }
     or (JOB_PHASE == PHASE_BACKWARD) { backward(JOB_N, h0, h1); }
-    or                               { adam(JOB_STEP, JOB_LR, h0, h1); }
+    or                               { adam(JOB_STEP, JOB_LR, h0, h1, i); }
 }
 
 fun worker_entry(arg: *u8) {
@@ -586,12 +671,27 @@ pub fun train_step(n: i64, threads: i64, step: i64, lr: f64) f64 {
     JOB_THREADS = t;
     JOB_STEP    = step;
     JOB_LR      = lr;
+    val t0: i64 = clock.now_ms();
     run_phase(PHASE_FORWARD);
+    val t1:    i64 = clock.now_ms();
     val total: f64 = finish(n, t);
+    val t2:    i64 = clock.now_ms();
     run_phase(PHASE_BACKWARD);
+    val t3: i64 = clock.now_ms();
     run_phase(PHASE_ADAM);
+    val t4: i64 = clock.now_ms();
+    MS_FORWARD  = MS_FORWARD + (t1 - t0);
+    MS_FINISH   = MS_FINISH + (t2 - t1);
+    MS_BACKWARD = MS_BACKWARD + (t3 - t2);
+    MS_ADAM     = MS_ADAM + (t4 - t3);
     ret total / (n::f64);
 }
+
+# milliseconds spent in each part of train_step, for profiling
+pub var MS_FORWARD:  i64 = 0;
+pub var MS_FINISH:   i64 = 0;
+pub var MS_BACKWARD: i64 = 0;
+pub var MS_ADAM:     i64 = 0;
 
 # the loss of the loaded batch without training on it
 pub fun evaluate(n: i64, threads: i64) f64 {

@@ -40,7 +40,22 @@ each epoch renamed at the end (the queue's `--requires` must never see a
 network still training). Gate: a small network trained both ways on the same
 data, compared by SPRT at equal settings - it must not lose.
 
-**Phase 3 - speed on the CPU.**
+**Phase 3 - speed on the CPU: under way.**
+Done (2026-09-30): the forward pass, backward pass and Adam run in f32x4 lanes
+(SSE on x86-64; the release profile's `scalarize` only affects operations with
+no packed instruction), with 16-byte aligned arrays, thread shares in whole
+lane groups, the pre-activations summed in registers, and a four-lane square
+root (`sqrtps`, hand-encoded as src/kernels.mach's instructions are, since
+Mach's inline assembly has no vector operands). Still exact against PyTorch.
+A step of 16,384 positions on 8 threads of the busy 2920X: forward 128 ms,
+backward 146 ms, Adam 76 ms - about 47k positions/s, 2.5x the first cut and
+about 11x short of the GPU. Adam is memory-bound: matching PyTorch means
+updating every weight every step, about 150 MB of traffic, whatever the thread
+count; a larger batch spreads it.
+
+Still open on the CPU: a persistent worker pool instead of three spawns per
+step. What was planned below:
+
 SIMD (f32x8 where the target has AVX2) for the feature sums and the gradient
 scatter; Adam only on rows a batch touched, with the skipped decay applied
 lazily when a row is next touched (exact for Adam's moment decay, and the
