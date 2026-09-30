@@ -248,7 +248,7 @@ pub var RATING_ADV: i64 = 0;
 # own side moves at even plies
 fun draw_value(ply: i64) i64 {
     if (CONTEMPT <= 0 || RATING_ADV < 0) { ret 0; }
-    if (ply % 2 == 0) { ret 0 - CONTEMPT; }
+    if (ply % 2 == 0)                    { ret 0 - CONTEMPT; }
     ret CONTEMPT;
 }
 
@@ -261,7 +261,7 @@ pub var REPERTOIRE: i64 = 40;
 # root_bonus: the bonus for root move m, called with m already made on p
 fun root_bonus(p: *Position, m: Move) i64 {
     var bonus: i64 = 0;
-    if (REPERTOIRE > 0) { bonus = rep.bonus(p.key, REPERTOIRE); }
+    if (REPERTOIRE > 0)                             { bonus = rep.bonus(p.key, REPERTOIRE); }
     if (VARIETY <= 0 || p.fullmove > VARIETY_MOVES) { ret bonus; }
     var h: u64 = VARIETY_SEED ^ (m::u64 * 0x9E3779B97F4A7C15);
     h = (h ^ (h >> 31)) * 0xBF58476D1CE4E5B9;
@@ -1488,10 +1488,10 @@ test contempt_scores_draws_against_the_engine_only_when_not_weaker {
     if (draw_value(3) != 30)     { ret 2; }
     # against a stronger opponent a draw is a draw
     RATING_ADV = 0 - 1;
-    if (draw_value(0) != 0)      { ret 3; }
+    if (draw_value(0) != 0) { ret 3; }
     CONTEMPT   = 0;
     RATING_ADV = 200;
-    if (draw_value(0) != 0)      { ret 4; }
+    if (draw_value(0) != 0) { ret 4; }
     CONTEMPT   = c;
     RATING_ADV = r;
     ret 0;

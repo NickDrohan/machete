@@ -78,9 +78,9 @@ def main():
         "# {}".format(", ".join("{} {} {}".format(k, side, name) for k, (side, name) in enumerate(systems))),
         "pub val SYSTEMS:     i64 = {};".format(len(systems)),
         "pub val SYSTEM_SIDE: str = \"{}\";".format("".join(side[0] for side, _ in systems)),
-        "pub val LINES:     str = \"{}\";".format(text),
-        "pub val POSITIONS: i64 = {};".format(len(owned["white"]) + len(owned["black"])),
-        "pub val LONGEST:   i64 = {};".format(longest),
+        "pub val LINES:       str = \"{}\";".format(text),
+        "pub val POSITIONS:   i64 = {};".format(len(owned["white"]) + len(owned["black"])),
+        "pub val LONGEST:     i64 = {};".format(longest),
         "",
     ]
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:

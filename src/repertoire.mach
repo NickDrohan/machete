@@ -32,7 +32,7 @@ var COUNT:      i64 = 0;
 var READY:      i64 = 0;
 var BOARD:      Position;
 # the systems this game aims for, one bit per side
-var CHOSEN:     u64 = 0;
+var CHOSEN: u64 = 0;
 
 fun remember(key: u64, system: u64) {
     var i: i64 = 0;
@@ -75,9 +75,9 @@ fun pick(side: u8, which: u64) i64 {
 # choose: draw this game's system for each side from seed
 pub fun choose(seed: u64) {
     var h: u64 = seed * 0x9E3779B97F4A7C15 + 0x632BE59BD9B4E019;
-    h = (h ^ (h >> 31)) * 0xBF58476D1CE4E5B9;
-    h = (h ^ (h >> 29)) * 0x94D049BB133111EB;
-    h = h ^ (h >> 32);
+    h      = (h ^ (h >> 31)) * 0xBF58476D1CE4E5B9;
+    h      = (h ^ (h >> 29)) * 0x94D049BB133111EB;
+    h      = h ^ (h >> 32);
     CHOSEN = 0;
     val w: i64 = pick('w', h & 0xFFFFFFFF);
     val b: i64 = pick('b', h >> 32);
@@ -91,9 +91,9 @@ pub fun init() bool {
     if (READY != 0) { ret true; }
     READY = 1;
     choose(0);
-    val text: str = lines.LINES;
+    val text: str  = lines.LINES;
     var ok:   bool = true;
-    var at:   i64 = 0;
+    var at:   i64  = 0;
     for (text[at] != 0) {
         # one line: its system's digit, then moves until ';' or the end
         val system: i64 = (text[at] - '0')::i64;
@@ -210,7 +210,7 @@ test repertoire_draws_every_system {
         if (c != 40 && c != 20) { ret 3; }
         if (e != 40 && e != 20) { ret 4; }
         if (c == 40 && e == 40) { ret 5; }
-        if (c == 40) { english = english + 1; }
+        if (c == 40)            { english = english + 1; }
         seed = seed + 1;
     }
     if (english < 70 || english > 130) { ret 6; }
