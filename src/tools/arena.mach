@@ -1,0 +1,1044 @@
+# machete.tools.arena: engine-versus-engine matches and sequential tests, in Mach
+#
+#   arena <engine_a> <engine_b> [--tc 10+0.1 | --depth N | --nodes N] [--book file]
+#         [--games N] [--concurrency N] [--sprt ELO0 ELO1] [--pgn file]
+#         [--option-a Name=Value]... [--option-b Name=Value]... [--name-a X] [--name-b Y]
+#         [--max-plies 300] [--margin 100]
+#
+# the Mach counterpart of harness/match.py, and held to it: each book position
+# (in order, one per pair) is played twice with colours swapped; on a clock
+# each move's wall time is charged to the side that made it, then the
+# increment, and a side more than --margin ms below zero loses on time unless
+# its opponent cannot mate; a game ends as python-chess's
+# is_game_over(claim_draw=True) ends it - mate, stalemate, bare material, the
+# fifty-move rule, a threefold repetition that can be claimed - or at the ply
+# cap; the sequential test is match.py's trinomial LLR, stopping at the same
+# bounds; and it prints the same summary lines, which harness/jobqueue.py
+# reads. Games are written to --pgn in standard notation.
+#
+# Legality is machete's own perft-verified move generator; the engines are
+# driven by src/uci_driver.mach. harness/arena_check.py plays the same match
+# through match.py at a fixed depth - where the games are deterministic - and
+# requires the same games, move for move.
+
+use std.print;
+use std.runtime;
+use std.sync.atomic;
+use std.sync.mutex;
+use std.sync.thread;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use A: std.allocator;
+use std.allocator.page;
+use fs:       std.filesystem;
+use io_error: std.io.error;
+use std.system.os;
+
+use machete.clock;
+use mv: machete.move;
+use machete.move.Move;
+use machete.movegen;
+use machete.movegen.MoveList;
+use pos: machete.position;
+use machete.position.Position;
+use uci: machete.uci_driver;
+
+val EXIT_USAGE:  i64 = 1;
+val EXIT_FAIL:   i64 = 2;
+val MAX_WORKERS: i64 = 32;
+val MAX_OPTIONS: i64 = 16;
+val HIST_CAP:    i64 = 1024;
+
+# ---- settings ----
+
+var PATH_A:    str  = nil;
+var PATH_B:    str  = nil;
+var DIR_A:     [1024]u8;
+var DIR_B:     [1024]u8;
+var NAME_A:    str  = "A";
+var NAME_B:    str  = "B";
+var OPT_A:     [16]str;
+var OPT_B:     [16]str;
+var N_OPT_A:   i64  = 0;
+var N_OPT_B:   i64  = 0;
+var BASE_MS:   i64  = 0;
+var INC_MS:    i64  = 0;
+var DEPTH:     i64  = 0;
+var NODES:     i64  = 0;
+var GAMES:     i64  = 20;
+var WORKERS:   i64  = 1;
+var MAX_PLIES: i64  = 300;
+var MARGIN:    i64  = 100;
+var SPRT:      bool = false;
+var ELO0:      f64  = 0.0;
+var ELO1:      f64  = 0.0;
+var LOWER:     f64  = 0.0;
+var UPPER:     f64  = 0.0;
+var PGN:       str  = nil;
+
+# ---- the book ----
+
+var HEAP:   A.Allocator;
+var BOOK:   *u8  = nil;
+var LINES:  *i64 = nil;
+var NLINES: i64  = 0;
+
+# ---- shared state ----
+
+var NEXT_PAIR:  i64  = 0;
+var TALLY_LOCK: mutex.Mutex;
+var WINS:       i64  = 0;
+var DRAWS:      i64  = 0;
+var LOSSES:     i64  = 0;
+var STOP:       i64  = 0;
+var VERDICT:    i64  = 0; # 0 none, 1 accepted H1, 2 accepted H0
+var FAILED:     i64  = 0;
+var PGN_LOCK:   mutex.Mutex;
+var PGN_FILE:   fs.File;
+var PGN_OPEN:   bool = false;
+
+# ---- a worker: two engines and a game ----
+
+rec Worker {
+    a:       uci.Engine;
+    b:       uci.Engine;
+    p:       Position;
+    start:   [128]u8;
+    cmd:     [8192]u8;
+    cmdlen:  i64;
+    headlen: i64;
+    keys:    [1024]u64;
+    nkeys:   i64;
+    moves:   [1024]Move;
+    nmoves:  i64;
+    pgn:     [32768]u8;
+    pgnlen:  i64;
+}
+
+var W:       [32]Worker;
+var THREADS: [32]thread.Thread;
+
+fun usage() i64 {
+    print.eprintln("usage: arena <engine_a> <engine_b> [--tc B+I | --depth N | --nodes N] [--book file] [--games N]");
+    print.eprintln("             [--concurrency N] [--sprt ELO0 ELO1] [--pgn file] [--option-a K=V]... [--option-b K=V]...");
+    print.eprintln("             [--name-a X] [--name-b Y] [--max-plies N] [--margin MS]");
+    ret EXIT_USAGE;
+}
+
+fun int_arg(text: str, fallback: i64) i64 {
+    val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(text, 10);
+    if (sel parsed.err) { ret fallback; }
+    ret parsed.ok;
+}
+
+fun float_arg(text: str) f64 {
+    var value: f64  = 0.0;
+    var scale: f64  = 0.0;
+    var i:     i64  = 0;
+    var neg:   bool = false;
+    if (text[0] == '-') {
+        neg = true;
+        i   = 1;
+    }
+    or (text[0] == '+') { i = 1; }
+    for (text[i] != 0) {
+        val c: u8 = text[i];
+        if (c == '.') { scale = 1.0; }
+        or (c >= '0' && c <= '9') {
+            if (scale > 0.0) {
+                scale = scale / 10.0;
+                value = value + ((c - '0')::f64) * scale;
+            }
+            or { value = value * 10.0 + (c - '0')::f64; }
+        }
+        i = i + 1;
+    }
+    if (neg) { ret 0.0 - value; }
+    ret value;
+}
+
+# "10+0.1" -> base and increment in ms, as match.py's parse_tc
+fun parse_tc(text: str) {
+    var plus: i64 = 0 - 1;
+    var i:    i64 = 0;
+    var head: [64]u8;
+    for (text[i] != 0 && i < 63) {
+        if (text[i] == '+' && plus < 0) { plus = i; }
+        head[i] = text[i];
+        i       = i + 1;
+    }
+    head[i] = 0;
+    if (plus >= 0) {
+        head[plus] = 0;
+        INC_MS     = (float_arg(?head[plus + 1]) * 1000.0 + 0.5)::i64;
+    }
+    BASE_MS = (float_arg(?head[0]) * 1000.0 + 0.5)::i64;
+}
+
+fun read_exact(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val got: res[usize, io_error.Error] = fs.read(f, ?buf[at], (len - at)::usize);
+        if (sel got.err)      { ret false; }
+        if (got.ok::i64 == 0) { ret false; }
+        at = at + got.ok::i64;
+    }
+    ret true;
+}
+
+fun write_all(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val put: res[usize, io_error.Error] = fs.write(f, ?buf[at], (len - at)::usize);
+        if (sel put.err)      { ret false; }
+        if (put.ok::i64 == 0) { ret false; }
+        at = at + put.ok::i64;
+    }
+    ret true;
+}
+
+# the book: every non-empty line not starting with '#'; an EPD line's fields
+# past the fourth are cut at the first ';' (match.py reads EPD through
+# chess.Board.from_epd, which keeps the four position fields)
+fun load_book(path: str) bool {
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f:   fs.File                  = opened.ok;
+    val end: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_END);
+    if (sel end.err) { ret false; }
+    val size: i64                      = end.ok;
+    val back: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_SET);
+    val made: err[A.Error]             = page.make(?HEAP);
+    if (sel made.err) { ret false; }
+    val buf: res[*u8, A.Error] = A.allocate[u8](?HEAP, (size + 1)::usize);
+    if (sel buf.err) { ret false; }
+    BOOK = buf.ok;
+    val ok:   bool                = read_exact(f, BOOK, size);
+    val shut: err[io_error.Error] = fs.close(?f);
+    if (!ok) { ret false; }
+    BOOK[size] = 0;
+    var lines: i64 = 1;
+    var i:     i64 = 0;
+    for (i < size) {
+        if (BOOK[i] == '\n') { lines = lines + 1; }
+        i = i + 1;
+    }
+    val starts: res[*i64, A.Error] = A.allocate[i64](?HEAP, lines::usize);
+    if (sel starts.err) { ret false; }
+    LINES  = starts.ok;
+    NLINES = 0;
+    var at: i64 = 0;
+    for (at < size) {
+        var e: i64 = at;
+        for (e < size && BOOK[e] != '\n') { e = e + 1; }
+        var stop: i64 = e;
+        if (stop > at && BOOK[stop - 1] == '\r') { stop = stop - 1; }
+        # an EPD operation list begins after the fourth field
+        var k:      i64 = at;
+        var spaces: i64 = 0;
+        for (k < stop) {
+            if (BOOK[k] == ';') {
+                stop = k;
+                brk;
+            }
+            k = k + 1;
+        }
+        for (stop > at && BOOK[stop - 1] == ' ') { stop = stop - 1; }
+        BOOK[stop] = 0;
+        if (e < size) { BOOK[e] = 0; }
+        if (stop > at && BOOK[at] != '#') {
+            LINES[NLINES] = at;
+            NLINES        = NLINES + 1;
+        }
+        at = e + 1;
+    }
+    ret NLINES > 0;
+}
+
+# ---- python-chess's rules for the end of a game ----
+
+fun popcount(b: u64) i64 {
+    var x: u64 = b;
+    var n: i64 = 0;
+    for (x != 0) {
+        x = x & (x - 1);
+        n = n + 1;
+    }
+    ret n;
+}
+
+val DARK: u64 = 0xAA55AA55AA55AA55;
+
+fun side_insufficient(p: *Position, c: u8) bool {
+    val o:       u8  = 1 - c;
+    val mine:    u64 = p.occ[c];
+    val pawns:   u64 = p.pieces[pos.code(0, pos.PAWN)] | p.pieces[pos.code(1, pos.PAWN)];
+    val knights: u64 = p.pieces[pos.code(0, pos.KNIGHT)] | p.pieces[pos.code(1, pos.KNIGHT)];
+    val bishops: u64 = p.pieces[pos.code(0, pos.BISHOP)] | p.pieces[pos.code(1, pos.BISHOP)];
+    val rooks:   u64 = p.pieces[pos.code(0, pos.ROOK)] | p.pieces[pos.code(1, pos.ROOK)];
+    val queens:  u64 = p.pieces[pos.code(0, pos.QUEEN)] | p.pieces[pos.code(1, pos.QUEEN)];
+    val kings:   u64 = p.pieces[pos.code(0, pos.KING)] | p.pieces[pos.code(1, pos.KING)];
+    if ((mine & (pawns | rooks | queens)) != 0) { ret false; }
+    if ((mine & knights) != 0) {
+        ret popcount(mine) <= 2 && (p.occ[o] & ~kings & ~queens) == 0;
+    }
+    if ((mine & bishops) != 0) {
+        val same: bool = (bishops & DARK) == 0 || (bishops & ~DARK) == 0;
+        ret same && pawns == 0 && knights == 0;
+    }
+    ret true;
+}
+
+fun insufficient(p: *Position) bool {
+    ret side_insufficient(p, 0) && side_insufficient(p, 1);
+}
+
+fun count_key(w: *Worker, key: u64) i64 {
+    var n: i64 = 0;
+    var i: i64 = 0;
+    for (i < w.nkeys) {
+        if (w.keys[i] == key) { n = n + 1; }
+        i = i + 1;
+    }
+    ret n;
+}
+
+# 1 white won, -1 black won, 0 drawn, 2 not over
+fun game_over(w: *Worker) i64 {
+    var list: MoveList;
+    movegen.generate_legal(?w.p, ?list);
+    if (list.count == 0) {
+        if (pos.in_check(?w.p)) {
+            if (w.p.side == pos.WHITE) { ret 0 - 1; }
+            ret 1;
+        }
+        ret 0;
+    }
+    if (insufficient(?w.p))  { ret 0; }
+    if (w.p.halfmove >= 100) { ret 0; }
+    # threefold: the position has occurred three times, or a legal move
+    # reaches one that has occurred twice before (can_claim_threefold_repetition)
+    if (count_key(w, w.p.key) >= 3) { ret 0; }
+    var i: i64 = 0;
+    for (i < list.count) {
+        pos.make(?w.p, list.moves[i]);
+        val k: u64 = w.p.key;
+        pos.unmake(?w.p);
+        if (count_key(w, k) >= 2) { ret 0; }
+        i = i + 1;
+    }
+    ret 2;
+}
+
+# ---- standard algebraic notation ----
+
+fun piece_letter(kind: u8) u8 {
+    if (kind == pos.KNIGHT) { ret 'N'; }
+    if (kind == pos.BISHOP) { ret 'B'; }
+    if (kind == pos.ROOK)   { ret 'R'; }
+    if (kind == pos.QUEEN)  { ret 'Q'; }
+    if (kind == pos.KING)   { ret 'K'; }
+    ret 'P';
+}
+
+fun put(out: *u8, n: *i64, c: u8) {
+    out[@n] = c;
+    @n      = @n + 1;
+}
+
+fun put_square(out: *u8, n: *i64, sq: i64) {
+    put(out, n, ('a'::i64 + (sq & 7))::u8);
+    put(out, n, ('1'::i64 + (sq >> 3))::u8);
+}
+
+# m in SAN, into out; returns its length
+fun san(p: *Position, m: Move, out: *u8) i64 {
+    var n:    i64 = 0;
+    val from: i64 = mv.from(m);
+    val to:   i64 = mv.to(m);
+    val flag: u32 = mv.flag(m);
+    val kind: u8  = pos.kind_of(p.board[from]);
+    if (flag == mv.KING_CASTLE) {
+        put(out, ?n, 'O');
+        put(out, ?n, '-');
+        put(out, ?n, 'O');
+    }
+    or (flag == mv.QUEEN_CASTLE) {
+        put(out, ?n, 'O');
+        put(out, ?n, '-');
+        put(out, ?n, 'O');
+        put(out, ?n, '-');
+        put(out, ?n, 'O');
+    }
+    or (kind == pos.PAWN) {
+        if (mv.is_capture(m) != 0) {
+            put(out, ?n, ('a'::i64 + (from & 7))::u8);
+            put(out, ?n, 'x');
+        }
+        put_square(out, ?n, to);
+        if (mv.is_promotion(m) != 0) {
+            put(out, ?n, '=');
+            put(out, ?n, piece_letter(mv.promotion_type(m)));
+        }
+    }
+    or {
+        put(out, ?n, piece_letter(kind));
+        # disambiguation among the same kind of piece reaching the same square
+        var list: MoveList;
+        movegen.generate_legal(p, ?list);
+        var others:    i64  = 0;
+        var same_file: bool = false;
+        var same_rank: bool = false;
+        var i:         i64  = 0;
+        for (i < list.count) {
+            val o: Move = list.moves[i];
+            if (o != m && mv.to(o) == to && mv.from(o) != from && p.board[mv.from(o)] == p.board[from]) {
+                others = others + 1;
+                if ((mv.from(o) & 7) == (from & 7))   { same_file = true; }
+                if ((mv.from(o) >> 3) == (from >> 3)) { same_rank = true; }
+            }
+            i = i + 1;
+        }
+        if (others > 0) {
+            if (!same_file) { put(out, ?n, ('a'::i64 + (from & 7))::u8); }
+            or (!same_rank) { put(out, ?n, ('1'::i64 + (from >> 3))::u8); }
+            or {
+                put(out, ?n, ('a'::i64 + (from & 7))::u8);
+                put(out, ?n, ('1'::i64 + (from >> 3))::u8);
+            }
+        }
+        if (mv.is_capture(m) != 0) { put(out, ?n, 'x'); }
+        put_square(out, ?n, to);
+    }
+    pos.make(p, m);
+    if (pos.in_check(p)) {
+        var replies: MoveList;
+        movegen.generate_legal(p, ?replies);
+        if (replies.count == 0) { put(out, ?n, '#'); }
+        or                      { put(out, ?n, '+'); }
+    }
+    pos.unmake(p);
+    out[n] = 0;
+    ret n;
+}
+
+# ---- engines ----
+
+fun set_options(e: *uci.Engine, opts: *str, count: i64) bool {
+    var i: i64 = 0;
+    for (i < count) {
+        val o:    str = opts[i];
+        var cmd:  [1400]u8;
+        val head: str = "setoption name ";
+        var n:    i64 = 0;
+        for (head[n] != 0) {
+            cmd[n] = head[n];
+            n      = n + 1;
+        }
+        var k: i64 = 0;
+        for (o[k] != 0 && o[k] != '=' && n < 1300) {
+            cmd[n] = o[k];
+            n      = n + 1;
+            k      = k + 1;
+        }
+        if (o[k] == '=') {
+            val word: str = " value ";
+            var j:    i64 = 0;
+            for (word[j] != 0) {
+                cmd[n] = word[j];
+                n      = n + 1;
+                j      = j + 1;
+            }
+            k = k + 1;
+            for (o[k] != 0 && n < 1390) {
+                cmd[n] = o[k];
+                n      = n + 1;
+                k      = k + 1;
+            }
+        }
+        cmd[n] = 0;
+        if (!uci.send(e, ?cmd[0])) { ret false; }
+        i = i + 1;
+    }
+    ret uci.ready(e);
+}
+
+fun dir_of(path: str, dir: *u8) {
+    var cut: i64 = 0 - 1;
+    var i:   i64 = 0;
+    for (path[i] != 0 && i < 1023) {
+        dir[i] = path[i];
+        if (path[i] == '/' || path[i] == '\\') { cut = i; }
+        i = i + 1;
+    }
+    if (cut > 0) { dir[cut] = 0; }
+    or           { dir[0] = 0; }
+    val absolute: bool = path[0] == '/' || path[0] == '\\' || (path[0] != 0 && path[1] == ':');
+    if (!absolute) { dir[0] = 0; }
+}
+
+fun open_engine(e: *uci.Engine, path: str, dir: *u8, opts: *str, count: i64) bool {
+    var cwd: str = nil;
+    if (dir[0] != 0)              { cwd = dir; }
+    if (!uci.start(e, path, cwd)) { ret false; }
+    if (!uci.init(e, 0, 0))       { ret false; }
+    ret set_options(e, opts, count);
+}
+
+# ---- one game ----
+
+fun append(w: *Worker, text: str) {
+    var i: i64 = 0;
+    for (text[i] != 0 && w.cmdlen < 8190) {
+        w.cmd[w.cmdlen] = text[i];
+        w.cmdlen        = w.cmdlen + 1;
+        i               = i + 1;
+    }
+    w.cmd[w.cmdlen] = 0;
+}
+
+fun pgn_text(w: *Worker, text: str) {
+    var i: i64 = 0;
+    for (text[i] != 0 && w.pgnlen < 32700) {
+        w.pgn[w.pgnlen] = text[i];
+        w.pgnlen        = w.pgnlen + 1;
+        i               = i + 1;
+    }
+}
+
+fun pgn_int(w: *Worker, v: i64) {
+    var digits: [24]u8;
+    val n:      i64 = uci.put_int(?digits[0], v);
+    digits[n] = 0;
+    pgn_text(w, ?digits[0]);
+}
+
+# play one game from the worker's start position; returns the result from
+# white (1, 0, -1) and whether it was forfeit
+fun play(w: *Worker, white: *uci.Engine, black: *uci.Engine, how: *i64) i64 {
+    if (!pos.set_fen(?w.p, ?w.start[0])) { ret 0; }
+    val a_ok: bool = uci.send(white, "ucinewgame") && uci.ready(white);
+    val b_ok: bool = uci.send(black, "ucinewgame") && uci.ready(black);
+    w.cmdlen = 0;
+    append(w, "position fen ");
+    append(w, ?w.start[0]);
+    w.headlen = w.cmdlen;
+    w.nkeys   = 0;
+    w.nmoves  = 0;
+    w.keys[0] = w.p.key;
+    w.nkeys   = 1;
+    var remaining_w: i64 = BASE_MS;
+    var remaining_b: i64 = BASE_MS;
+    @how = 0;
+    for {
+        val over: i64 = game_over(w);
+        if (over != 2) { ret over; }
+        val ply: i64 = 2 * (w.p.fullmove - 1) + (w.p.side::i64);
+        if (MAX_PLIES > 0 && ply >= MAX_PLIES) {
+            @how = 3;
+            ret 0;
+        }
+        val side: u8          = w.p.side;
+        var e:    *uci.Engine = white;
+        if (side == pos.BLACK) { e = black; }
+        var limit: [96]u8;
+        if (DEPTH > 0) { uci.fill(?limit[0], "depth ", DEPTH); }
+        or (NODES > 0) { uci.fill(?limit[0], "nodes ", NODES); }
+        or {
+            var n: i64 = 0;
+            val a: str = "wtime ";
+            for (a[n] != 0) {
+                limit[n] = a[n];
+                n        = n + 1;
+            }
+            var t: i64 = remaining_w;
+            if (t < 1) { t = 1; }
+            n = n + uci.put_int(?limit[n], t);
+            val b: str = " btime ";
+            var j: i64 = 0;
+            for (b[j] != 0) {
+                limit[n] = b[j];
+                n        = n + 1;
+                j        = j + 1;
+            }
+            t = remaining_b;
+            if (t < 1) { t = 1; }
+            n = n + uci.put_int(?limit[n], t);
+            val c: str = " winc ";
+            j = 0;
+            for (c[j] != 0) {
+                limit[n] = c[j];
+                n        = n + 1;
+                j        = j + 1;
+            }
+            n = n + uci.put_int(?limit[n], INC_MS);
+            val d: str = " binc ";
+            j = 0;
+            for (d[j] != 0) {
+                limit[n] = d[j];
+                n        = n + 1;
+                j        = j + 1;
+            }
+            n        = n + uci.put_int(?limit[n], INC_MS);
+            limit[n] = 0;
+        }
+        val started: i64 = clock.now_ms();
+        if (!uci.send(e, ?w.cmd[0])) { ret 2; }
+        var report: uci.Report;
+        if (!uci.go(e, ?limit[0], ?report)) { ret 2; }
+        val spent: i64 = clock.now_ms() - started;
+        if (DEPTH == 0 && NODES == 0) {
+            if (side == pos.WHITE) {
+                remaining_w = remaining_w - spent;
+                if (remaining_w < 0 - MARGIN) {
+                    @how = 1;
+                    if (side_insufficient(?w.p, pos.BLACK)) { ret 0; }
+                    ret 0 - 1;
+                }
+                if (remaining_w < 0) { remaining_w = 0; }
+                remaining_w = remaining_w + INC_MS;
+            }
+            or {
+                remaining_b = remaining_b - spent;
+                if (remaining_b < 0 - MARGIN) {
+                    @how = 1;
+                    if (side_insufficient(?w.p, pos.WHITE)) { ret 0; }
+                    ret 1;
+                }
+                if (remaining_b < 0) { remaining_b = 0; }
+                remaining_b = remaining_b + INC_MS;
+            }
+        }
+        val m: Move = movegen.parse_uci(?w.p, ?report.best[0]);
+        if (m == mv.NONE) {
+            print.eprintlnf("illegal move {} in a game from {}", ?report.best[0], ?w.start[0]);
+            @how = 2;
+            ret 2;
+        }
+        if (w.nmoves < HIST_CAP) {
+            w.moves[w.nmoves] = m;
+            w.nmoves          = w.nmoves + 1;
+        }
+        if (w.headlen == w.cmdlen) { append(w, " moves"); }
+        append(w, " ");
+        append(w, ?report.best[0]);
+        pos.make(?w.p, m);
+        if (w.nkeys < HIST_CAP) {
+            w.keys[w.nkeys] = w.p.key;
+            w.nkeys         = w.nkeys + 1;
+        }
+    }
+}
+
+# the game as PGN, appended to the file under a lock
+fun write_pgn(w: *Worker, white_name: str, black_name: str, result: i64, how: i64) {
+    if (!PGN_OPEN) { ret; }
+    w.pgnlen = 0;
+    var res_text: str = "1/2-1/2";
+    if (result == 1)     { res_text = "1-0"; }
+    if (result == 0 - 1) { res_text = "0-1"; }
+    pgn_text(w, "[Event \"arena\"]\n[White \"");
+    pgn_text(w, white_name);
+    pgn_text(w, "\"]\n[Black \"");
+    pgn_text(w, black_name);
+    pgn_text(w, "\"]\n[Result \"");
+    pgn_text(w, res_text);
+    pgn_text(w, "\"]\n[FEN \"");
+    pgn_text(w, ?w.start[0]);
+    pgn_text(w, "\"]\n[SetUp \"1\"]\n");
+    if (how == 1) { pgn_text(w, "[Termination \"time forfeit\"]\n"); }
+    if (how == 3) { pgn_text(w, "[Termination \"ply cap\"]\n"); }
+    pgn_text(w, "\n");
+    val ok: bool = pos.set_fen(?w.p, ?w.start[0]);
+    var i:  i64  = 0;
+    for (i < w.nmoves) {
+        if (w.p.side == pos.WHITE) {
+            pgn_int(w, w.p.fullmove);
+            pgn_text(w, ". ");
+        }
+        or (i == 0) {
+            pgn_int(w, w.p.fullmove);
+            pgn_text(w, "... ");
+        }
+        var s:   [16]u8;
+        val len: i64 = san(?w.p, w.moves[i], ?s[0]);
+        pgn_text(w, ?s[0]);
+        pgn_text(w, " ");
+        pos.make(?w.p, w.moves[i]);
+        i = i + 1;
+    }
+    pgn_text(w, res_text);
+    pgn_text(w, "\n\n");
+    mutex.lock(?PGN_LOCK);
+    val put: bool = write_all(PGN_FILE, ?w.pgn[0], w.pgnlen);
+    mutex.unlock(?PGN_LOCK);
+}
+
+# ---- the sequential test (match.py's) ----
+
+fun elo_to_score(elo: f64) f64 {
+    ret 1.0 / (1.0 + pow10(0.0 - elo / 400.0));
+}
+
+fun ln(x: f64) f64 {
+    # ln by reduction to [1, 2) and atanh's series: accurate to 1e-12 here
+    var m: f64 = x;
+    var e: i64 = 0;
+    for (m >= 2.0) {
+        m = m / 2.0;
+        e = e + 1;
+    }
+    for (m < 1.0) {
+        m = m * 2.0;
+        e = e - 1;
+    }
+    val y:    f64 = (m - 1.0) / (m + 1.0);
+    val y2:   f64 = y * y;
+    var term: f64 = y;
+    var sum:  f64 = 0.0;
+    var k:    i64 = 1;
+    for (k < 60) {
+        sum  = sum + term / (k::f64);
+        term = term * y2;
+        k    = k + 2;
+    }
+    ret 2.0 * sum + (e::f64) * 0.6931471805599453;
+}
+
+fun exp(x: f64) f64 {
+    val ln2: f64 = 0.6931471805599453;
+    var k:   i64 = (x / ln2)::i64;
+    if (x < 0.0 && (k::f64) * ln2 > x) { k = k - 1; }
+    val r:    f64 = x - (k::f64) * ln2;
+    var term: f64 = 1.0;
+    var sum:  f64 = 1.0;
+    var n:    i64 = 1;
+    for (n <= 20) {
+        term = term * r / (n::f64);
+        sum  = sum + term;
+        n    = n + 1;
+    }
+    var p: f64 = 1.0;
+    if (k >= 0) {
+        var i: i64 = 0;
+        for (i < k) {
+            p = p * 2.0;
+            i = i + 1;
+        }
+    }
+    or {
+        var i: i64 = 0;
+        for (i < 0 - k) {
+            p = p / 2.0;
+            i = i + 1;
+        }
+    }
+    ret sum * p;
+}
+
+fun pow10(x: f64) f64 {
+    ret exp(x * 2.302585092994046);
+}
+
+fun log10(x: f64) f64 {
+    ret ln(x) / 2.302585092994046;
+}
+
+fun llr(wins: i64, draws: i64, losses: i64) f64 {
+    val games: i64 = wins + draws + losses;
+    if (games == 0 || wins == 0 || losses == 0) { ret 0.0; }
+    val g:        f64 = games::f64;
+    val p_w:      f64 = wins::f64 / g;
+    val p_d:      f64 = draws::f64 / g;
+    val p_l:      f64 = losses::f64 / g;
+    val score:    f64 = p_w + p_d / 2.0;
+    val variance: f64 = p_w * (1.0 - score) * (1.0 - score) + p_d * (0.5 - score) * (0.5 - score) + p_l * score * score;
+    if (variance <= 0.0) { ret 0.0; }
+    val s0: f64 = elo_to_score(ELO0);
+    val s1: f64 = elo_to_score(ELO1);
+    ret g * (s1 - s0) * (2.0 * score - s0 - s1) / (2.0 * variance);
+}
+
+# hundredths with a sign, as match.py's {:+.2f}
+fun print_signed2(prefix: str, x: f64, suffix: str) {
+    var v: i64 = 0;
+    if (x >= 0.0) { v = (x * 100.0 + 0.5)::i64; }
+    or            { v = 0 - ((0.0 - x) * 100.0 + 0.5)::i64; }
+    var sign: str = "+";
+    var a:    i64 = v;
+    if (v < 0) {
+        sign = "-";
+        a    = 0 - v;
+    }
+    print.printf("{}{}{}.{:02}{}", prefix, sign, a / 100, a % 100, suffix);
+}
+
+# add one game; false when the match should stop
+fun record(result_for_a: i64) bool {
+    mutex.lock(?TALLY_LOCK);
+    if (result_for_a > 0) { WINS = WINS + 1; }
+    or (result_for_a < 0) { LOSSES = LOSSES + 1; }
+    or                    { DRAWS = DRAWS + 1; }
+    val played: i64 = WINS + DRAWS + LOSSES;
+    if (SPRT) {
+        var l: f64 = llr(WINS, DRAWS, LOSSES);
+        if (played < 40) { l = 0.0; }
+        if (played % 20 == 0) {
+            print.printf("  {} games, ", played);
+            print_signed2("LLR ", l, "");
+            print_signed2(" (bounds ", LOWER, "");
+            print_signed2(" .. ", UPPER, ")\n");
+        }
+        if (VERDICT == 0) {
+            if (l >= UPPER) { VERDICT = 1; }
+            or (l <= LOWER) { VERDICT = 2; }
+        }
+    }
+    val keep: bool = VERDICT == 0 && played < GAMES;
+    if (!keep) { STOP = 1; }
+    mutex.unlock(?TALLY_LOCK);
+    ret keep;
+}
+
+# ---- workers ----
+
+fun worker_entry(arg: *u8) {
+    val w: *Worker = ?W[arg::usize::i64];
+    if (!open_engine(?w.a, PATH_A, ?DIR_A[0], ?OPT_A[0], N_OPT_A) || !open_engine(?w.b, PATH_B, ?DIR_B[0], ?OPT_B[0], N_OPT_B)) {
+        print.eprintln("could not start the engines");
+        FAILED = 1;
+        STOP   = 1;
+        ret;
+    }
+    for (atomic.load(?STOP) == 0) {
+        val pair: i64 = atomic.fetch_add(?NEXT_PAIR, 1);
+        if (pair * 2 >= GAMES) { brk; }
+        # the start: book line pair % lines, or the standard position
+        if (NLINES > 0) {
+            val line: *u8 = ?BOOK[LINES[pair % NLINES]];
+            var i:    i64 = 0;
+            for (line[i] != 0 && i < 126) {
+                w.start[i] = line[i];
+                i          = i + 1;
+            }
+            w.start[i] = 0;
+        }
+        or {
+            val sp: str = pos.START_FEN;
+            var i:  i64 = 0;
+            for (sp[i] != 0) {
+                w.start[i] = sp[i];
+                i          = i + 1;
+            }
+            w.start[i] = 0;
+        }
+        var a_white: i64 = 0;
+        for (a_white < 2) {
+            var how:    i64 = 0;
+            var result: i64 = 0;
+            if (a_white == 0) {
+                result = play(w, ?w.a, ?w.b, ?how);
+            }
+            or {
+                result = play(w, ?w.b, ?w.a, ?how);
+            }
+            if (result == 2) {
+                FAILED = 1;
+                STOP   = 1;
+                brk;
+            }
+            if (a_white == 0) { write_pgn(w, NAME_A, NAME_B, result, how); }
+            or                { write_pgn(w, NAME_B, NAME_A, result, how); }
+            var for_a: i64 = result;
+            if (a_white == 1)   { for_a = 0 - result; }
+            if (!record(for_a)) { brk; }
+            a_white = a_white + 1;
+        }
+    }
+    uci.stop(?w.a);
+    uci.stop(?w.b);
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    pos.init();
+    if (argc < 3) { ret usage(); }
+    PATH_A = argv[1];
+    PATH_B = argv[2];
+    var book: str = nil;
+    var i:    i64 = 3;
+    for (i < argc) {
+        val a:    str  = argv[i];
+        var more: bool = i + 1 < argc;
+        if (str_equals(a, "--tc") && more) {
+            parse_tc(argv[i + 1]);
+            i = i + 1;
+        }
+        or (str_equals(a, "--depth") && more) {
+            DEPTH = int_arg(argv[i + 1], 0);
+            i     = i + 1;
+        }
+        or (str_equals(a, "--nodes") && more) {
+            NODES = int_arg(argv[i + 1], 0);
+            i     = i + 1;
+        }
+        or (str_equals(a, "--book") && more) {
+            book = argv[i + 1];
+            i    = i + 1;
+        }
+        or (str_equals(a, "--games") && more) {
+            GAMES = int_arg(argv[i + 1], 20);
+            i     = i + 1;
+        }
+        or (str_equals(a, "--concurrency") && more) {
+            WORKERS = int_arg(argv[i + 1], 1);
+            i       = i + 1;
+        }
+        or (str_equals(a, "--pgn") && more) {
+            PGN = argv[i + 1];
+            i   = i + 1;
+        }
+        or (str_equals(a, "--name-a") && more) {
+            NAME_A = argv[i + 1];
+            i      = i + 1;
+        }
+        or (str_equals(a, "--name-b") && more) {
+            NAME_B = argv[i + 1];
+            i      = i + 1;
+        }
+        or (str_equals(a, "--max-plies") && more) {
+            MAX_PLIES = int_arg(argv[i + 1], 300);
+            i         = i + 1;
+        }
+        or (str_equals(a, "--margin") && more) {
+            MARGIN = int_arg(argv[i + 1], 100);
+            i      = i + 1;
+        }
+        or (str_equals(a, "--option-a") && more && N_OPT_A < MAX_OPTIONS) {
+            OPT_A[N_OPT_A] = argv[i + 1];
+            N_OPT_A        = N_OPT_A + 1;
+            i              = i + 1;
+        }
+        or (str_equals(a, "--option-b") && more && N_OPT_B < MAX_OPTIONS) {
+            OPT_B[N_OPT_B] = argv[i + 1];
+            N_OPT_B        = N_OPT_B + 1;
+            i              = i + 1;
+        }
+        or (str_equals(a, "--sprt") && i + 2 < argc) {
+            SPRT = true;
+            ELO0 = float_arg(argv[i + 1]);
+            ELO1 = float_arg(argv[i + 2]);
+            i    = i + 2;
+        }
+        or {
+            print.eprintlnf("unknown argument {}", a);
+            ret usage();
+        }
+        i = i + 1;
+    }
+    if (DEPTH == 0 && NODES == 0 && BASE_MS == 0) {
+        print.eprintln("give --tc, --depth or --nodes");
+        ret usage();
+    }
+    if (SPRT) {
+        UPPER = ln(0.95 / 0.05);
+        LOWER = ln(0.05 / 0.95);
+    }
+    if (book != nil && !load_book(book)) {
+        print.eprintlnf("cannot read the book {}", book);
+        ret EXIT_FAIL;
+    }
+    dir_of(PATH_A, ?DIR_A[0]);
+    dir_of(PATH_B, ?DIR_B[0]);
+    if (PGN != nil) {
+        val created: res[fs.File, io_error.Error] = fs.create(PGN, 420);
+        if (sel created.err) {
+            print.eprintlnf("cannot create {}", PGN);
+            ret EXIT_FAIL;
+        }
+        PGN_FILE = created.ok;
+        PGN_OPEN = true;
+    }
+    TALLY_LOCK = mutex.make();
+    PGN_LOCK   = mutex.make();
+    var workers: i64 = WORKERS;
+    if (workers > (GAMES + 1) / 2) { workers = (GAMES + 1) / 2; }
+    if (workers < 1)               { workers = 1; }
+    if (workers > MAX_WORKERS)     { workers = MAX_WORKERS; }
+    i = 0;
+    for (i < workers) {
+        var config: thread.Config;
+        thread.config_default(?config);
+        config.name = "machete-arena";
+        val op: thread.Operation = thread.spawn_with_config(worker_entry, i::usize::*u8, ?config, ?THREADS[i]);
+        if (sel op.err) {
+            print.eprintln("cannot start a worker");
+            ret EXIT_FAIL;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    for (i < workers) {
+        thread.join(?THREADS[i]);
+        i = i + 1;
+    }
+    if (PGN_OPEN) { val shut: err[io_error.Error] = fs.close(?PGN_FILE); }
+    if (FAILED != 0) {
+        print.eprintln("match failed");
+        ret EXIT_FAIL;
+    }
+    val games: i64 = WINS + DRAWS + LOSSES;
+    if (games == 0) {
+        print.eprintln("no games were played");
+        ret EXIT_FAIL;
+    }
+    val score: f64 = (WINS::f64 + 0.5 * DRAWS::f64) / (games::f64);
+    print.printlnf("games {} wins {} draws {} losses {}", games, WINS, DRAWS, LOSSES);
+    val s1000: i64 = (score * 1000.0 + 0.5)::i64;
+    print.printlnf("score {}.{:03}", s1000 / 1000, s1000 % 1000);
+    if (SPRT) {
+        print_signed2("llr ", llr(WINS, DRAWS, LOSSES), "\n");
+        if (VERDICT == 1) { print.printlnf("accepted H1: the change is worth at least {} Elo", (ELO1 + 0.5)::i64); }
+        or (VERDICT == 2) { print.printlnf("accepted H0: the change is worth at most {} Elo", ELO0::i64); }
+        or                { print.println("inconclusive: ran out of games before either bound"); }
+    }
+    if (score > 0.0 && score < 1.0) {
+        val elo:   f64 = 0.0 - 400.0 * log10(1.0 / score - 1.0);
+        var sigma: f64 = score * (1.0 - score) / (games::f64);
+        # square root by Newton's method
+        var r: f64 = sigma;
+        if (r > 0.0) {
+            var k: i64 = 0;
+            for (k < 60) {
+                r = 0.5 * (r + sigma / r);
+                k = k + 1;
+            }
+        }
+        var lo: f64 = score - 1.96 * r;
+        var hi: f64 = score + 1.96 * r;
+        if (lo < 0.000001) { lo = 0.000001; }
+        if (hi > 0.999999) { hi = 0.999999; }
+        val span: f64 = (0.0 - 400.0 * log10(1.0 / hi - 1.0)) - (0.0 - 400.0 * log10(1.0 / lo - 1.0));
+        var e:    i64 = 0;
+        if (elo >= 0.0) { e = (elo + 0.5)::i64; }
+        or              { e = 0 - ((0.0 - elo) + 0.5)::i64; }
+        var sign: str = "+";
+        if (e < 0) { sign = "-"; }
+        var ae: i64 = e;
+        if (ae < 0) { ae = 0 - ae; }
+        print.printlnf("elo {}{} +/- {}", sign, ae, (span / 2.0 + 0.5)::i64);
+    }
+    or {
+        if (score >= 1.0) { print.println("elo +inf (one side won every game)"); }
+        or                { print.println("elo -inf (one side won every game)"); }
+    }
+    ret 0;
+}
