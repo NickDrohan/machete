@@ -186,6 +186,12 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "Repertoire", value, ?REPERTOIRE, 0, 100)) {
         ret true;
     }
+    or (tune_one(name, "Contempt", value, ?CONTEMPT, 0, 100)) {
+        ret true;
+    }
+    or (tune_one(name, "UCI_RatingAdv", value, ?RATING_ADV, 0 - 10000, 10000)) {
+        ret true;
+    }
     ret false;
 }
 
@@ -209,6 +215,8 @@ pub fun print_tunables() {
     print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
     print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
     print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
+    print.printlnf("option name Contempt type spin default {} min 0 max 100", CONTEMPT);
+    print.printlnf("option name UCI_RatingAdv type spin default {} min -10000 max 10000", RATING_ADV);
 }
 
 # Variety: in the first VARIETY_MOVES moves of a game, each root move gets
@@ -223,11 +231,32 @@ pub var VARIETY:       i64 = 0;
 pub var VARIETY_MOVES: i64 = 8;
 pub var VARIETY_SEED:  u64 = 0;
 
+# Contempt: what a draw is worth to the engine when it is not the weaker
+# side. Against a bot rated at or below it, a repetition, the fifty-move rule,
+# dead material or stalemate scores -CONTEMPT for the side the engine plays
+# (+CONTEMPT for its opponent), so it prefers any line it judges no worse than
+# that to settling for the draw; against a stronger opponent a draw stays 0.
+# RATING_ADV is UCI_RatingAdv, the engine's rating minus the opponent's, which
+# lichess-bot and other GUIs send before each game. On lichess 9 of machete's
+# first 15 non-wins against weaker bots were repetitions from positions it
+# never tried to unbalance. CONTEMPT 0 turns it off, and then the search is
+# exactly what it was.
+pub var CONTEMPT:   i64 = 0;
+pub var RATING_ADV: i64 = 0;
+
+# draw_value: a draw's score for the side to move at this ply; the engine's
+# own side moves at even plies
+fun draw_value(ply: i64) i64 {
+    if (CONTEMPT <= 0 || RATING_ADV < 0) { ret 0; }
+    if (ply % 2 == 0) { ret 0 - CONTEMPT; }
+    ret CONTEMPT;
+}
+
 # Repertoire: a root move that reaches a position of the author's repertoire
 # (see repertoire.mach) gets up to REPERTOIRE centipawns more - all of it for
 # the system this game aims for, half for the rest - through the same shifted
 # window as Variety's bonus. 0 turns it off.
-pub var REPERTOIRE: i64 = 0;
+pub var REPERTOIRE: i64 = 40;
 
 # root_bonus: the bonus for root move m, called with m already made on p
 fun root_bonus(p: *Position, m: Move) i64 {
@@ -712,7 +741,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     s.known_check[ply] = 0;
     s.pv_len[ply]      = 0;
     if (out_of_time(s))        { ret 0; }
-    if (ply > 0 && is_draw(p)) { ret 0; }
+    if (ply > 0 && is_draw(p)) { ret draw_value(ply); }
     if (ply >= MAX_PLY - 1)    { ret eval.evaluate(p); }
 
     val in_check: bool = check_at(p, noted);
@@ -1002,7 +1031,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         # is not reached, so the move is singular, which it is
         if (excluded != mv.NONE) { ret alpha_in; }
         if (in_check)            { ret 0 - MATE + ply; }
-        ret 0;
+        ret draw_value(ply);
     }
     if (excluded != mv.NONE) { ret best; }
 
@@ -1446,5 +1475,24 @@ test tunables_set_clamp_and_reach_the_search {
     val again: i64 = search_depth(?p, 7, ?s);
     if (moved == base) { ret 7; }
     if (again != base) { ret 8; }
+    ret 0;
+}
+
+test contempt_scores_draws_against_the_engine_only_when_not_weaker {
+    val c: i64 = CONTEMPT;
+    val r: i64 = RATING_ADV;
+    CONTEMPT   = 30;
+    RATING_ADV = 0;
+    # the engine's own side moves at even plies: a draw is worse for it
+    if (draw_value(0) != 0 - 30) { ret 1; }
+    if (draw_value(3) != 30)     { ret 2; }
+    # against a stronger opponent a draw is a draw
+    RATING_ADV = 0 - 1;
+    if (draw_value(0) != 0)      { ret 3; }
+    CONTEMPT   = 0;
+    RATING_ADV = 200;
+    if (draw_value(0) != 0)      { ret 4; }
+    CONTEMPT   = c;
+    RATING_ADV = r;
     ret 0;
 }

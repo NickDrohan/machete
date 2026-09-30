@@ -1,4 +1,4 @@
-machete 0.3.2
+machete 0.3.3
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,19 +21,33 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.3.2 reads 768-wide format 3 networks only; an earlier
-            version's network will not load.
+            0.3.3 reads 768-wide format 3 networks: 0.3.2's loads,
+            0.3.1's and earlier do not.
   Ponder    supported: go ponder, ponderhit and stop.
+  Repertoire  0 to 100 (default 40): prefer the author's openings - White the
+            Vienna, English and Catalan; Black the Marshall, Nimzo-Indian and
+            Grunfeld - by this many centipawns. 0 plays without it.
+  Contempt  0 to 100 (default 0): against an opponent rated at or below the
+            engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
 
 
+What changed since 0.3.2
+------------------------
+One thing in how it plays: the repertoire above, on by default. Measured at
+no cost: +3 +/- 22 Elo against the same engine without it, from the start
+position (1000 games). The network and search are 0.3.2's. New options:
+Contempt, UCI_RatingAdv and Variety, off by default, and Avx2, on (turning it
+off forces the SSE2 kernels, for timing).
+
+
 How strong
 ----------
-0.3.2 changes one thing from 0.3.1: the network (below). Against 0.3.1, head
-to head at 10+0.1: +28 +/- 27 Elo over 659 games (176 wins, 360 draws, 123
-losses). Against the same
-three outside engines at 2+1, on the openings 0.3.1 and 0.3.0 played:
+The strength is 0.3.2's network. 0.3.2 changed one thing from 0.3.1, the
+network: head to head at 10+0.1, +28 +/- 27 Elo over 659 games (176 wins, 360
+draws, 123 losses). Against three outside engines at 2+1, on the openings
+0.3.1 and 0.3.0 played:
   Spike 1.4      51 wins,  8 draws,  1 loss     (0.3.1: 49,  9, 2)
   Rybka 2.3.2a   45 wins, 12 draws,  3 losses   (0.3.1: 43, 11, 6)
   Koivisto 9.0    0 wins, 17 draws, 43 losses   (0.3.1:  1, 15, 44)
