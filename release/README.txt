@@ -1,4 +1,4 @@
-machete 0.3.3
+machete 0.3.4
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,7 +21,7 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.3.3 reads 768-wide format 3 networks: 0.3.2's loads,
+            0.3.4 reads 768-wide format 3 networks: 0.3.2's and 0.3.3's load,
             0.3.1's and earlier do not.
   Ponder    supported: go ponder, ponderhit and stop.
   Repertoire  0 to 100 (default 40): prefer the author's openings - White the
@@ -31,6 +31,16 @@ Options:
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.3.3
+------------------------
+One thing: the network. C30 is trained on 0.3.3's positions plus 40 million
+new ones that the data farm's Raspberry Pis made, Stockfish 19 against itself
+at 1500 nodes a move from a broad opening book: 353 million in all, the same
+768-wide shape. Head to head at 10+0.1 against 0.3.3 as released: +24 +/- 24
+Elo over 824 games (204 wins, 474 draws, 146 losses), SPRT accepted. The
+search, the repertoire and the options are 0.3.3's.
 
 
 What changed since 0.3.2
@@ -44,7 +54,7 @@ off forces the SSE2 kernels, for timing).
 
 How strong
 ----------
-The strength is 0.3.2's network. 0.3.2 changed one thing from 0.3.1, the
+0.3.4 is 0.3.3 plus the +24 above. 0.3.2 changed one thing from 0.3.1, the
 network: head to head at 10+0.1, +28 +/- 27 Elo over 659 games (176 wins, 360
 draws, 123 losses). Against three outside engines at 2+1, on the openings
 0.3.1 and 0.3.0 played:

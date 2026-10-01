@@ -281,7 +281,7 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete 0.3.3");
+            print.println("id name machete 0.3.4");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min {} max {}",
                 tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
@@ -328,23 +328,22 @@ pub fun loop(exe: str) i64 {
         }
         or (str_equals(command, "setoption")) {
             # "setoption name <id> value <v>": Threads is applied, Hash is not,
-            # because the table is a fixed-size static array
+            # because the table is a fixed-size static array. UCI expects no
+            # reply to setoption, and an info line sent while no command is
+            # running made python-chess warn (and at times assert) in matches
+            # and on lichess; only EvalFile answers, to report a failed load.
             if (t.count >= 5 && str_equals(t.item[2], "Threads")) {
                 var wanted: i64 = token_i64(?t, 4, 1);
                 if (wanted < 1)               { wanted = 1; }
                 if (wanted > smp.MAX_THREADS) { wanted = smp.MAX_THREADS; }
                 threads = wanted;
-                print.printlnf("info string threads set to {}", threads);
             }
-            or (t.count >= 5 && search.set_tunable(t.item[2], token_i64(?t, 4, 0))) {
-                print.printlnf("info string {} set", t.item[2]);
-            }
+            or (t.count >= 5 && search.set_tunable(t.item[2], token_i64(?t, 4, 0))) {}
             or (t.count >= 5 && str_equals(t.item[2], "Avx2")) {
                 nn.allow_avx2(str_equals(t.item[4], "true"));
-                print.printlnf("info string {} accumulator", nn.avx2_label());
             }
             or (t.count >= 3 && str_equals(t.item[2], "Hash")) {
-                print.printlnf("info string hash is fixed at {} MB", tt.MEGABYTES);
+                # accepted and ignored: the table is a fixed-size static array
             }
             or (t.count >= 5 && str_equals(t.item[2], "EvalFile")) {
                 var path: [256]u8;
