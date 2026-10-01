@@ -88,6 +88,9 @@ var LOWER:     f64  = 0.0;
 var UPPER:     f64  = 0.0;
 var PGN:       str  = nil;
 var WATCH:     i64  = 0;
+# --a-colour: 0 plays each opening twice with colours swapped; 1 and 2 play it
+# once with A as white or as black, for measuring one side of an opening
+var A_SIDE: i64 = 0;
 
 # ---- the book ----
 
@@ -142,7 +145,7 @@ var THREADS: [32]thread.Thread;
 fun usage() i64 {
     print.eprintln("usage: arena <engine_a> <engine_b> [--tc B+I | --depth N | --nodes N] [--book file] [--games N]");
     print.eprintln("             [--concurrency N] [--sprt ELO0 ELO1] [--pgn file] [--option-a K=V]... [--option-b K=V]...");
-    print.eprintln("             [--name-a X] [--name-b Y] [--max-plies N] [--margin MS]");
+    print.eprintln("             [--name-a X] [--name-b Y] [--max-plies N] [--margin MS] [--a-colour white|black]");
     ret EXIT_USAGE;
 }
 
@@ -842,7 +845,7 @@ fun worker_entry(arg: *u8) {
     }
     for (atomic.load(?STOP) == 0) {
         val pair: i64 = atomic.fetch_add(?NEXT_PAIR, 1);
-        if (pair * 2 >= GAMES) { brk; }
+        if (pair * games_per_opening() >= GAMES) { brk; }
         # the start: book line pair % lines, or the standard position
         if (NLINES > 0) {
             val line: *u8 = ?BOOK[LINES[pair % NLINES]];
@@ -863,7 +866,8 @@ fun worker_entry(arg: *u8) {
             w.start[i] = 0;
         }
         var a_white: i64 = 0;
-        for (a_white < 2) {
+        if (A_SIDE == 2) { a_white = 1; }
+        for (a_white < 2 && !(A_SIDE == 1 && a_white == 1)) {
             var how:    i64 = 0;
             var result: i64 = 0;
             if (a_white == 0) {
@@ -891,6 +895,11 @@ fun worker_entry(arg: *u8) {
     }
     uci.stop(?w.a);
     uci.stop(?w.b);
+}
+
+fun games_per_opening() i64 {
+    if (A_SIDE == 0) { ret 2; }
+    ret 1;
 }
 
 # ---- the watch page ----
@@ -1141,6 +1150,15 @@ fun main(argc: i64, argv: **u8) i64 {
             MAX_PLIES = int_arg(argv[i + 1], 300);
             i         = i + 1;
         }
+        or (str_equals(a, "--a-colour") && more) {
+            if (str_equals(argv[i + 1], "white")) { A_SIDE = 1; }
+            or (str_equals(argv[i + 1], "black")) { A_SIDE = 2; }
+            or {
+                print.eprintlnf("--a-colour takes white or black, not {}", argv[i + 1]);
+                ret usage();
+            }
+            i = i + 1;
+        }
         or (str_equals(a, "--margin") && more) {
             MARGIN = int_arg(argv[i + 1], 100);
             i      = i + 1;
@@ -1207,9 +1225,10 @@ fun main(argc: i64, argv: **u8) i64 {
         if (sel op.err) { print.eprintln("no watch page: the server thread did not start"); }
         or              { print.printlnf("watch the match at http://127.0.0.1:{}", WATCH); }
     }
-    if (workers > (GAMES + 1) / 2) { workers = (GAMES + 1) / 2; }
-    if (workers < 1)               { workers = 1; }
-    if (workers > MAX_WORKERS)     { workers = MAX_WORKERS; }
+    val per: i64 = games_per_opening();
+    if (workers > (GAMES + per - 1) / per) { workers = (GAMES + per - 1) / per; }
+    if (workers < 1)                       { workers = 1; }
+    if (workers > MAX_WORKERS)             { workers = MAX_WORKERS; }
     ACTIVE = workers;
     i      = 0;
     for (i < workers) {
