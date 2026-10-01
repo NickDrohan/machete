@@ -1132,6 +1132,12 @@ pub fun budget(p: *Position, limits: *Limits) Budget {
         if (moves < 2) { moves = 2; }
     }
     b.soft = remaining / moves + increment * 3 / 4;
+    # The first ten moves get less, from 46% of the aim on move one to all of
+    # it on move ten. On lichess (211 blitz games) the engine spent 6.6 s a
+    # move there against its opponents' 2.9 s, was 15 to 20 points of clock
+    # behind from move ten on, and its losses were decided around move 36.
+    # Not with movestogo, where the clock is for a known number of moves.
+    if (limits.movestogo == 0 && p.fullmove <= 10) { b.soft = b.soft * (40 + 6 * p.fullmove) / 100; }
     # the hard stop lets an unsettled move run to five times the aim, but never
     # past a quarter of the clock, so a reserve always survives
     b.hard = b.soft * 5;
@@ -1417,9 +1423,17 @@ test clock_budget {
     var limits: Limits;
     limits.wtime = 60020;
     limits.btime = 60020;
-    # no movestogo: a twenty-fifth of the clock after the overhead, and the
-    # hard stop at five times that
+    # move one of a game without movestogo: 46% of the twenty-fifth below, and
+    # move ten all of it
     var b: Budget = budget(?p, ?limits);
+    if (b.soft != 1104 || b.hard != 5520 || b.fixed != 0) { ret 8; }
+    p.fullmove = 10;
+    b          = budget(?p, ?limits);
+    if (b.soft != 2400 || b.hard != 12000) { ret 9; }
+    # past the opening, no movestogo: a twenty-fifth of the clock after the
+    # overhead, and the hard stop at five times that
+    p.fullmove = 20;
+    b          = budget(?p, ?limits);
     if (b.soft != 2400 || b.hard != 12000 || b.fixed != 0) { ret 2; }
     # a tenth would be 6000, which fits under the hard stop's quarter
     limits.movestogo = 10;
