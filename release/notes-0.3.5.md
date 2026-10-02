@@ -10,7 +10,7 @@
 ![language](https://img.shields.io/badge/written%20in-Mach%206.5-8a2be2?style=for-the-badge)
 ![protocol](https://img.shields.io/badge/protocol-UCI-f39c12?style=for-the-badge)
 
-![against 0.3.4](https://img.shields.io/badge/against%200.3.4-%2B18%20%C2%B1%2021-blue)
+![against 0.3.4](https://img.shields.io/badge/against%200.3.4-%2B5%20%C2%B1%2011-blue)
 ![positions](https://img.shields.io/badge/training%20positions-364M-blue)
 ![gates](https://img.shields.io/badge/acceptance%20gates-35%20passing-brightgreen)
 ![changes](https://img.shields.io/badge/changes-exactly%20one-lightgrey)
@@ -28,8 +28,9 @@ C33 is C30's recipe plus **10.5 million more positions** from the data farm: the
 | test | games | result |
 |---|---|---|
 | **C33 against C30** (0.3.4's network), same engine, 10+0.1 | 1,096 | **+18 ± 21** (258 wins, 638 draws, 200 losses) |
+| 0.3.5 as packaged against 0.3.4 as released, 10+0.1 | 4,000 | +5 ± 11 (830 wins, 2,393 draws, 777 losses) |
 
-The test is sequential (SPRT, 0 to 10 Elo) and crossed its upper bound. It is the second step in a row where more of the farm's positions paid: 40 million gave C30 +16 over C28, and 10.5 million more give this.
+The first test is sequential (SPRT, 0 to 10 Elo) and crossed its upper bound; the second ran its full 4,000 games without reaching either bound. Read together: a small gain, nearer +5 than +18. On lichess 0.3.5 scored 45.2% over its first 83 games, where 0.3.4 scored 44.4% and 0.3.3 36.8% against bots of the same strength. It is the second step in a row where more of the farm's positions paid: 40 million gave C30 +16 over C28, and 10.5 million more give this.
 
 ## 🧪 What didn't make it
 

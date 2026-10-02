@@ -53,6 +53,9 @@ val NO_EVAL: i64 = 0 - 32000;
 # bit-by-bit log2, which costs microseconds once.
 var REDUCTION:   [64][64]i64;
 var table_ready: i64 = 0;
+# every square within two king steps of a square: a queen there is close
+# enough to its target king that quiet moves around it can be mating
+var ZONE2: [64]u64;
 
 fun log2_f64(x: f64) f64 {
     var m:      f64 = x;
@@ -285,6 +288,21 @@ pub fun init_tables() {
             move                   = move + 1;
         }
         depth = depth + 1;
+    }
+    var sq: i64 = 0;
+    for (sq < 64) {
+        var mask: u64 = 0;
+        var to:   i64 = 0;
+        for (to < 64) {
+            var df: i64 = (to % 8) - (sq % 8);
+            var dr: i64 = (to / 8) - (sq / 8);
+            if (df < 0)             { df = 0 - df; }
+            if (dr < 0)             { dr = 0 - dr; }
+            if (df <= 2 && dr <= 2) { mask = mask | ((1::u64) << (to::u64)); }
+            to = to + 1;
+        }
+        ZONE2[sq] = mask;
+        sq        = sq + 1;
     }
     table_ready = 1;
 }
@@ -878,8 +896,16 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # position to alpha is not worth a node. captures, promotions and checks
     # are exempt, and the guard only applies once one legal move is in hand so
     # a mate can still be found.
-    var futile: bool = false;
-    if (!is_pv && !in_check && depth <= 3) {
+    #
+    # Not when the side to move has its queen within two squares of the enemy
+    # king. There the quiet moves are the attack: on lichess (game 3Cv8DgK7)
+    # 0.3.3 took a pawn with 19.Nxc7 into mate in five - 19...Re5 20.Nd5 Bf3
+    # 21.exf3 exf3, then Qg2# - with the queen already on h3, and needed depth
+    # 24 to see it, because the rook lift and the bishop offer were pruned and
+    # reduced as quiet moves in a position where Black was down material.
+    val attacking: bool = (p.pieces[pos.code(p.side, pos.QUEEN)] & ZONE2[pos.king_square(p, p.side ^ 1)]) != 0;
+    var futile:    bool = false;
+    if (!is_pv && !in_check && !attacking && depth <= 3) {
         val margin: i64 = FUT_BASE + FUT_MUL * depth;
         futile = static_eval + margin <= alpha;
     }
@@ -915,7 +941,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
         # late move pruning: near the horizon, once enough quiet moves have
         # failed, the rest almost never rescue the position
-        if (!is_pv && !in_check && depth <= 4 && legal > 0 && !tactical
+        if (!is_pv && !in_check && !attacking && depth <= 4 && legal > 0 && !tactical
             && best > 0 - MATE_FOUND && legal > LMP_BASE + depth * depth) {
             pos.unmake(p);
             i = i + 1;
@@ -967,6 +993,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (!improving) { reduction = reduction + 1; }
                 # a principal variation node is where being wrong is expensive
                 if (is_pv) { reduction = reduction - 1; }
+                # and so is an attack on the king (see `attacking` above)
+                if (attacking) { reduction = reduction - 1; }
                 # the history of this move says how often it has refuted
                 # something before: a good record buys back up to two plies,
                 # a bad one costs up to two more. s.mover holds the piece on
