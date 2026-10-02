@@ -1,4 +1,4 @@
-machete 0.3.5
+machete 0.3.6
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,7 +21,7 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.3.5 reads 768-wide format 3 networks: every one since 0.3.2 loads,
+            0.3.6 reads 768-wide format 3 networks: every one since 0.3.2 loads,
             0.3.1's and earlier do not.
   Ponder    supported: go ponder, ponderhit and stop.
   Repertoire  0 to 100 (default 40): prefer the author's openings - White the
@@ -33,13 +33,23 @@ Options:
 Not supported yet: opening books, endgame tablebases, Chess960.
 
 
+What changed since 0.3.5
+------------------------
+One thing, in the search: when the side to move has its queen within two
+squares of the enemy king, its quiet moves are no longer pruned near the
+horizon and are reduced one ply less. On lichess 0.3.3 took a pawn and was
+mated in five by quiet moves it had pruned; 0.3.4 needed depth 22 to see it,
+0.3.6 sees it at depth 18. Against 0.3.4 with the same network: +2 +/- 17
+Elo over 1673 games, no cost. The network is 0.3.5's.
+
+
 What changed since 0.3.4
 ------------------------
 One thing: the network. C33 is 0.3.4's recipe plus 10.5 million more of the
 data farm's positions (Stockfish 19 at 1500 nodes a move from a broad opening
 book): 364 million in all. Against 0.3.4's network on the same engine at
-10+0.1: +18 +/- 21 Elo over 1096 games (258 wins, 638 draws, 200 losses),
-SPRT accepted. The search, the repertoire and the options are 0.3.4's.
+10+0.1: +18 +/- 21 Elo over 1096 games, SPRT accepted; the packaged engines
+head to head, +5 +/- 11 over 4000 games. The search, the repertoire and the options are 0.3.4's.
 
 
 What changed since 0.3.3
@@ -63,7 +73,8 @@ off forces the SSE2 kernels, for timing).
 
 How strong
 ----------
-0.3.5 is 0.3.4 plus the +18 above; 0.3.4 was 0.3.3 plus +24. 0.3.2 changed one thing from 0.3.1, the
+0.3.6 plays as strongly as 0.3.5 against itself (+2 +/- 17) and sees attacks on its
+king sooner. 0.3.5 was 0.3.4 plus about +5 (4000 games); 0.3.4 was 0.3.3 plus +24. 0.3.2 changed one thing from 0.3.1, the
 network: head to head at 10+0.1, +28 +/- 27 Elo over 659 games (176 wins, 360
 draws, 123 losses). Against three outside engines at 2+1, on the openings
 0.3.1 and 0.3.0 played:
