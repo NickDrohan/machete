@@ -47,7 +47,7 @@ build_gates() {
     gate "release build" 0 "$mach" build "$project" --profile release --quiet
     # since mach 6.0 a build covers only the default artifact; the decoder's
     # gates need its executable too
-    gate "release build of binpack" 0 "$mach" build "$project" --profile release --bin binpack --quiet
+    gate "release build of binpack" 0 "$mach" build "$project" --profile release -a binpack --quiet
     if [[ "$fails" -gt 0 ]]; then
         echo "  $fails gate(s) failed; runtime gates skipped"
         exit 1
