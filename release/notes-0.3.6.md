@@ -31,6 +31,7 @@ Now, when the side to move has its queen within two squares of the enemy king, i
 |---|---|
 | the position before 19.Nxc7 | 19.Bxc7 found from **depth 18** (0.3.4: depth 22); at depth 22, 26 s instead of 91 s |
 | against 0.3.4, same network, 10+0.1, 1,673 games | **+2 ± 17**: no cost (SPRT, −10 to 0, upper bound) |
+| **0.3.6 as packaged against 0.3.5 as released**, 10+0.1, 3,253 games | **−1 ± 12** (524 wins, 2,193 draws, 536 losses): no cost (SPRT, −10 to 0, upper bound) |
 | nodes at a fixed depth (bench) | 154,591 → 154,921, +0.2% |
 
 It is a safety fix. Equal engines rarely attack each other's kings the way a stronger opponent does, so self-play shows that it is free, and the game shows what it is for.
