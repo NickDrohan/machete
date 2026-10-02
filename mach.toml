@@ -1,6 +1,6 @@
 [project]
 id = "machete"
-version = "0.3.4"
+version = "0.3.5"
 mach = "^6.5"
 src = "src"
 out = "out/{target.name}/{profile.name}"
