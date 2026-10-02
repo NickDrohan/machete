@@ -1,7 +1,7 @@
 """Review the lichess bot's games since a time: the record, and every game it should have won.
 
     python harness/lichess_review.py --since "2026-09-29 22:41" --engine machete.exe --net machete.nnue
-        [--config E:/machete/lichess-bot/config.yml] [--workers 6] [--out review.txt]
+        [--config E:/machete/lichess-bot/config.yml] [--workers 6] [--out review.txt] [--all-draws]
 
 The bot account's own token (lichess-bot's config) exports its games; the
 public export is closed for bot accounts. Then:
@@ -15,6 +15,9 @@ public export is closed for bot accounts. Then:
      moves the bot made with Stockfish's choice, and what the bot's own engine
      thought of the worst position at depth 16 - optimism there is an
      evaluation error, a different move at depth is a search or time error.
+
+--all-draws takes every draw apart, not only those against bots rated at or
+below it: a win let slip against a stronger bot is as much a failure.
 
 It uses the engine the bot runs, so a review of a version is a review of that
 version.
@@ -135,13 +138,15 @@ def main():
     parser.add_argument("--config", default="E:/machete/lichess-bot/config.yml")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--out", default="")
+    parser.add_argument("--all-draws", action="store_true")
     args = parser.parse_args()
 
     games = fetch(args.config, args.since)
     lines = ["lichess review since %s" % args.since] + record(games)
-    failures = [g for g in games if g["result"] == "loss" or (g["result"] == "draw" and g["diff"] <= 0)]
+    failures = [g for g in games if g["result"] == "loss" or (g["result"] == "draw" and (args.all_draws or g["diff"] <= 0))]
     lines.append("")
-    lines.append("%d games to explain (every loss, and draws against bots rated at or below the bot)" % len(failures))
+    lines.append("%d games to explain (every loss, and %s)" % (
+        len(failures), "every draw" if args.all_draws else "draws against bots rated at or below the bot"))
     with multiprocessing.Pool(args.workers) as pool:
         done = pool.map(analyse, [(g, os.path.abspath(args.engine), os.path.abspath(args.net)) for g in failures])
     turns = [d["turn"] for d in done if d["turn"] is not None]
