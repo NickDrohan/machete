@@ -1,8 +1,8 @@
 # machete's repertoire: the openings it prefers, chosen by its author.
 #
 # White: the Vienna, the English and the Catalan.
-# Black: the Marshall against 1.e4, the Nimzo-Indian and the Grunfeld
-#        against 1.d4 and 1.c4.
+# Black: the Sveshnikov Sicilian against 1.e4, the Nimzo-Indian and the
+#        Grunfeld against 1.d4 and 1.c4.
 #
 # Each line is "white <system>:" or "black <system>:" and then moves in
 # standard notation. A line gives the engine a preference for its own side's
@@ -45,19 +45,16 @@ white catalan: 1.d4 Nf6 2.c4 g6 3.g3 Bg7 4.Bg2 O-O 5.Nf3 d6 6.O-O
 white catalan: 1.d4 Nf6 2.c4 g6 3.g3 d5 4.cxd5 Nxd5 5.Bg2 Bg7 6.e4 Nb6 7.Ne2
 white catalan: 1.d4 Nf6 2.c4 c5 3.d5 e6 4.Nc3 exd5 5.cxd5 d6 6.e4
 
-# ---- Black: the Marshall, and the rest of 1.e4 e5 -----------------------
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 O-O 8.c3 d5 9.exd5 Nxd5 10.Nxe5 Nxe5 11.Rxe5 c6 12.d4 Bd6 13.Re1 Qh4 14.g3 Qh3
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 O-O 8.a4 b4
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.Re1 b5 7.Bb3 O-O 8.h3 Bb7 9.d3 d6
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O Be7 6.d3 b5 7.Bb3 d6
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Bxc6 dxc6 5.O-O f6
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6 5.d3 d6 6.O-O a6
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.d4 exd4 4.Nxd4 Nf6 5.Nxc6 bxc6 6.e5 Qe7
-black marshall: 1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.Bb5 Nd4
-black marshall: 1.e4 e5 2.Nc3 Nf6 3.f4 d5
-black marshall: 1.e4 e5 2.Nc3 Nf6 3.Bc4 Nxe4
-black marshall: 1.e4 e5 2.Bc4 Nf6 3.d3 c6
-black marshall: 1.e4 e5 2.f4 exf4 3.Nf3 d5
+# ---- Black: the Sveshnikov Sicilian (lines chosen over 80M LAION games by minimax) ----
+black sveshnikov: 1.e4 c5 2.Nf3 Nc6 3.d4 cxd4 4.Nxd4 Nf6 5.Nc3 e5 6.Ndb5 d6 7.Bg5 a6 8.Na3 b5 9.Bxf6 gxf6
+black sveshnikov: 1.e4 c5 2.Nf3 Nc6 3.d4 cxd4 4.Nxd4 Nf6 5.Nc3 e5 6.Ndb5 d6 7.Nd5 Nxd5 8.exd5 Nb8 9.a4 Be7
+black sveshnikov: 1.e4 c5 2.Nf3 Nc6 3.d4 cxd4 4.Nxd4 Nf6 5.Nc3 e5 6.Ndb5 d6 7.Nd5 Nxd5 8.exd5 Nb8 9.Be2
+black sveshnikov: 1.e4 c5 2.Nf3 Nc6 3.Bb5 Nf6
+black sveshnikov: 1.e4 c5 2.Nf3 Nc6 3.Nc3 g6 4.d4 cxd4 5.Nxd4 Bg7 6.Be3 Nf6
+black sveshnikov: 1.e4 c5 2.Nc3 g6
+black sveshnikov: 1.e4 c5 2.c3 Nf6 3.e5 Nd5 4.d4 cxd4 5.Nf3 Nc6 6.Bc4 Nb6 7.Bb3 d5 8.exd6 Qxd6 9.O-O Be6
+black sveshnikov: 1.e4 c5 2.c3 Nf6 3.e5 Nd5 4.d4 cxd4 5.cxd4 d6 6.Nf3 dxe5 7.dxe5 Nc6 8.Bc4 Nb6 9.Qxd8+ Nxd8
+black sveshnikov: 1.e4 c5 2.c3 Nf6 3.e5 Nd5 4.Nf3 e6 5.d4 cxd4 6.cxd4 d6
 
 # ---- Black: the Nimzo-Indian ---------------------------------------------
 black nimzo: 1.d4 Nf6 2.c4 e6 3.Nc3 Bb4 4.e3 O-O 5.Bd3 d5 6.Nf3 c5 7.O-O

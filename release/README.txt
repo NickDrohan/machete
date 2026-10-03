@@ -1,4 +1,4 @@
-machete 0.3.6
+machete 0.3.7
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,16 +21,26 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.3.6 reads 768-wide format 3 networks: every one since 0.3.2 loads,
+            0.3.7 reads 768-wide format 3 networks: every one since 0.3.2 loads,
             0.3.1's and earlier do not.
   Ponder    supported: go ponder, ponderhit and stop.
   Repertoire  0 to 100 (default 40): prefer the author's openings - White the
-            Vienna, English and Catalan; Black the Marshall, Nimzo-Indian and
-            Grunfeld - by this many centipawns. 0 plays without it.
+            Vienna, English and Catalan; Black the Sveshnikov Sicilian,
+            Nimzo-Indian and Grunfeld - by this many centipawns. 0 plays without it.
   Contempt  0 to 100 (default 0): against an opponent rated at or below the
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.3.6
+------------------------
+One thing, the opening against 1.e4: the Sveshnikov Sicilian replaces the
+Marshall, which lost 17 of 24 games on lichess against booked opponents. The
+Sveshnikov was chosen over 3.17 billion Stockfish self-play games (LAION), by
+its result under best play by both sides (46.6% for Black, the best Sicilian
+there), and tied first of eight systems for machete against full Stockfish.
+Built with Mach 6.10.1 and mach-std 9.4.1 (same moves, bench 2-4% faster).
 
 
 What changed since 0.3.5
@@ -99,11 +109,11 @@ slower evaluation costs more than the network adds.
 Nothing else changed: the search, options and AVX2 kernels are 0.3.1's, the
 kernels generated for the new width.
 
-Built with Mach 6.5.0 and mach-std 9.2.0.
+Built with Mach 6.10.1 and mach-std 9.4.1.
 
 
 Credits
 -------
-Built with the Mach compiler 6.5.0 and mach-std 9.2.0. The network's training
+Built with the Mach compiler 6.10.1 and mach-std 9.4.1. The network's training
 positions were labelled by Stockfish, Berserk, Alexandria, Obsidian, Caissa,
 PlentyChess and Reckless, and by the theoden8 corpus; no engine's code is used.
