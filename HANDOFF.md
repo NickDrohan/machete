@@ -1,5 +1,23 @@
 # Handing off machete
 
+## 2026-10-04: the 0.4.0 match, the chunk catalog, the mate dataset
+
+**The 0.4.0 match** (`E:/machete/competition/v040/RESULT.md`): `c36` (the dev engine with a new network, C36) against `0.4.0_perplexity` (0.3.6's exact search about 4.5% faster on this PC, network C33), by the neutral referee at tag `referee-v1`.
+
+| phase | games | c36 W-D-L | points | c36 Elo (95%) |
+|---|---|---|---|---|
+| 10+0.1 | 400 | 75-237-88 | 193.5 - 206.5 | -11.3 +/- 21.0 |
+| 60+0.6 | 100 | 13-71-16 | 48.5 - 51.5 | -10.4 +/- 34.1 |
+| pooled | 500 | 88-308-104 | 242 - 258 | -11.1 +/- 18.2 |
+
+Perplexity's entry wins on points (51.6%); the interval contains zero. The 10+0.1 phase was clean. Another session started a 20-worker generator 16 minutes into the 60+0.6 phase, so that phase ran on an overloaded machine (no forfeits), and the two context matches against 0.3.6 are invalid (146 and 43 time forfeits in 200 games each). Perplexity's archive held only Linux binaries; its Windows engine was built by the referee from its source bundle at the commit in its `READY`. The owner has not yet said whether to replay the loaded phases. A live scoreboard for referee result files is `E:/machete/competition/v040/scoreboard.py`.
+
+**Cursor's corpus** (as the owner described it; Cursor's own notes are the source): training entirely a piece down, from Fischer Random positions. Its files in `E:/machete/corpora` are `x0_control_30m.bin` and `x1_handicap960_tb.bin` (generating, 20 Stockfish workers). When it runs, the PC has no spare threads: matches lose games on time.
+
+**The chunk catalog** (`catalog/`, page: `catalog/chunk-catalog.html`): every training chunk, the networks trained on it, and what each experiment that isolated a chunk measured: 31 chunks, 37 training runs, 19 experiments. It could be built in retrospect because every training run's corpus list is in the GPU queue's job records. `catalog/chunks_meta.json` is the hand-kept half (what a chunk is, what an experiment measured); `python harness/nnue/chunk_catalog.py` regenerates `catalog.json`, `chunk_ledger.tsv` (the record of Elo shifts by chunk) and the page. **To record a new chunk trial: add the chunk and one experiment to `chunks_meta.json` and run the script.** What the record says so far: the only chunks with an interval clear of zero are the foundation (removing or halving it costs 28 to 54 Elo) and the repertoire set (+10 +/- 8, from a running log); the Pi farm's broad-book positions gave +16 +/- 19 once and then nothing; attack, conversion and narrow-opening chunks have not shown a gain; one training seed is worth about +/-6.
+
+**The deep-mate dataset** (`harness/nnue/mate_retro.py`, output `E:/machete/mates/retro.jsonl`): the owner's design. A random checkmate (3 to 32 men, a normal army), then a reverse search: take back a move, and keep the predecessor only when Stockfish 19 proves a forced mate exactly one ply longer. Taking back an attacker's move always leaves a forced mate; taking back a defender's move does only if every other defender move also loses, which is what the proof checks. It is a sampled reverse search (a beam), not the whole tree. Each line has the FEN, the distance in plies, the attacker, Stockfish's line, the proof's nodes, the seed and the parent. A trial of 204 positions reached 10 plies; 16 re-proved with 10 to 100 times the nodes all kept their distance. It runs at idle priority from its own clone (`D:/Dev/Claude/machete-mates`, `E:/machete/mates/run.sh`, log `run.log`), one seed at a time, until stopped. **Not done yet:** a converter from `retro.jsonl` to a training chunk, and the first network trained with it; when that happens it goes in the catalog like any chunk. The positions are chaotic by construction (they come from random mates, not games); whether that helps or hurts is what the chunk experiment is for.
+
 ## 2026-10-03: working from a clone
 
 Everything needed to build, test and change the engine is in this repository
@@ -41,7 +59,7 @@ is 0.3.6's network (C33).
 
 ## State in one paragraph
 
-**0.3.6 is the released version and it is what the lichess bot runs.** 0.3.7 (the Sveshnikov repertoire) failed both of its tests, was taken off the bot after about 40 games, and was never published; its PR is closed. Nothing is training or queued on the PC. Both Pis are generating Sveshnikov games, which is now the wrong opening, and have nothing queued after that. The one open decision is which Sicilian (or whether any) replaces the Marshall.
+**0.3.6 is the released version and it is what the lichess bot runs** (still true on 2026-10-04; see the section above for what has happened since). 0.3.7 (the Sveshnikov repertoire) failed both of its tests, was taken off the bot after about 40 games, and was never published; its PR is closed. Nothing is training or queued on the PC. Both Pis are generating Sveshnikov games, which is now the wrong opening, and have nothing queued after that. The one open decision is which Sicilian (or whether any) replaces the Marshall.
 
 ## Versions
 
