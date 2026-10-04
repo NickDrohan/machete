@@ -39,6 +39,33 @@ targets = ["*"]
 link = ["kernel32"]
 need = []
 
+# plays engine-vs-engine matches and sequential tests in Mach (src/tools/arena.mach), held to harness/match.py
+[artifact.arena]
+kind = "bin"
+entry = "tools/arena.mach"
+out = "bin/arena{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# generates labelled positions in Mach (src/tools/gen.mach), held to harness/nnue/gen.py
+[artifact.gen]
+kind = "bin"
+entry = "tools/gen.mach"
+out = "bin/gen{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# trains the network in Mach (src/train.mach), checked against harness/nnue/train.py
+[artifact.trainer]
+kind = "bin"
+entry = "tools/train.mach"
+out = "bin/train{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
 # decodes Leela training data (binpack) into training records; see src/binpack.mach
 [artifact.binpack]
 kind = "bin"
