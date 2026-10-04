@@ -1,0 +1,164 @@
+<title>Machete Chunk Catalog</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* layout: a ledger. One column, a forest plot of Elo by experiment first, then the chunks by family, then the networks */
+:root {
+  --bg: #f3f5f2; --surface: #fbfcfa; --ink: #17211c; --mute: #5c6a63; --line: #d3dad5;
+  --accent: #0f6b5c; --gain: #1a7f4b; --loss: #a8452a; --flat: #7a8580; --band: #e6ebe7;
+  --sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif; --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111613; --surface: #181e1a; --ink: #e3e9e5; --mute: #93a199; --line: #2c3530;
+  --accent: #58c4ae; --gain: #5fc68c; --loss: #e58a6c; --flat: #8a958f; --band: #1f2722; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111613; --surface: #181e1a; --ink: #e3e9e5; --mute: #93a199; --line: #2c3530;
+  --accent: #58c4ae; --gain: #5fc68c; --loss: #e58a6c; --flat: #8a958f; --band: #1f2722; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); padding-block: 28px 56px; padding-inline: 16px }
+.wrap { max-width: 1040px; margin-inline: auto; display: flex; flex-direction: column; gap: 36px }
+h1 { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance }
+h2 { font-size: 18px; font-weight: 600; margin: 0 0 4px; text-wrap: balance }
+p { margin: 0; max-width: 68ch } .lede { color: var(--mute); margin-top: 8px }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-top: 16px; font-family: var(--mono); font-size: 13px; color: var(--mute) }
+.facts b { color: var(--ink); font-weight: 500 }
+section { display: flex; flex-direction: column; gap: 12px; min-width: 0 }
+.note { color: var(--mute); font-size: 14px }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface) }
+table { border-collapse: collapse; width: 100%; font-size: 14px }
+th, td { text-align: left; padding: 7px 12px; border-top: 1px solid var(--line); vertical-align: top }
+thead th { border-top: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--mute); white-space: nowrap }
+td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap }
+td.id { font-family: var(--mono); font-size: 13px; white-space: nowrap }
+tr.fam td { background: var(--band); font-weight: 600; font-size: 13px; padding-block: 5px }
+tr.row { cursor: pointer } tr.row:hover td { background: var(--band) }
+tr.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+tr.detail td { background: var(--bg); color: var(--mute); font-size: 13.5px; padding-block: 10px 14px }
+tr.detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 } tr.detail dt { color: var(--ink) } tr.detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere }
+.pill { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); margin: 1px 3px 1px 0; white-space: nowrap }
+.gain { color: var(--gain) } .loss { color: var(--loss) } .flat { color: var(--flat) }
+input[type=search] { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); width: min(100%, 340px) }
+input[type=search]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+svg text { font-family: var(--mono); font-size: 11.5px; fill: var(--mute) } svg .lab { fill: var(--ink); font-size: 12px }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--mute) }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px }
+</style>
+<div class="wrap">
+  <header>
+    <h1>Machete Chunk Catalog</h1>
+    <p class="lede">Every block of training positions machete's networks have been built from, which networks used it, and what happened to playing strength each time one block was added, removed or reweighted.</p>
+    <div class="facts" id="facts"></div>
+  </header>
+
+  <section>
+    <h2>Elo shift by experiment</h2>
+    <p class="note">Each row is one network against its base, differing by the chunks named. The dot is the measured Elo difference and the bar its 95% interval. A bar that crosses zero has not separated the two. Two trainings of the same recipe differ by about 6 Elo from the seed alone, shown as the shaded band.</p>
+    <div class="legend"><span><i style="background:var(--gain)"></i>interval above zero</span><span><i style="background:var(--loss)"></i>interval below zero</span><span><i style="background:var(--flat)"></i>crosses zero</span><span>&#9675; no figure recorded</span></div>
+    <div class="scroll"><svg id="forest" role="img" aria-label="Elo difference of each experiment with its 95% interval"></svg></div>
+  </section>
+
+  <section>
+    <h2>Chunks</h2>
+    <p class="note">Grouped by where the positions come from. Select a row for its source, the networks that used it and the experiments that isolated it.</p>
+    <input type="search" id="q" placeholder="Filter chunks, teachers, purposes" aria-label="Filter chunks">
+    <div class="scroll"><table id="chunks"><thead><tr><th>Chunk</th><th class="n">Positions</th><th>Teacher</th><th>Addresses</th><th class="n">Networks</th><th>Measured</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Networks</h2>
+    <p class="note">Every training run in the GPU queue, oldest first. Select a row for its chunk list.</p>
+    <div class="scroll"><table id="nets"><thead><tr><th>Network</th><th>Date</th><th class="n">Width</th><th class="n">Epochs</th><th class="n">Seed</th><th class="n">Positions</th><th class="n">Chunks</th><th>What changed</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>The ledger</h2>
+    <p class="note">The same experiments as rows, newest last. This is the record new chunk trials are appended to (<span style="font-family:var(--mono)">catalog/chunk_ledger.tsv</span>).</p>
+    <div class="scroll"><table id="ledger"><thead><tr><th>Date</th><th>Network</th><th>Base</th><th>Change</th><th class="n">Games</th><th class="n">Elo</th><th>Verdict</th></tr></thead><tbody></tbody></table></div>
+  </section>
+</div>
+<script>
+const D = /*DATA*/null;
+const fmt = n => n == null ? "—" : n.toLocaleString("en-US");
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const cls = e => e.elo == null || e.margin == null ? "flat" : (e.elo - e.margin > 0 ? "gain" : e.elo + e.margin < 0 ? "loss" : "flat");
+const eloText = e => e.elo == null ? "—" : (e.elo > 0 ? "+" : e.elo < 0 ? "−" : "") + Math.abs(e.elo) + (e.margin == null ? "" : " ± " + e.margin);
+
+(function facts() {
+  const onDisk = D.chunks.filter(c => c.on_disk), total = onDisk.reduce((s, c) => s + (c.positions || 0), 0);
+  const done = D.networks.filter(n => n.finished);
+  document.getElementById("facts").innerHTML =
+    `<span><b>${D.chunks.length}</b> chunks</span><span><b>${(total / 1e6).toFixed(0)}M</b> positions on disk</span>` +
+    `<span><b>${done.length}</b> networks trained</span><span><b>${D.experiments.length}</b> isolating experiments</span>`;
+})();
+
+(function forest() {
+  const ex = D.experiments, rowH = 26, top = 30, left = 250, right = 70, W = 980, plot = W - left - right;
+  const lo = -100, hi = 60, x = v => left + (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * plot;
+  const H = top + ex.length * rowH + 14, css = n => `var(--${n})`;
+  let s = `<rect x="${x(-6)}" y="${top - 6}" width="${x(6) - x(-6)}" height="${ex.length * rowH + 6}" fill="${css("band")}"/>`;
+  for (let t = lo; t <= hi; t += 20) s += `<line x1="${x(t)}" y1="${top - 6}" x2="${x(t)}" y2="${H - 14}" stroke="${css("line")}" stroke-width="${t === 0 ? 1.5 : 0.6}"/><text x="${x(t)}" y="${top - 12}" text-anchor="middle">${t > 0 ? "+" + t : t}</text>`;
+  ex.forEach((e, i) => {
+    const y = top + i * rowH + rowH / 2, c = css(cls(e));
+    s += `<text class="lab" x="${left - 12}" y="${y + 4}" text-anchor="end">${esc(e.net)} <tspan fill="${css("mute")}">vs ${esc(e.base.split(" ")[0])}</tspan></text>`;
+    if (e.elo != null) {
+      if (e.margin != null) {
+        const a = e.elo - e.margin, b = e.elo + e.margin;
+        s += `<line x1="${x(a)}" y1="${y}" x2="${x(b)}" y2="${y}" stroke="${c}" stroke-width="2"/>`;
+        if (a < lo) s += `<text x="${left + 2}" y="${y - 5}" fill="${c}">◂</text>`;
+      }
+      s += `<circle cx="${x(e.elo)}" cy="${y}" r="4.5" fill="${c}"/>`;
+    } else s += `<circle cx="${x(0)}" cy="${y}" r="4.5" fill="none" stroke="${css("flat")}" stroke-width="1.5"/>`;
+    s += `<text x="${W - right + 8}" y="${y + 4}" fill="${c}">${eloText(e)}</text><title>${esc(e.delta)}: ${esc(e.verdict)}</title>`;
+  });
+  const svg = document.getElementById("forest");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.style.minWidth = "760px"; svg.style.display = "block"; svg.innerHTML = s;
+})();
+
+function toggle(tr, html, span) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("detail")) { next.remove(); tr.setAttribute("aria-expanded", "false"); return; }
+  const d = document.createElement("tr"); d.className = "detail"; d.innerHTML = `<td colspan="${span}">${html}</td>`;
+  tr.after(d); tr.setAttribute("aria-expanded", "true");
+}
+function wire(tbody) {
+  tbody.addEventListener("click", ev => { const tr = ev.target.closest("tr.row"); if (tr) tr._open(); });
+  tbody.addEventListener("keydown", ev => { if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches("tr.row")) { ev.preventDefault(); ev.target._open(); } });
+}
+
+function chunks(filter) {
+  const body = document.querySelector("#chunks tbody"); body.innerHTML = "";
+  const fams = [...new Set(D.chunks.map(c => c.family))];
+  for (const fam of fams) {
+    const rows = D.chunks.filter(c => c.family === fam && (!filter || (c.name + " " + c.teacher + " " + c.addresses + " " + c.source + " " + c.family).toLowerCase().includes(filter)));
+    if (!rows.length) continue;
+    const f = document.createElement("tr"); f.className = "fam";
+    f.innerHTML = `<td colspan="6">${esc(fam)} · ${fmt(rows.reduce((s, c) => s + (c.positions || 0), 0))} positions</td>`; body.append(f);
+    for (const c of rows) {
+      const ex = c.experiments.map(i => D.experiments[i]);
+      const tr = document.createElement("tr"); tr.className = "row"; tr.tabIndex = 0; tr.setAttribute("aria-expanded", "false");
+      tr.innerHTML = `<td class="id">${esc(c.name.replace(/\.bin$/, ""))}</td><td class="n">${fmt(c.positions)}${c.in_progress ? " …" : ""}</td><td>${esc(c.teacher)}</td><td>${esc(c.addresses)}</td><td class="n">${c.used_by.length || "—"}</td>` +
+        `<td>${ex.length ? ex.map(e => `<span class="pill ${cls(e)}">${esc(e.net)} ${eloText(e)}</span>`).join("") : `<span class="flat">${esc(c.status || (c.used_by.length ? "never isolated" : "not trained on"))}</span>`}</td>`;
+      tr._open = () => toggle(tr, `<dl><dt>Source</dt><dd>${esc(c.source) || "—"}</dd>` + (c.note ? `<dt>Note</dt><dd>${esc(c.note)}</dd>` : "") +
+        `<dt>File</dt><dd>${esc(c.name)}${c.on_disk ? "" : " (not on disk)"}</dd><dt>Networks</dt><dd>${c.used_by.length ? c.used_by.map(n => `<span class="pill">${esc(n)}</span>`).join("") : "none"}</dd>` +
+        ex.map(e => `<dt>${esc(e.net)} vs ${esc(e.base)}</dt><dd><span class="${cls(e)}">${eloText(e)}</span>${e.games ? " over " + fmt(e.games) + " games" : ""}. ${esc(e.delta)}. ${esc(e.verdict)}. <span style="font-family:var(--mono)">${esc(e.source)}</span></dd>`).join("") + `</dl>`, 6);
+      body.append(tr);
+    }
+  }
+}
+chunks(""); wire(document.querySelector("#chunks tbody"));
+document.getElementById("q").addEventListener("input", ev => chunks(ev.target.value.trim().toLowerCase()));
+
+(function nets() {
+  const body = document.querySelector("#nets tbody");
+  for (const n of D.networks) {
+    const tr = document.createElement("tr"); tr.className = "row"; tr.tabIndex = 0; tr.setAttribute("aria-expanded", "false");
+    tr.innerHTML = `<td class="id">${esc(n.id)}${n.finished ? "" : ' <span class="loss">failed</span>'}</td><td class="id">${esc(n.date)}</td><td class="n">${n.hidden}</td><td class="n">${n.epochs}</td><td class="n">${n.seed}</td><td class="n">${fmt(n.positions)}</td><td class="n">${n.chunks.length}</td><td>${esc(n.change)}</td>`;
+    tr._open = () => toggle(tr, `<dl><dt>Trainer</dt><dd>${esc(n.trainer)}</dd><dt>Chunks</dt><dd>${n.chunks.map(c => `<span class="pill">${esc(c.chunk.replace(/\.bin$/, ""))} ${fmt(c.positions)}${c.copies > 1 ? " ×" + c.copies : ""}</span>`).join("")}</dd></dl>`, 8);
+    body.append(tr);
+  }
+  wire(body);
+})();
+
+(function ledger() {
+  document.querySelector("#ledger tbody").innerHTML = D.experiments.map(e =>
+    `<tr><td class="id">${esc(e.date)}</td><td class="id">${esc(e.net)}</td><td>${esc(e.base)}</td><td>${esc(e.delta)}</td><td class="n">${fmt(e.games)}</td><td class="n ${cls(e)}">${eloText(e)}</td><td>${esc(e.verdict)}</td></tr>`).join("");
+})();
+</script>
