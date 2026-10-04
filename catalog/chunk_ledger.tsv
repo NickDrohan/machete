@@ -1,0 +1,20 @@
+date	network	base	change	chunks	games	elo	margin95	verdict	source
+2026-09-26	C9	C2	+ 30M of leela_60M.bin	leela_60M.bin	-	-	-	no isolating match in the ledger	TRAIN-C9
+2026-09-27	C11	C7	train4_eg.bin removed; theoden depth-18+ labels in its place	train4_eg.bin,theoden_quiet.bin	579	-28	28	rejected: the 1,500-node train4 labels are needed	SPRT-NET-C11
+2026-09-27	C14	C7	theoden_quiet.bin rescaled by 0.83	theoden_quiet_s083.bin,theoden_quiet.bin	1447	-6	18	rejected: the scale was not the problem	SPRT-NET-C14
+2026-09-27	C15	C7	35M more theoden rows in place of 35M of gen5.bin	theoden_b5.bin,theoden_b6.bin,theoden_b7.bin,gen5.bin	419	-31	34	rejected: theoden rows are worth less than generator rows	SPRT-NET-C15
+2026-09-27	C16	C7	half of every chunk (76M instead of 153M)	train4_eg.bin,gen5.bin,theoden_quiet.bin	265	-54	43	rejected: size matters at this scale	SPRT-NET-C16
+2026-09-27	C17	C7	pi_gen1.bin (10M) in place of 10M of train4	pi_gen1.bin	677	-17	26	rejected as a replacement	SPRT-NET-C17
+2026-09-28	C19B	C7	+ pi_gen1.bin (10M), nothing displaced	pi_gen1.bin	1677	-4	17	no gain from 10M more at 256 wide	SPRT-NET-C19B
+2026-09-28	C20	C18b (256 wide)	the same 262M positions at 512 wide (not a chunk change)	-	596	29	28	accepted: width, and with it room for the 98M theoden rows	SPRT-WIDTH-512
+2026-09-28	C22	C21 (512 wide)	768 wide on C21's 282M, which added pi_gen2_sf19.bin to C20 (not isolated)	pi_gen2_sf19.bin	1704	13	17	accepted as width; pi_gen2's own effect was never isolated (C21 against C20 ran out of time)	SPRT-WIDTH-768
+2026-09-29	C27	C22	+ 7.2M repertoire positions, listed twice	rep_gen1_sf19.bin,rep_gen2_snap1.bin	1500	11	18	positive, inside the noise; +13 +/- 18 from repertoire positions	MATCH-C27-GEN
+2026-09-30	C28	C22	+ all 31.35M repertoire positions	rep_gen1_sf19.bin,rep_gen2_sf19.bin	-	10	8	undecided at its 3-hour limit; the figure is from the running log	SPRT-NET-C28
+2026-09-30	C29	C28	+ conv_gen1_snap1.bin, listed twice	conv_gen1_snap1.bin	-	0	-	undecided at its 3-hour limit, about zero	SPRT-NET-C29
+2026-09-30	C30	C28	+ pi_gen3 (40M broad-book)	pi_gen3_pi01_sf19.bin,pi_gen3_pi02_sf19.bin	1301	16	19	accepted; +24 +/- 24 packaged against 0.3.3 (released as 0.3.4)	SPRT-NET-C30
+2026-09-30	C31	C30	+ attack_all_snap1.bin, listed three times	attack_all_snap1.bin	626	-18	27	rejected: attack games at 6.5% of the mix cost what the Pi data gained	SPRT-NET-C31
+2026-10-01	C32	C30	+ attack_all_snap1.bin, once	attack_all_snap1.bin	3980	-	-	undecided at its 4-hour limit (LLR +1.50): slightly positive at most	SPRT-NET-C32
+2026-10-01	C33	C30	+ pi_gen4_pi01_snap1.bin (10.5M)	pi_gen4_pi01_snap1.bin	1096	18	21	accepted, but +5 +/- 11 packaged over 4,000 games (released as 0.3.5), and the same recipe with another seed is -6 +/- 12	SPRT-NET-C33
+2026-10-01	C34	C33	pi_gen4 snap2 (19.3M) in place of snap1 (10.5M)	pi_gen4_pi01_snap2.bin	1700	-3	17	rejected: more broad self-play data has stopped paying	SPRT-NET-C34
+2026-10-03	C35	C33	+ kalashnikov_snap1.bin (15.4M)	kalashnikov_snap1.bin	2269	1	14	no cost in general play, and no gain where it was aimed: 8.2% as Black in the Kalashnikov against full Stockfish, C33 8.7%	SPRT-NET-C35, KALASHNIKOV-c35
+2026-10-04	C36	C33 (in a 4.5% faster engine)	a network of 371.7M positions; its recipe is not in the queue records	-	500	-11	18	the 0.4.0 match against 0.4.0_perplexity, which is C33 in a faster engine: not better than C33	competition/v040/RESULT.md
