@@ -276,6 +276,25 @@ def export(model, path):
     return worst
 
 
+def start_from(model, path, device):
+    """Put a written network's weights into the model: export() run backwards.
+
+    The file holds what export() rounded, so a network trained on from here
+    starts a rounding step away from where the last training left off."""
+    net = reference.load(path)
+    hidden = model.feature_bias.shape[0]
+    if net["hidden"] != hidden:
+        raise SystemExit("{} is {} wide, this training {} (--hidden)".format(path, net["hidden"], hidden))
+    if net["scale"] != SCALE:
+        raise SystemExit("{} was trained at scale {}, this training is at {} (--scale)".format(path, net["scale"], SCALE))
+    with torch.no_grad():
+        model.features.weight[:PAD].copy_(torch.from_numpy(net["feature_weights"].astype(np.float32) / QA).to(device))
+        model.feature_bias.copy_(torch.from_numpy(net["feature_bias"].astype(np.float32) / QA).to(device))
+        model.out.weight.copy_(torch.from_numpy(net["output_weights"].astype(np.float32) / QB).to(device))
+        model.out.bias.copy_(torch.tensor([b / float(QA * QB) for b in net["output_bias"]], dtype=torch.float32, device=device))
+    print("starting from {}".format(path))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
@@ -290,6 +309,9 @@ def main():
                         help="positions on the device at a time; 0 keeps the whole corpus there. "
                              "The card holds about 150M; with a window the corpus is bounded by host memory")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--init", default="",
+                        help="start from this network's weights instead of from random ones: "
+                             "fine-tuning, as a self-play loop does each generation")
     parser.add_argument("--scale", type=int, default=0,
                         help="centipawn scale for the target; 0 keeps the default")
     parser.add_argument("--blend", type=float, default=-1.0,
@@ -326,6 +348,8 @@ def main():
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
     model = Net(args.hidden).to(device)
+    if args.init:
+        start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
     loss_of = nn.MSELoss()
