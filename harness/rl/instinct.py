@@ -48,7 +48,7 @@ SEARCH_NODES = 40000
 def open_net(path):
     engine = chess.engine.SimpleEngine.popen_uci(ENGINE, timeout=60)
     engine.configure({"EvalFile": path, "Repertoire": 0, "Threads": 1})
-    return engine
+    return panel_label.lower(engine)
 
 
 def first_move(engine, board, limit):
@@ -122,6 +122,7 @@ def run(args):
     for _ in todo:
         row = results.get()
         have[panel_label.position_key(row["fen"])] = row
+    panel_label.finish(pool)
     tmp = out_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as out:
         for row in have.values():

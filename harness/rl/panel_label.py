@@ -54,6 +54,25 @@ def below_normal():
         ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
 
 
+def lower(engine):
+    """An engine process does not take our priority class with it: set it below normal too."""
+    if os.name == "nt":
+        handle = ctypes.windll.kernel32.OpenProcess(0x0200, False, engine.transport.get_pid())
+        if handle:
+            ctypes.windll.kernel32.SetPriorityClass(handle, 0x4000)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    return engine
+
+
+def finish(pool):
+    """Wait for the workers to quit their engines. A worker killed with its parent leaves them
+    running, and Reckless spins a whole core on a closed pipe: twelve of those were found on 2026-10-07."""
+    for p in pool:
+        p.join(120)
+        if p.is_alive():
+            p.terminate()
+
+
 def to_wp(cp):
     return 1.0 / (1.0 + math.exp(-float(cp) / SCALE))
 
@@ -94,7 +113,7 @@ def ask(engines, name, board, limit):
     for _ in range(2):
         try:
             if name not in engines:
-                engines[name] = panel.open_engine(name, 32)
+                engines[name] = lower(panel.open_engine(name, 32))
             info = engines[name].analyse(board, limit)
             pv = info.get("pv")
             if pv:
@@ -170,7 +189,7 @@ def main():
         seen = {position_key(json.loads(l)["fen"]) for l in open(out_path, encoding="utf-8")}
     labelled = len(seen)
     tasks, results = multiprocessing.Queue(), multiprocessing.Queue()
-    pool = [multiprocessing.Process(target=worker, args=(tasks, results, args.nodes), daemon=True) for _ in range(args.workers)]
+    pool = [multiprocessing.Process(target=worker, args=(tasks, results, args.nodes), daemon=False) for _ in range(args.workers)]
     for p in pool:
         p.start()
     offsets, pending, done, agreed, start, last = {}, 0, 0, 0, time.time(), time.time()
@@ -202,6 +221,7 @@ def main():
                 break
     for _ in pool:
         tasks.put(None)
+    finish(pool)
     print("%d positions labelled, consensus best move on %.1f%%" % (done, 100 * agreed / max(1, done)))
     return 0
 

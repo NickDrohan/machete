@@ -139,7 +139,7 @@ def worker(tasks, results):
         best = chess.Move.from_uci(task["best"])
         found = []
         if "Stockfish" not in engines:
-            engines["Stockfish"] = panel.open_engine("Stockfish", 32)
+            engines["Stockfish"] = panel_label.lower(panel.open_engine("Stockfish", 32))
         sf_best = child_score(engines["Stockfish"], board, best, limit)
         panel_best = None
         for uci, own in task["wanted"]:
@@ -212,6 +212,7 @@ def run(args):
                             record(board, chess.Move.from_uci(t["best"]), t["panel_best"])]
                     chunk.write(np.array(rows, dtype=gen.RECORD).tobytes())
     open(checked_path, "w", encoding="utf-8").write("\n".join(sorted(checked)))
+    panel_label.finish(pool)
     report(args)
 
 

@@ -216,19 +216,22 @@ def play(args, state):
                 pass
 
     def worker(batch):
-        pair = [open_remote("pi-01", state["champion"]), open_remote("pi-02", state["challenger"])]
+        pair = []
         try:
             for number, fen, champion_white in batch:
-                # a dropped ssh link or a dead engine: reconnect both and play the opening again from the start
+                # a dropped ssh link or a dead engine: reconnect both and play the opening again from the start.
+                # Connecting is inside the try: on 2026-10-07 the reconnect itself failed and took the worker with it.
                 for attempt in range(MAX_TRIES):
                     try:
+                        if not pair:
+                            pair[:] = [open_remote("pi-01", state["champion"]), open_remote("pi-02", state["challenger"])]
                         rows, outcome, game, moves = play_game(pair[0], pair[1], fen, champion_white, args.nodes, rng)
                         break
                     except Exception as error:
                         print("  game %d, try %d: %s: %s" % (number, attempt + 1, type(error).__name__, error), flush=True)
                         close(pair)
-                        time.sleep(15 * (attempt + 1))
-                        pair[:] = [open_remote("pi-01", state["champion"]), open_remote("pi-02", state["challenger"])]
+                        del pair[:]
+                        time.sleep(60 * (attempt + 1))
                 else:
                     with lock:
                         failed.append(number)

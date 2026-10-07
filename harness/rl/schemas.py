@@ -286,6 +286,7 @@ def run(args):
             ranks.write(json.dumps(row) + "\n")
             if schemas:
                 hits.write(json.dumps(dict(fen=row["fen"], best=row["best"], top=row["top"], schemas=schemas)) + "\n")
+    panel_label.finish(pool)
     report(args)
 
 
