@@ -18,3 +18,17 @@ date	network	base	change	chunks	games	elo	margin95	verdict	source
 2026-10-01	C34	C33	pi_gen4 snap2 (19.3M) in place of snap1 (10.5M)	pi_gen4_pi01_snap2.bin	1700	-3	17	rejected: more broad self-play data has stopped paying	SPRT-NET-C34
 2026-10-03	C35	C33	+ kalashnikov_snap1.bin (15.4M)	kalashnikov_snap1.bin	2269	1	14	no cost in general play, and no gain where it was aimed: 8.2% as Black in the Kalashnikov against full Stockfish, C33 8.7%	SPRT-NET-C35, KALASHNIKOV-c35
 2026-10-04	C36	C33 (in a 4.5% faster engine)	a network of 371.7M positions; its recipe is not in the queue records	-	500	-11	18	the 0.4.0 match against 0.4.0_perplexity, which is C33 in a faster engine: not better than C33	competition/v040/RESULT.md
+2026-10-06	S60	C33	60M sampled from C33's 300M	s60_control.bin	300	-111	42	a fifth of the data costs about 110 Elo	LADDER-S60-C33
+2026-10-06	F60	S60	60M Fischer Random (x1, x2, gap960_10m) in place of 60M ordinary	x1_handicap960_tb.bin,x2_handicap960.bin,gap960_10m.bin	300	-325	59	at equal size ordinary data is far ahead of knight-down and compensated Fischer Random data	frc_curve
+2026-10-06	F100	F80	+ 20M equal-material Fischer Random	x3_equal960_tb.bin	600	44	28	the equal-material half of the owner's ablation	LADDER-F100-F80
+2026-10-06	F100D	F80	+ 20M varied-deficit Fischer Random	d1_deficit960.bin	600	83	29	the deficit half: at least as much as equal-material, probably more (head to head +26 +/- 28)	LADDER-F100D-F80
+2026-10-07	F120D	F100D	+ 20M varied-deficit	d2_deficit960.bin	600	59	28	the deficit gain continues	LADDER-F120D-F100D
+2026-10-07	F140D	F120	+ 20M varied-deficit (and without the equal-material 20M)	d4_deficit960.bin	600	16	28	inside the noise	LADDER-F140D-F120
+2026-10-07	F160D	F140D	+ 20M varied-deficit	d6_deficit960.bin	600	50	28		LADDER-F160D-F140D
+2026-10-07	F180D	F160D	+ 20M varied-deficit	p1_deficit960.bin	600	38	28		LADDER-F180D-F160D
+2026-10-08	F200D	F180D	+ 20M varied-deficit: 200M Fischer Random in all	d8_deficit960.bin	600	38	28	still climbing about 40 a chunk	LADDER-F200D-F180D
+2026-10-08	F200D	S60	200M Fischer Random against 60M ordinary	-	600	-54	28	the owner's test: under half as many ordinary positions still win, so the Fischer-Random-only road is answered (F200D against C33: -144 +/- 30)	LADDER-F200D-S60
+2026-10-08	M200	S60	+ 140M Fischer Random (six deficit chunks and gap960_pc2) on S60's 60M	gap960_pc2.bin,d1_deficit960.bin,d2_deficit960.bin,d4_deficit960.bin,d6_deficit960.bin,p1_deficit960.bin,d8_deficit960.bin	600	47	28	Fischer Random data adds on top of ordinary data; M200 is within 47 +/- 28 of C33, which has six times the ordinary positions	LADDER-M200-S60
+2026-10-08	D500	D1500	10M at 500 nodes in place of 10M at 1,500	n500_10m.bin	600	79	29	equal positions: the shallower set trains the stronger network	LADDER-D500-D1500
+2026-10-08	D500X30	D1500	30M at 500 nodes against 10M at 1,500: equal compute	n500.bin	600	189	32	equal compute: three times the positions at a third of the depth is far ahead	LADDER-D500X30-D1500
+2026-10-08	D500X30	S60	30M one-book 500-node data against 60M of C33's mix	n500.bin	600	-189	32	not a depth comparison (half the size, one source): how far the sweep's small networks are from a real one	LADDER-D500X30-S60

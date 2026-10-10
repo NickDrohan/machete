@@ -865,17 +865,603 @@
   },
   {
    "name": "x1_handicap960_tb.bin",
-   "positions": 5538463,
+   "positions": 30000851,
    "on_disk": true,
-   "in_progress": true,
-   "family": "Cursor's experiment",
-   "teacher": "not recorded here",
-   "source": "Cursor's corpus: games played a piece down from Fischer Random positions, in progress",
-   "addresses": "play from material deficit and unfamiliar structures",
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "the other session's corpus: games from Chess960 starts with one side a clean minor piece or pawns down",
+   "addresses": "play from a material deficit",
    "note": "",
-   "status": "Cursor's, generating; listed by file name only",
+   "status": "30M; 51% of labels pinned at won or lost",
+   "used_by": [
+    "F60",
+    "F70",
+    "F100",
+    "F80",
+    "F100D",
+    "F120",
+    "F120D",
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D"
+   ],
+   "first": "F60",
+   "experiments": [
+    20
+   ]
+  },
+  {
+   "name": "x2_handicap960.bin",
+   "positions": 20000129,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "the same handicap book without takebacks",
+   "addresses": "play from a material deficit",
+   "note": "",
+   "status": "20M; 60% pinned",
+   "used_by": [
+    "F60",
+    "F70",
+    "F100",
+    "F80",
+    "F100D",
+    "F120",
+    "F120D",
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D"
+   ],
+   "first": "F60",
+   "experiments": [
+    20
+   ]
+  },
+  {
+   "name": "gap960_10m.bin",
+   "positions": 10000727,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with a real trade applied, kept only where Stockfish calls them balanced",
+   "addresses": "unusual material balances without a deficit",
+   "note": "",
+   "status": "10M; 25% pinned",
+   "used_by": [
+    "F60",
+    "F70",
+    "F100",
+    "F80",
+    "F100D",
+    "F120",
+    "F120D",
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D"
+   ],
+   "first": "F60",
+   "experiments": [
+    20
+   ]
+  },
+  {
+   "name": "gap960_pc2.bin",
+   "positions": 20000805,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with a real trade applied, kept only where Stockfish calls them balanced",
+   "addresses": "unusual material balances without a deficit",
+   "note": "",
+   "status": "20M; 25% pinned",
+   "used_by": [
+    "F100",
+    "F80",
+    "F100D",
+    "F120",
+    "F120D",
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D",
+    "M200"
+   ],
+   "first": "F100",
+   "experiments": [
+    29
+   ]
+  },
+  {
+   "name": "x3_equal960_tb.bin",
+   "positions": 20000114,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "balanced Chess960 starts",
+   "addresses": "the equal-material control for the deficit chunks",
+   "note": "",
+   "status": "20M; 25% pinned",
+   "used_by": [
+    "F100",
+    "F120"
+   ],
+   "first": "F100",
+   "experiments": [
+    21
+   ]
+  },
+  {
+   "name": "eq960_m1_10m.bin",
+   "positions": 10309136,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "balanced Chess960 starts, the Mac's run stopped at 10.3M",
+   "addresses": "equal-material control",
+   "note": "",
+   "status": "10.3M, not trained on",
    "used_by": [],
    "first": null,
+   "experiments": []
+  },
+  {
+   "name": "d1_deficit960.bin",
+   "positions": 20000909,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned",
+   "used_by": [
+    "F100D",
+    "F120",
+    "F120D",
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D",
+    "M200"
+   ],
+   "first": "F100D",
+   "experiments": [
+    22,
+    29
+   ]
+  },
+  {
+   "name": "d2_deficit960.bin",
+   "positions": 20000146,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned",
+   "used_by": [
+    "F120D",
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D",
+    "M200"
+   ],
+   "first": "F120D",
+   "experiments": [
+    23,
+    29
+   ]
+  },
+  {
+   "name": "d4_deficit960.bin",
+   "positions": 20000208,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned",
+   "used_by": [
+    "F140D",
+    "F160D",
+    "F180D",
+    "F200D",
+    "M200"
+   ],
+   "first": "F140D",
+   "experiments": [
+    24,
+    29
+   ]
+  },
+  {
+   "name": "d6_deficit960.bin",
+   "positions": 20000338,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned",
+   "used_by": [
+    "F160D",
+    "F180D",
+    "F200D",
+    "M200"
+   ],
+   "first": "F160D",
+   "experiments": [
+    25,
+    29
+   ]
+  },
+  {
+   "name": "p1_deficit960.bin",
+   "positions": 20000796,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned",
+   "used_by": [
+    "F180D",
+    "F200D",
+    "M200"
+   ],
+   "first": "F180D",
+   "experiments": [
+    26,
+    29
+   ]
+  },
+  {
+   "name": "d8_deficit960.bin",
+   "positions": 20000333,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned",
+   "used_by": [
+    "F200D",
+    "M200"
+   ],
+   "first": "F200D",
+   "experiments": [
+    27,
+    29
+   ]
+  },
+  {
+   "name": "d10_deficit960.bin",
+   "positions": 20000245,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "Chess960 starts with one side really worse: 24 kinds of trade, Stockfish deficit 60 to 350 cp in three bands (harness/nnue/deficit960_book.py)",
+   "addresses": "the owner's vision: play from a disadvantage whose shape is not fixed",
+   "note": "",
+   "status": "20M; 26% pinned; kept, not trained on (the corpus stopped at 200M)",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "s60_control.bin",
+   "positions": 59999998,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "controls",
+   "teacher": "Stockfish 19",
+   "source": "a 60M random sample of C33's 300M training mix (E:/machete/claude/r3/make_s60.py)",
+   "addresses": "ordinary data at a fixed size, the yardstick for other chunks",
+   "note": "",
+   "status": "60M; 21% pinned",
+   "used_by": [
+    "S60",
+    "M200"
+   ],
+   "first": "S60",
+   "experiments": [
+    19
+   ]
+  },
+  {
+   "name": "n150.bin",
+   "positions": 10000518,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 150 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "10M; 5% of positions from drawn games",
+   "used_by": [
+    "D150"
+   ],
+   "first": "D150",
+   "experiments": []
+  },
+  {
+   "name": "n150b.bin",
+   "positions": null,
+   "on_disk": false,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 150 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "20M; second seed, for the 30M network",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n500.bin",
+   "positions": 30000890,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 500 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "30M; 12% from drawn games",
+   "used_by": [
+    "D500X30"
+   ],
+   "first": "D500X30",
+   "experiments": [
+    31,
+    32
+   ]
+  },
+  {
+   "name": "n500_10m.bin",
+   "positions": 10000000,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 500 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "10M; the first 10M of n500.bin: a subset, not new data",
+   "used_by": [
+    "D500"
+   ],
+   "first": "D500",
+   "experiments": [
+    30
+   ]
+  },
+  {
+   "name": "n500b.bin",
+   "positions": 30000748,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 500 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "30M; second seed, for the 60M network",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n1500.bin",
+   "positions": 10000833,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 1,500 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "10M; 30% from drawn games; the sweep's reference",
+   "used_by": [
+    "D1500"
+   ],
+   "first": "D1500",
+   "experiments": []
+  },
+  {
+   "name": "n1500b.bin",
+   "positions": 207939,
+   "on_disk": true,
+   "in_progress": true,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 1,500 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "20M; second seed, for the 30M network",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n5000.bin",
+   "positions": 10001373,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 5,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "10M; 51% from drawn games",
+   "used_by": [
+    "D5000"
+   ],
+   "first": "D5000",
+   "experiments": []
+  },
+  {
+   "name": "n5000_3m.bin",
+   "positions": 3333333,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 5,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "3.3M; the first 3.3M of n5000.bin: a subset, equal compute to 10M at 1,500",
+   "used_by": [
+    "D5000X3"
+   ],
+   "first": "D5000X3",
+   "experiments": []
+  },
+  {
+   "name": "n5000b.bin",
+   "positions": null,
+   "on_disk": false,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 5,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "20M; second seed, for the 30M network",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n15000_pc.bin",
+   "positions": 5001355,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "5M; 66% from drawn games",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n15000_mac.bin",
+   "positions": 5000558,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "5M",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n15000_pi01.bin",
+   "positions": 937169,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "0.94M; stopped early when the owner took the Pis back",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "n15000_pi02.bin",
+   "positions": 760703,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move",
+   "addresses": "ASSUMPTIONS.md: 1,500 nodes a label was never swept. The teacher plays the games at the label's budget.",
+   "note": "",
+   "status": "0.76M; stopped early when the owner took the Pis back",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "p1500_l500.bin",
+   "positions": null,
+   "on_disk": false,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the positions of the 1500-node set with every score replaced by Stockfish's at 500 nodes (harness/nnue/relabel.py)",
+   "addresses": "positions or labels: which of the two makes the 500-node set train a stronger network",
+   "note": "",
+   "status": "10M",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "p500_l1500.bin",
+   "positions": null,
+   "on_disk": false,
+   "in_progress": false,
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the positions of the 500-node set with every score replaced by Stockfish's at 1500 nodes (harness/nnue/relabel.py)",
+   "addresses": "positions or labels: which of the two makes the 500-node set train a stronger network",
+   "note": "",
+   "status": "10M",
+   "used_by": [],
+   "first": null,
+   "experiments": []
+  },
+  {
+   "name": "gap960_pc2_snap1.bin",
+   "positions": 9533293,
+   "on_disk": true,
+   "in_progress": false,
+   "family": "undescribed",
+   "teacher": "",
+   "source": "",
+   "addresses": "",
+   "note": "",
+   "status": "",
+   "used_by": [
+    "F70"
+   ],
+   "first": "F70",
    "experiments": []
   }
  ],
@@ -3397,6 +3983,764 @@
    "positions": 379085130
   },
   {
+   "id": "F60",
+   "job": "TRAIN-F60",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the Fischer-Random-only candidate: X1 handicap960 30M + X2 handicap960 20M + GAP960 10M, 768 wide, C33's recipe otherwise",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 60001707
+  },
+  {
+   "id": "S60",
+   "job": "TRAIN-S60",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the size-matched control: a uniform 60M sample of C33's stack, same recipe, 768 wide",
+   "chunks": [
+    {
+     "chunk": "s60_control.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 59999998
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 59999998
+  },
+  {
+   "id": "F70",
+   "job": "TRAIN-F70",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "Fischer-Random-only learning curve: f70 on E:/machete/corpora/x1_handicap960_tb.bin E:/machete/corpora/x2_handicap960.bin E:/machete/corpora/gap960_10m.bin E:/machete/corpora/gap960_pc2_snap1.bin",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2_snap1.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 9533293
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 69535000
+  },
+  {
+   "id": "F100",
+   "job": "TRAIN-F100",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "Fischer-Random-only learning curve: f100 on E:/machete/corpora/x1_handicap960_tb.bin E:/machete/corpora/x2_handicap960.bin E:/machete/corpora/gap960_10m.bin E:/machete/corpora/gap960_pc2.bin E:/machete/corpora/x3_equal960_tb.bin",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "x3_equal960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000114
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 100002626
+  },
+  {
+   "id": "F80",
+   "job": "TRAIN-F80",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the ablation's base: F100 without its 20M equal-material positions (X1 + X2 + GAP960 10M + GAP960 20M = 80M, every game has a side a piece down)",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 80002512
+  },
+  {
+   "id": "F100D",
+   "job": "TRAIN-F100D",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the swap: F80 plus 20M varied-deficit positions (deficit960: one side really worse, 24 kinds of trade, 26% saturated) in place of F100's 20M equal-material ones",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 100003421
+  },
+  {
+   "id": "F120",
+   "job": "TRAIN-F120",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "F100 plus the 20M varied-deficit positions (d1): equal-material and deficit data together, 120M",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "x3_equal960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000114
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 120003535
+  },
+  {
+   "id": "F120D",
+   "job": "TRAIN-F120D",
+   "date": "2026-10-06",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "F100D plus the Mac's 20M varied-deficit positions (d2): 40M deficit data, no equal-material, 120M",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 120003567
+  },
+  {
+   "id": "F140D",
+   "job": "TRAIN-F140D",
+   "date": "2026-10-07",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the Fischer Random corpus with d4_deficit960 added: 7 chunks",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    },
+    {
+     "chunk": "d4_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000208
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 140003775
+  },
+  {
+   "id": "F160D",
+   "job": "TRAIN-F160D",
+   "date": "2026-10-07",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the Fischer Random corpus with d6_deficit960 added: 8 chunks",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    },
+    {
+     "chunk": "d4_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000208
+    },
+    {
+     "chunk": "d6_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000338
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 160004113
+  },
+  {
+   "id": "F180D",
+   "job": "TRAIN-F180D",
+   "date": "2026-10-07",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the Fischer Random corpus with p1_deficit960 added: 9 chunks",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    },
+    {
+     "chunk": "d4_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000208
+    },
+    {
+     "chunk": "d6_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000338
+    },
+    {
+     "chunk": "p1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000796
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 180004909
+  },
+  {
+   "id": "F200D",
+   "job": "TRAIN-F200D",
+   "date": "2026-10-07",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "the Fischer Random corpus with d8_deficit960 added: 10 chunks",
+   "chunks": [
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    },
+    {
+     "chunk": "d4_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000208
+    },
+    {
+     "chunk": "d6_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000338
+    },
+    {
+     "chunk": "p1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000796
+    },
+    {
+     "chunk": "d8_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000333
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 200005242
+  },
+  {
+   "id": "D1500",
+   "job": "TRAIN-D1500",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "label-depth sweep: 10M ordinary positions labelled at 1,500 nodes: the sweep's reference",
+   "chunks": [
+    {
+     "chunk": "n1500.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000833
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 10000833
+  },
+  {
+   "id": "D500",
+   "job": "TRAIN-D500",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "label-depth sweep: 10M at 500 nodes: equal positions",
+   "chunks": [
+    {
+     "chunk": "n500_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000000
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 10000000
+  },
+  {
+   "id": "D500X30",
+   "job": "TRAIN-D500X30",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "label-depth sweep: 30M at 500 nodes: equal compute to 10M at 1,500",
+   "chunks": [
+    {
+     "chunk": "n500.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000890
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 30000890
+  },
+  {
+   "id": "D5000",
+   "job": "TRAIN-D5000",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "label-depth sweep: 10M at 5,000 nodes: equal positions",
+   "chunks": [
+    {
+     "chunk": "n5000.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10001373
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 10001373
+  },
+  {
+   "id": "D5000X3",
+   "job": "TRAIN-D5000X3",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "label-depth sweep: 3.3M at 5,000 nodes: equal compute to 10M at 1,500",
+   "chunks": [
+    {
+     "chunk": "n5000_3m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 3333333
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 3333333
+  },
+  {
+   "id": "M200",
+   "job": "TRAIN-M200",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "ordinary and Fischer Random together at F200D's size: S60's 60M ordinary positions plus 140M Fischer Random (the six disadvantage chunks and 20M compensated). M260 did not fit the card: 7.28 GB packed on 8 GB, no epoch in 5 hours",
+   "chunks": [
+    {
+     "chunk": "s60_control.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 59999998
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    },
+    {
+     "chunk": "d4_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000208
+    },
+    {
+     "chunk": "d6_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000338
+    },
+    {
+     "chunk": "p1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000796
+    },
+    {
+     "chunk": "d8_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000333
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 200003533
+  },
+  {
+   "id": "D150",
+   "job": "TRAIN-D150",
+   "date": "2026-10-08",
+   "finished": true,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "label-depth sweep: 10M at 150 nodes, equal positions",
+   "chunks": [
+    {
+     "chunk": "n150.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000518
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 10000518
+  },
+  {
    "id": "C4",
    "job": "TRAIN-C4",
    "date": "2026-09-26",
@@ -3635,6 +4979,86 @@
    ],
    "trainer": "v6-aa404e9",
    "positions": 353208951
+  },
+  {
+   "id": "M260",
+   "job": "TRAIN-M260",
+   "date": "2026-10-08",
+   "finished": false,
+   "hidden": 768,
+   "epochs": 14,
+   "seed": 7,
+   "change": "ordinary and Fischer Random together: S60's 60M ordinary positions plus all 200M Fischer Random ones",
+   "chunks": [
+    {
+     "chunk": "s60_control.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 59999998
+    },
+    {
+     "chunk": "x1_handicap960_tb.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 30000851
+    },
+    {
+     "chunk": "x2_handicap960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000129
+    },
+    {
+     "chunk": "gap960_10m.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 10000727
+    },
+    {
+     "chunk": "gap960_pc2.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000805
+    },
+    {
+     "chunk": "d1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000909
+    },
+    {
+     "chunk": "d2_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000146
+    },
+    {
+     "chunk": "d4_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000208
+    },
+    {
+     "chunk": "d6_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000338
+    },
+    {
+     "chunk": "p1_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000796
+    },
+    {
+     "chunk": "d8_deficit960.bin",
+     "take": null,
+     "copies": 1,
+     "positions": 20000333
+    }
+   ],
+   "trainer": "v7-05e2719",
+   "positions": 260005240
   }
  ],
  "experiments": [
@@ -3909,6 +5333,208 @@
    "games": 500,
    "verdict": "the 0.4.0 match against 0.4.0_perplexity, which is C33 in a faster engine: not better than C33",
    "source": "competition/v040/RESULT.md"
+  },
+  {
+   "date": "2026-10-06",
+   "net": "S60",
+   "base": "C33",
+   "delta": "60M sampled from C33's 300M",
+   "chunks": [
+    "s60_control.bin"
+   ],
+   "elo": -111,
+   "margin": 42,
+   "games": 300,
+   "verdict": "a fifth of the data costs about 110 Elo",
+   "source": "LADDER-S60-C33"
+  },
+  {
+   "date": "2026-10-06",
+   "net": "F60",
+   "base": "S60",
+   "delta": "60M Fischer Random (x1, x2, gap960_10m) in place of 60M ordinary",
+   "chunks": [
+    "x1_handicap960_tb.bin",
+    "x2_handicap960.bin",
+    "gap960_10m.bin"
+   ],
+   "elo": -325,
+   "margin": 59,
+   "games": 300,
+   "verdict": "at equal size ordinary data is far ahead of knight-down and compensated Fischer Random data",
+   "source": "frc_curve"
+  },
+  {
+   "date": "2026-10-06",
+   "net": "F100",
+   "base": "F80",
+   "delta": "+ 20M equal-material Fischer Random",
+   "chunks": [
+    "x3_equal960_tb.bin"
+   ],
+   "elo": 44,
+   "margin": 28,
+   "games": 600,
+   "verdict": "the equal-material half of the owner's ablation",
+   "source": "LADDER-F100-F80"
+  },
+  {
+   "date": "2026-10-06",
+   "net": "F100D",
+   "base": "F80",
+   "delta": "+ 20M varied-deficit Fischer Random",
+   "chunks": [
+    "d1_deficit960.bin"
+   ],
+   "elo": 83,
+   "margin": 29,
+   "games": 600,
+   "verdict": "the deficit half: at least as much as equal-material, probably more (head to head +26 +/- 28)",
+   "source": "LADDER-F100D-F80"
+  },
+  {
+   "date": "2026-10-07",
+   "net": "F120D",
+   "base": "F100D",
+   "delta": "+ 20M varied-deficit",
+   "chunks": [
+    "d2_deficit960.bin"
+   ],
+   "elo": 59,
+   "margin": 28,
+   "games": 600,
+   "verdict": "the deficit gain continues",
+   "source": "LADDER-F120D-F100D"
+  },
+  {
+   "date": "2026-10-07",
+   "net": "F140D",
+   "base": "F120",
+   "delta": "+ 20M varied-deficit (and without the equal-material 20M)",
+   "chunks": [
+    "d4_deficit960.bin"
+   ],
+   "elo": 16,
+   "margin": 28,
+   "games": 600,
+   "verdict": "inside the noise",
+   "source": "LADDER-F140D-F120"
+  },
+  {
+   "date": "2026-10-07",
+   "net": "F160D",
+   "base": "F140D",
+   "delta": "+ 20M varied-deficit",
+   "chunks": [
+    "d6_deficit960.bin"
+   ],
+   "elo": 50,
+   "margin": 28,
+   "games": 600,
+   "verdict": "",
+   "source": "LADDER-F160D-F140D"
+  },
+  {
+   "date": "2026-10-07",
+   "net": "F180D",
+   "base": "F160D",
+   "delta": "+ 20M varied-deficit",
+   "chunks": [
+    "p1_deficit960.bin"
+   ],
+   "elo": 38,
+   "margin": 28,
+   "games": 600,
+   "verdict": "",
+   "source": "LADDER-F180D-F160D"
+  },
+  {
+   "date": "2026-10-08",
+   "net": "F200D",
+   "base": "F180D",
+   "delta": "+ 20M varied-deficit: 200M Fischer Random in all",
+   "chunks": [
+    "d8_deficit960.bin"
+   ],
+   "elo": 38,
+   "margin": 28,
+   "games": 600,
+   "verdict": "still climbing about 40 a chunk",
+   "source": "LADDER-F200D-F180D"
+  },
+  {
+   "date": "2026-10-08",
+   "net": "F200D",
+   "base": "S60",
+   "delta": "200M Fischer Random against 60M ordinary",
+   "chunks": [],
+   "elo": -54,
+   "margin": 28,
+   "games": 600,
+   "verdict": "the owner's test: under half as many ordinary positions still win, so the Fischer-Random-only road is answered (F200D against C33: -144 +/- 30)",
+   "source": "LADDER-F200D-S60"
+  },
+  {
+   "date": "2026-10-08",
+   "net": "M200",
+   "base": "S60",
+   "delta": "+ 140M Fischer Random (six deficit chunks and gap960_pc2) on S60's 60M",
+   "chunks": [
+    "gap960_pc2.bin",
+    "d1_deficit960.bin",
+    "d2_deficit960.bin",
+    "d4_deficit960.bin",
+    "d6_deficit960.bin",
+    "p1_deficit960.bin",
+    "d8_deficit960.bin"
+   ],
+   "elo": 47,
+   "margin": 28,
+   "games": 600,
+   "verdict": "Fischer Random data adds on top of ordinary data; M200 is within 47 +/- 28 of C33, which has six times the ordinary positions",
+   "source": "LADDER-M200-S60"
+  },
+  {
+   "date": "2026-10-08",
+   "net": "D500",
+   "base": "D1500",
+   "delta": "10M at 500 nodes in place of 10M at 1,500",
+   "chunks": [
+    "n500_10m.bin"
+   ],
+   "elo": 79,
+   "margin": 29,
+   "games": 600,
+   "verdict": "equal positions: the shallower set trains the stronger network",
+   "source": "LADDER-D500-D1500"
+  },
+  {
+   "date": "2026-10-08",
+   "net": "D500X30",
+   "base": "D1500",
+   "delta": "30M at 500 nodes against 10M at 1,500: equal compute",
+   "chunks": [
+    "n500.bin"
+   ],
+   "elo": 189,
+   "margin": 32,
+   "games": 600,
+   "verdict": "equal compute: three times the positions at a third of the depth is far ahead",
+   "source": "LADDER-D500X30-D1500"
+  },
+  {
+   "date": "2026-10-08",
+   "net": "D500X30",
+   "base": "S60",
+   "delta": "30M one-book 500-node data against 60M of C33's mix",
+   "chunks": [
+    "n500.bin"
+   ],
+   "elo": -189,
+   "margin": 32,
+   "games": 600,
+   "verdict": "not a depth comparison (half the size, one source): how far the sweep's small networks are from a real one",
+   "source": "LADDER-D500X30-S60"
   }
  ],
  "seed_noise": [
