@@ -6,18 +6,22 @@
 # last info lines said - the score (centipawns or mate) and the first move of
 # its principal variation - and its bestmove.
 #
-# Built on std.system.os's pipe and spawn_redirected: the public std.process
-# API leaves a child's standard input inherited, which a UCI engine cannot
-# work with.
+# The engine is started with std.process.exec.spawn_with_options: its
+# standard input and output on our pipes, and in a process group of its own
+# (a job object on windows) that goes when this process does. An engine that
+# keeps running after its input closes - Reckless spins a core - then cannot
+# outlive a driver that was killed.
 
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
+use std.types.result.res;
 use std.types.size.usize;
 use std.types.string.str;
 use std.types.string.str_equals;
 use std.types.string.str_len;
 
+use std.process.exec;
 use std.system.os;
 
 pub val LINE_CAP: i64 = 8192;
@@ -68,13 +72,15 @@ pub fun start(e: *Engine, path: str, cwd: str) bool {
     var argv: [2]*u8;
     argv[0] = path;
     argv[1] = nil;
-    var pid: i64 = 0;
-    if (cwd == nil) {
-        pid = os.spawn_redirected(path, ?argv[0], nil, in_read, out_write, out_write);
-    }
-    or {
-        pid = os.spawn_redirected_in(path, ?argv[0], nil, cwd, in_read, out_write, out_write);
-    }
+    var options: exec.SpawnOptions = exec.spawn_options();
+    options.stdin   = in_read;
+    options.stdout  = out_write;
+    options.stderr  = out_write;
+    options.grouped = true;
+    if (cwd != nil) { options.cwd = cwd; }
+    var pid:     i64                         = -1;
+    val spawned: res[exec.Child, exec.Error] = exec.spawn_with_options(path, ?argv[0], nil, options);
+    if (sel spawned.ok) { pid = spawned.ok.pid; }
     # the child holds its own copies; ours of its ends must close, or its
     # output never sees end of file
     val c1: i64 = os.close(in_read);
