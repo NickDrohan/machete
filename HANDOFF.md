@@ -1,4 +1,177 @@
-# Handing off the Mach side
+# Handing off machete
+
+## 2026-10-10: 0.4.0
+
+**0.4.0 is released and on the lichess bot.** One change from 0.3.6: the network, C33F140, which is C33's recipe (364M) plus 140M Fischer Random positions - six 20M chunks played from starts where one side is really but not decisively worse (`harness/nnue/deficit960_book.py`, on the `feat/deficit960` branch) and 20M from compensated trades. Against C33 on 0.3.6's executable: +27 +/- 28 at 40,000 nodes (600 games), +20 +/- 22 at 10+0.1 (988, SPRT [0, 10] accepted), +32 +/- 34 at 60+0.6 (409, accepted). 0.4.0 as packaged against 0.3.6 as released: +22 +/- 23 (853, accepted). `check.sh` 35 of 35. `release/notes-0.4.0.md` has the account.
+
+What the week measured, for whoever trains the next network (the numbers are in `catalog/` on the `feat/league-eval` branch, not yet merged):
+
+- Fischer Random data alone loses to ordinary data (200M of it against 60M ordinary: -54 +/- 28); added to ordinary data it gains. More of C33's own kind of data had stopped gaining (C34, C35, C36).
+- Varied small deficits teach; a clean knight down does not (a network trained only on classical knight-down positions: -413 against level starts at the same size).
+- Label depth: the same positions scored at 500 or at 1,500 nodes train the same network (+10 +/- 28). What depth changes is which positions the teacher's games reach: at 15,000 nodes two in three come from drawn games. 500 nodes leads 1,500 by 79 at 10M positions and is level at 30M.
+- A policy network's first choice (Leela, one node) is the teacher panel's best move 64% of the time; C33's is 40%, and 60% after a 40,000-node search. A move-ordering prior is the untried lever.
+- The 8 GB card holds about 200M positions outright; larger corpora need `--window` (C33's recipe uses 120M).
+
+## 2026-10-04: the 0.4.0 match, the chunk catalog, the mate dataset
+
+**The 0.4.0 match** (`E:/machete/competition/v040/RESULT.md`): `c36` (the dev engine with a new network, C36) against `0.4.0_perplexity` (0.3.6's exact search about 4.5% faster on this PC, network C33), by the neutral referee at tag `referee-v1`.
+
+| phase | games | c36 W-D-L | points | c36 Elo (95%) |
+|---|---|---|---|---|
+| 10+0.1 | 400 | 75-237-88 | 193.5 - 206.5 | -11.3 +/- 21.0 |
+| 60+0.6 | 100 | 13-71-16 | 48.5 - 51.5 | -10.4 +/- 34.1 |
+| pooled | 500 | 88-308-104 | 242 - 258 | -11.1 +/- 18.2 |
+
+Perplexity's entry wins on points (51.6%); the interval contains zero. The 10+0.1 phase was clean. Another session started a 20-worker generator 16 minutes into the 60+0.6 phase, so that phase ran on an overloaded machine (no forfeits), and the two context matches against 0.3.6 are invalid (146 and 43 time forfeits in 200 games each). Perplexity's archive held only Linux binaries; its Windows engine was built by the referee from its source bundle at the commit in its `READY`. The owner has not yet said whether to replay the loaded phases. A live scoreboard for referee result files is `E:/machete/competition/v040/scoreboard.py`.
+
+**Cursor's corpus** (as the owner described it; Cursor's own notes are the source): training entirely a piece down, from Fischer Random positions. Its files in `E:/machete/corpora` are `x0_control_30m.bin` and `x1_handicap960_tb.bin` (generating, 20 Stockfish workers). When it runs, the PC has no spare threads: matches lose games on time.
+
+**The chunk catalog** (`catalog/`, page: `catalog/chunk-catalog.html`): every training chunk, the networks trained on it, and what each experiment that isolated a chunk measured: 31 chunks, 37 training runs, 19 experiments. It could be built in retrospect because every training run's corpus list is in the GPU queue's job records. `catalog/chunks_meta.json` is the hand-kept half (what a chunk is, what an experiment measured); `python harness/nnue/chunk_catalog.py` regenerates `catalog.json`, `chunk_ledger.tsv` (the record of Elo shifts by chunk) and the page. **To record a new chunk trial: add the chunk and one experiment to `chunks_meta.json` and run the script.** What the record says so far: the only chunks with an interval clear of zero are the foundation (removing or halving it costs 28 to 54 Elo) and the repertoire set (+10 +/- 8, from a running log); the Pi farm's broad-book positions gave +16 +/- 19 once and then nothing; attack, conversion and narrow-opening chunks have not shown a gain; one training seed is worth about +/-6.
+
+**The deep-mate dataset** (`harness/nnue/mate_retro.py`, output `E:/machete/mates/retro.jsonl`): the owner's design. A random checkmate (3 to 32 men, a normal army), then a reverse search: take back a move, and keep the predecessor only when Stockfish 19 proves a forced mate exactly one ply longer. Taking back an attacker's move always leaves a forced mate; taking back a defender's move does only if every other defender move also loses, which is what the proof checks. It is a sampled reverse search (a beam), not the whole tree. Each line has the FEN, the distance in plies, the attacker, Stockfish's line, the proof's nodes, the seed and the parent. A trial of 204 positions reached 10 plies; 16 re-proved with 10 to 100 times the nodes all kept their distance. It runs at idle priority from its own clone (`D:/Dev/Claude/machete-mates`, `E:/machete/mates/run.sh`, log `run.log`), one seed at a time, until stopped. **Not done yet:** a converter from `retro.jsonl` to a training chunk, and the first network trained with it; when that happens it goes in the catalog like any chunk. The positions are chaotic by construction (they come from random mates, not games); whether that helps or hurts is what the chunk experiment is for.
+
+**The self-play league** (`harness/rl/league.py`, state in `E:/machete/rl`): the owner asked for a reinforcement-learning harness where the two Pis play each other with networks trained on the Fischer Random and deep-mate chunks, to see whether it finds moves Stockfish likes. Built and smoke-tested; **not started for real**, because (1) both Pis are running Cursor's generators, (2) the deep-mate chunk has a few hundred positions, (3) no network trained on both chunks exists yet (only Cursor's 3M pilot, `net_x1_3m.nnue`).
+How it works: pi-01 plays the champion, pi-02 the challenger, one engine each, driven from the PC over ssh at a fixed node count. A generation is `play` (the games become a chunk labelled by the movers' own search scores and results), `judge` (Stockfish 19 on the PC scores a sample of the moves: first-choice rate, top-three rate, centipawns given up; written to `approval.tsv`; never a training signal), `train` (`train.py --init`, new: the champion fine-tuned on the last generations' chunks), `promote` (55% or more against the champion). The engine on the Pis is cross-compiled here (`mach build . -p release -a machete -t linux-aarch64`) and lives in `~/machete/rl` with its networks.
+To start: `python harness/rl/league.py deploy --engine out/linux-aarch64/release/bin/machete --net START.nnue`, then `... loop --games 200 --nodes 30000 --concurrency 3`.
+What the smoke test (two generations of four games, `E:/machete/rl-smoke`) showed: 569 moves in 81 s at 8,000 nodes with one engine a Pi; fine-tuning on 509 positions made the network worse and the yardstick caught it (first choice 38.7% against the champion's 51.7%, 41.9 cp a move given up against 14.0). A generation needs thousands of games, not four. The engine does not play Chess960 (no 960 castling), so league games start from the ordinary balanced book.
+
+## 2026-10-03: working from a clone
+
+Everything needed to build, test and change the engine is in this repository
+on `dev`. The training data, the LAION games, the job queues, the Raspberry
+Pi farm and the lichess bot are on the owner's PC and are **not** here; the
+paths under `E:/` below are that machine's. Do not copy the bot's lichess
+token or any other credential to a cloud machine.
+
+### Set up
+
+```bash
+# the compiler: Mach 6.10.1 (https://github.com/briar-systems/mach/releases/tag/v6.10.1)
+curl -fsSL https://machlang.org/install.sh | sh   # installs the latest release; or unpack the v6.10.1 archive
+mach dep pull .                       # mach-std 9.4.1, at the recorded pin
+mach build . -p release -a machete    # also: -a arena, -a gen, -a trainer, -a binpack
+mach test .                           # 58 tests; `-a arena`, `-a gen`, `-a trainer` for the tools' own
+pip install chess numpy               # the harness; torch only for harness/nnue/train.py
+MACH=mach PYTHON=python bash check.sh # the 35 acceptance gates
+```
+
+Mach 6.8 renamed two flags: `--bin X` is `-a X`, `--all-targets` is `-t '*'`.
+The engine loads `machete.nnue` from beside the executable; `net/machete.nnue`
+is 0.3.6's network (C33).
+
+### What can be done from a clone
+
+- Search and engine changes, measured with the match runner
+  (`arena`, or `harness/match.py`): `arena A B --tc 10+0.1 --book harness/books/balanced_200.epd --sprt 0 10 --games 4000 --concurrency N`.
+- The attack-suite yardstick needs `attack_suite.epd`, which is on the PC; ask for it or rebuild it with `harness/nnue/attack_suite.py` from engine miniatures.
+- Network training needs the corpora (about 26 GB packed) and is not possible from a clone alone.
+
+### Known issues, found while preparing this handoff
+
+- `arena` against `harness/match.py` (`harness/arena_check.py`, 20 games at depth 5): 2 games differ, a draw declared one ply apart in games of about 190 moves; the results are the same. Present under Mach 6.5 and 6.10 alike.
+- `harness/nnue/trainer_check.py` on `pi_gen4_pi01_snap1.bin`: the losses agree to 3e-07 relative, but one feature weight differs by 7e-03 after 10 steps, over the check's 1e-04 limit. Same under both compilers; the earlier pass was on another corpus.
+- `harness/nnue/train.py` here is the fixed trainer (the old streaming window is dropped before the next is loaded). The prefetching version it replaces spilled past an 8 GB card into system memory and trained at a tenth of its speed.
+
+## 2026-10-03: state, results and decisions
+
+## State in one paragraph
+
+**0.3.6 is the released version and it is what the lichess bot runs** (still true on 2026-10-04; see the section above for what has happened since). 0.3.7 (the Sveshnikov repertoire) failed both of its tests, was taken off the bot after about 40 games, and was never published; its PR is closed. Nothing is training or queued on the PC. Both Pis are generating Sveshnikov games, which is now the wrong opening, and have nothing queued after that. The one open decision is which Sicilian (or whether any) replaces the Marshall.
+
+## Versions
+
+| version | change | measured | where |
+|---|---|---|---|
+| 0.3.4 | network C30 | +24 ± 24 vs 0.3.3 | released |
+| 0.3.5 | network C33 | +5 ± 11 vs 0.3.4 (4,000 games) | released |
+| **0.3.6** | king-danger search fix | −1 ± 12 vs 0.3.5; sees the lichess mate at depth 18, not 22 | **released, on the bot** |
+| 0.3.7 | Sveshnikov for the Marshall | **−16 ± 20** vs 0.3.6; lichess 1-3-7 as Black vs 1.e4 | **rejected**, PR #36 closed |
+
+`dev` and `main` are at 0.3.6. `dev` also has Mach 6.10.1 and mach-std 9.4.1 (PR #35): same moves, bench 2–4% faster, all 35 gates pass. Build with `E:/machete/tools/mach-6.10.1/mach.exe`; `--bin` is now `-a`, `--all-targets` is `-t '*'`.
+
+## What was learned (the numbers to keep)
+
+**Networks**
+- More broad self-play data has plateaued: C34 (+19.3M positions) is −3 ± 17 against C33.
+- One training run's luck is about ±6 Elo: C33 with another seed is −6 ± 12. A network needs an SPRT **and** a packaged head-to-head.
+- Narrow opening data did not help where it was aimed: C35 (C33 + 15.4M Kalashnikov positions) scored 8.2% as Black in the Kalashnikov against full Stockfish, C33 8.7%; +1 ± 14 in general play.
+- Attack games mixed into training: −18 at three copies, undecided (slightly positive at most) at one.
+
+**Openings**
+- What lichess bots play decides the system. After 1.e4 c5 2.Nf3 **Nc6** they play the Rossolimo (3.Bb5) in 11 of 13 games; after 2...**d6** they play 3.d4 in 18 of 21 and never 3.Bb5+.
+- LAION **averages mislead**: its openings are partly random. Rank by minimax (`laion_tree.py --minimax`). The Kalashnikov averages 51% for Black and is worth 36% under best play.
+- machete as Black against full Stockfish 19 (like-for-like LAION books, ±2.5 points):
+
+| 2...d6 systems, 400 games | score | | Bb5 lines, 250 games | score |
+|---|---|---|---|---|
+| Classical | 8.6% | | Moscow (2...d6 3.Bb5+) | 8.6% |
+| Scheveningen | 7.5% | | Rossolimo 3...d6 | 8.0% |
+| Najdorf | 7.0% | | Rossolimo 3...e6 | 7.6% |
+| Dragon | 6.4% | | Rossolimo 3...g6 | 7.2% |
+| | | | Rossolimo 3...Nf6 (0.3.7's) | 5.2% |
+
+  Earlier, same test on other books: Marshall 11.0%, Sveshnikov 11.0%. **No Sicilian beat the Marshall here**, and the gaps between the 2...d6 systems are inside the noise.
+- 0.3.6 with the Marshall on lichess: as Black vs 1.e4, 18 games, 4-6-8. On 0.3.3 it was 1-6-17; the newer networks may have fixed most of it. **The case for replacing the Marshall is weaker than it looked.**
+
+**Lichess, 80 draws and losses at depth 22**
+- 36 evaluation errors, 22 search or time errors (found at depth 16, missed in the game), 22 other.
+- Draws are level games, not thrown wins. Losses are decided around ply 72.
+- machete is 15–20 points of clock behind from move 10 (6.6 s a move in the opening against 2.9 s).
+
+**Tried and not kept**
+- Opening-clock discount (`feat/opening-clock`): nothing in self-play after 3,820 games. Needs a booked opponent to test.
+- Continuation history, capture history: both below zero.
+
+## Open decisions for the owner
+
+1. **The Black repertoire against 1.e4.** Options: keep the Marshall (0.3.6 is doing acceptably with it); or a 2...d6 Sicilian, where the Classical tested best but not significantly. Any change gets its self-play no-cost check **before** it goes on the bot.
+2. **What the Pis generate next.** Their queues are empty on purpose.
+3. **The GPU.** Nothing worth training is queued. The next real GPU work is the Mach GPU trainer and a faster evaluation on Mach 6.10 (256-bit vectors, compute shaders).
+
+## Suggested next steps, in order
+
+1. **Search, the 22 of 80**: the "exploit mode" from `plans/attack-plan.md` (in this repository) (search quiet attacking moves deeper after the opponent's mistake). Yardstick: `suite_score.py` on the 3,114-position attack suite, where 0.3.4 finds 74.5% (68% of quiet moves, 63% of sacrifices).
+2. **The clock**: a test against an opponent that plays its first ten moves instantly, then decide on `feat/opening-clock`.
+3. **Speed**: AVX2 kernels as plain 256-bit vector code, then a wider network.
+4. **Openings**: only with a field check, a minimax value and a full-Stockfish test, all three.
+
+## What is running
+
+| thing | state |
+|---|---|
+| lichess bot | running detached (`E:/machete/claude/r3/bot_start.cmd`), engine 0.3.6, 8 threads, Contempt 20 |
+| CPU and GPU queues | runners alive, **nothing queued** |
+| farm watchdog | running detached (`E:/machete/farm/watchdog.sh`), log `watchdog.log`; starts the next line of `queue-pi-0N.txt` when a Pi is idle |
+| pi-01 | `sv1`, Sveshnikov book, 14.2M of 20M, done about 08:30 on 10-04 |
+| pi-02 | `sv2`, Sveshnikov book, 2.3M of 20M, done about 00:00 on 10-05 |
+| Pi queues | empty: the watchdog will log "idle and its queue is empty" hourly once a run ends |
+
+Anything started from a Claude tool dies with the session; the bot, the watchdog and the queue runners were started through WMI and survive.
+
+## Data on disk
+
+- `E:/machete/corpora/`: `pi_gen4_pi01_sf19.bin` (20M broad), `attack_pi02_gen4_sf19.bin` (20M attack book), `kalashnikov_gen1_sf19.bin.*.part` (15.0M, PC) and `kalashnikov_snap1.bin` (15.4M, in C35), `attack_gen4_sf19.bin`.
+- On the Pis, not pulled: pi-01 `gen5.bin` (20M broad), pi-02 `gen5.bin` (20M Kalashnikov), `sv1`, `sv2` in progress.
+- `E:/chess-data/laion-chess/` (838 GB, 3.17B games) and `laion-index/` (opening, result, length per game).
+- Books: `E:/machete/books/systems-laion/`, `open-d6/`, `rossolimo/` (tests); `kalashnikov_gen.epd`, `sveshnikov_gen.epd` (generation); `attack_suite.epd`, `attack_book.epd`.
+- Networks: `E:/machete/claude/nets/` c30 to c35, c33s8.
+
+## Code
+
+- Engine repo `D:/Dev/Claude/machete-030`, currently on `feat/variety` (harness tools, pushed). `dep/std` shows as modified there; it is the 9.4.1 pin already on `dev`, harmless.
+- Branches: `feat/sveshnikov` (0.3.7, rejected), `feat/opening-clock` (unproven), `feat/king-danger*` and `feat/mach-6.10` (merged).
+- New harness tools on `feat/variety`, not yet on `dev`: `laion_index.py`, `laion_rank.py`, `laion_tree.py`, `laion_book.py`, `laion_prefix_book.py`, `laion_quality.py`, `system_books.py`, `suite_score.py`, `attack_detector.py`, `lichess_review.py --all-draws`.
+- `D:/Dev/Claude/machete-train` (`feat/mach-trainer`): the Mach trainer, gen and arena; arena has `--a-colour`. Still on Mach 6.5.
+
+## Mistakes to not repeat
+
+- 0.3.7 went on the bot before its self-play check finished.
+- An opening was recommended from an average over LAION games, then from minimax, without first checking what the field replies.
+- The PC queues sat idle overnight three times (8 to 10 hours each) and the Pis twice. The watchdog now covers the Pis; the PC queues still need work queued ahead.
+
+---
+
+# Earlier handoffs
 
 ## machete 0.3.1 (2026-09-28)
 

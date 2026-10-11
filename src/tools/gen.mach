@@ -1,0 +1,697 @@
+# machete.tools.gen: generate labelled training positions, in Mach
+#
+#   gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate]
+#
+# the Mach counterpart of harness/nnue/gen.py, and held to it: the teacher
+# engine plays itself from book positions and every position it passes
+# through is written once per game with the score its search gave and the
+# result the game reached - the same opening-balance filter, labels, endgame
+# budget and mate-distance labels, variety moves, adjudication, repetition
+# and fifty-move endings, the same 70-byte records in the same byte order.
+# Each worker is a thread with its own engine and shard (<out>.NN.part); the
+# shards are joined into <out> at the end, as gen.py does.
+#
+# `gate` makes it deterministic for harness/nnue/gen_check.py: book positions
+# are taken in order rather than at random and there are no variety moves, so
+# its games must be exactly gen.py's under the same determinism, byte for byte.
+#
+# Why: gen.py spends about as long in python-chess (board updates, legality,
+# encoding, parsing the engine's lines) as the teacher does searching at 1,500
+# nodes. Here the board is machete's own, perft-verified.
+
+use std.print;
+use std.runtime;
+use std.sync.atomic;
+use std.sync.thread;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use A: std.allocator;
+use std.allocator.page;
+use fs:       std.filesystem;
+use io_error: std.io.error;
+use std.system.os;
+
+use machete.binpack;
+use machete.clock;
+use mv: machete.move;
+use machete.move.Move;
+use machete.movegen;
+use machete.movegen.MoveList;
+use pos: machete.position;
+use machete.position.Position;
+use machete.rng;
+use uci: machete.uci_driver;
+
+val EXIT_USAGE: i64 = 1;
+val EXIT_FAIL:  i64 = 2;
+
+# gen.py's constants
+val CLAMP:                i64 = 10000;
+val VARIETY_PER_MILLE:    u64 = 50; # VARIETY_CHANCE 0.05
+val VARIETY_MARGIN:       i64 = 50;
+val VARIETY_LINES:        i64 = 4;
+val ENDGAME_PIECES:       i64 = 5;
+val ENDGAME_NODES_FACTOR: i64 = 20;
+val MATE_NEAR:            i64 = 900;
+val MATE_FAR:             i64 = 400;
+val MATE_STEP:            i64 = 10;
+val MAX_PLIES:            i64 = 300;
+val OPENING_BALANCE:      i64 = 150;
+val ADJUDICATE_AT:        i64 = 1500;
+val ADJUDICATE_PLIES:     i64 = 6;
+val HASH_MB:              i64 = 32;
+
+val MAX_WORKERS: i64 = 32;
+val ROWS_CAP:    i64 = 320;
+
+# one worker's state
+# ---
+# engine: its teacher
+# p:      the game's position
+# start:  the book line the game started from
+# moves:  the game's moves as UCI text, for "position fen ... moves ..."
+# keys:   repetition keys of the positions so far, and how many times each was seen
+# rows:   the game's records, results filled in at the end
+rec Worker {
+    engine:    uci.Engine;
+    p:         Position;
+    r:         rng.Rng;
+    index:     i64;
+    written:   i64;
+    share:     i64;
+    next_book: i64;
+    out:       fs.File;
+    failed:    bool;
+    cmd:       [8192]u8;
+    cmdlen:    i64;
+    movelen:   i64;
+    keys:      [320]u64;
+    counts:    [320]i64;
+    nkeys:     i64;
+    rows:      [22400]u8;
+    turns:     [320]u8;
+    nrows:     i64;
+    ep_pot:    i64;
+}
+
+var WORKERS:    [32]Worker;
+var THREADS:    [32]thread.Thread;
+var HEAP:       A.Allocator;
+var BOOK:       *u8  = nil;
+var LINES:      *i64 = nil; # the start of each book line in BOOK
+var NLINES:     i64  = 0;
+var ENGINE:     str  = nil;
+var ENGINE_DIR: [1024]u8;
+var NODES:      i64  = 1500;
+var GATE:       bool = false;
+var TOTAL:      i64  = 0;
+
+fun usage() i64 {
+    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate]");
+    ret EXIT_USAGE;
+}
+
+fun int_arg(text: str, fallback: i64) i64 {
+    val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(text, 10);
+    if (sel parsed.err) { ret fallback; }
+    ret parsed.ok;
+}
+
+fun read_exact(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val got: res[usize, io_error.Error] = fs.read(f, ?buf[at], (len - at)::usize);
+        if (sel got.err)      { ret false; }
+        if (got.ok::i64 == 0) { ret false; }
+        at = at + got.ok::i64;
+    }
+    ret true;
+}
+
+fun write_all(f: fs.File, buf: *u8, len: i64) bool {
+    var at: i64 = 0;
+    for (at < len) {
+        val put: res[usize, io_error.Error] = fs.write(f, ?buf[at], (len - at)::usize);
+        if (sel put.err)      { ret false; }
+        if (put.ok::i64 == 0) { ret false; }
+        at = at + put.ok::i64;
+    }
+    ret true;
+}
+
+# the book: every non-empty line not starting with '#', each ended by a 0
+fun load_book(path: str) bool {
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f:   fs.File                  = opened.ok;
+    val end: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_END);
+    if (sel end.err) { ret false; }
+    val size: i64                      = end.ok;
+    val back: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_SET);
+    val made: err[A.Error]             = page.make(?HEAP);
+    if (sel made.err) { ret false; }
+    val buf: res[*u8, A.Error] = A.allocate[u8](?HEAP, (size + 1)::usize);
+    if (sel buf.err) { ret false; }
+    BOOK = buf.ok;
+    val ok:   bool                = read_exact(f, BOOK, size);
+    val shut: err[io_error.Error] = fs.close(?f);
+    if (!ok) { ret false; }
+    BOOK[size] = 0;
+    # count the lines, then note where each starts
+    var lines: i64 = 1;
+    var i:     i64 = 0;
+    for (i < size) {
+        if (BOOK[i] == '\n') { lines = lines + 1; }
+        i = i + 1;
+    }
+    val starts: res[*i64, A.Error] = A.allocate[i64](?HEAP, lines::usize);
+    if (sel starts.err) { ret false; }
+    LINES  = starts.ok;
+    NLINES = 0;
+    var at: i64 = 0;
+    for (at < size) {
+        var e: i64 = at;
+        for (e < size && BOOK[e] != '\n') { e = e + 1; }
+        var stop: i64 = e;
+        if (stop > at && BOOK[stop - 1] == '\r') { stop = stop - 1; }
+        BOOK[e] = 0;
+        if (stop < size) { BOOK[stop] = 0; }
+        if (stop > at && BOOK[at] != '#') {
+            LINES[NLINES] = at;
+            NLINES        = NLINES + 1;
+        }
+        at = e + 1;
+    }
+    ret NLINES > 0;
+}
+
+# ---- python-chess's rules where gen.py relies on them ----
+
+fun popcount(b: u64) i64 {
+    var x: u64 = b;
+    var n: i64 = 0;
+    for (x != 0) {
+        x = x & (x - 1);
+        n = n + 1;
+    }
+    ret n;
+}
+
+val DARK: u64 = 0xAA55AA55AA55AA55;
+
+# chess.Board.has_insufficient_material(color)
+fun side_insufficient(p: *Position, c: u8) bool {
+    val o:       u8  = 1 - c;
+    val mine:    u64 = p.occ[c];
+    val pawns:   u64 = p.pieces[pos.code(0, pos.PAWN)] | p.pieces[pos.code(1, pos.PAWN)];
+    val knights: u64 = p.pieces[pos.code(0, pos.KNIGHT)] | p.pieces[pos.code(1, pos.KNIGHT)];
+    val bishops: u64 = p.pieces[pos.code(0, pos.BISHOP)] | p.pieces[pos.code(1, pos.BISHOP)];
+    val rooks:   u64 = p.pieces[pos.code(0, pos.ROOK)] | p.pieces[pos.code(1, pos.ROOK)];
+    val queens:  u64 = p.pieces[pos.code(0, pos.QUEEN)] | p.pieces[pos.code(1, pos.QUEEN)];
+    val kings:   u64 = p.pieces[pos.code(0, pos.KING)] | p.pieces[pos.code(1, pos.KING)];
+    if ((mine & (pawns | rooks | queens)) != 0) { ret false; }
+    if ((mine & knights) != 0) {
+        ret popcount(mine) <= 2 && (p.occ[o] & ~kings & ~queens) == 0;
+    }
+    if ((mine & bishops) != 0) {
+        val same: bool = (bishops & DARK) == 0 || (bishops & ~DARK) == 0;
+        ret same && pawns == 0 && knights == 0;
+    }
+    ret true;
+}
+
+fun insufficient(p: *Position) bool {
+    ret side_insufficient(p, 0) && side_insufficient(p, 1);
+}
+
+# gen.py's position_key: the pieces, the side to move, the castling rights
+# and python-chess's ep_square, which is set after every double pawn push
+fun position_key(w: *Worker) u64 {
+    var h:  u64 = 0xCBF29CE484222325;
+    var sq: i64 = 0;
+    for (sq < 64) {
+        h  = (h ^ (w.p.board[sq]::u64)) * 0x100000001B3;
+        sq = sq + 1;
+    }
+    h = (h ^ (w.p.side::u64 + 97)) * 0x100000001B3;
+    h = (h ^ (w.p.castling::u64 + 193)) * 0x100000001B3;
+    h = (h ^ ((w.ep_pot + 300)::u64)) * 0x100000001B3;
+    ret h;
+}
+
+fun seen_count(w: *Worker, key: u64) i64 {
+    var i: i64 = 0;
+    for (i < w.nkeys) {
+        if (w.keys[i] == key) {
+            w.counts[i] = w.counts[i] + 1;
+            ret w.counts[i];
+        }
+        i = i + 1;
+    }
+    if (w.nkeys < ROWS_CAP) {
+        w.keys[w.nkeys]   = key;
+        w.counts[w.nkeys] = 1;
+        w.nkeys           = w.nkeys + 1;
+    }
+    ret 1;
+}
+
+# ---- talking to the teacher ----
+
+# "position fen <start> moves ...": the start is kept at the front of cmd and
+# moves are appended as the game goes
+fun begin_position(w: *Worker, fen: *u8) {
+    val head: str = "position fen ";
+    var n:    i64 = 0;
+    for (head[n] != 0) {
+        w.cmd[n] = head[n];
+        n        = n + 1;
+    }
+    var i: i64 = 0;
+    for (fen[i] != 0 && n < 400) {
+        w.cmd[n] = fen[i];
+        n        = n + 1;
+        i        = i + 1;
+    }
+    w.cmdlen  = n;
+    w.movelen = 0;
+    w.cmd[n]  = 0;
+}
+
+fun push_move(w: *Worker, m: Move) {
+    var text: [8]u8;
+    mv.to_uci(m, ?text[0]);
+    var n: i64 = w.cmdlen;
+    if (w.movelen == 0) {
+        val word: str = " moves";
+        var i:    i64 = 0;
+        for (word[i] != 0) {
+            w.cmd[n] = word[i];
+            n        = n + 1;
+            i        = i + 1;
+        }
+    }
+    w.cmd[n] = ' ';
+    n        = n + 1;
+    var i: i64 = 0;
+    for (text[i] != 0) {
+        w.cmd[n] = text[i];
+        n        = n + 1;
+        i        = i + 1;
+    }
+    w.cmd[n]  = 0;
+    w.cmdlen  = n;
+    w.movelen = w.movelen + 1;
+}
+
+# search the current position to `nodes`; false if the engine failed
+fun analyse(w: *Worker, nodes: i64, report: *uci.Report) bool {
+    if (!uci.send(?w.engine, ?w.cmd[0])) { ret false; }
+    var limit: [32]u8;
+    uci.fill(?limit[0], "nodes ", nodes);
+    ret uci.go(?w.engine, ?limit[0], report);
+}
+
+# gen.py's score_of: centipawns from the side to move, a mate as +-CLAMP
+fun score_of(report: *uci.Report) i64 {
+    if (report.mate) {
+        if (report.score > 0) { ret CLAMP; }
+        ret 0 - CLAMP;
+    }
+    var s: i64 = report.score;
+    if (s > CLAMP)     { s = CLAMP; }
+    if (s < 0 - CLAMP) { s = 0 - CLAMP; }
+    ret s;
+}
+
+# gen.py's ending_label
+fun ending_label(report: *uci.Report) i64 {
+    if (report.mate && report.score != 0) {
+        var plies: i64 = report.score * 2;
+        if (plies < 0) { plies = 0 - plies; }
+        var v: i64 = MATE_NEAR - MATE_STEP * plies;
+        if (v < MATE_FAR)     { v = MATE_FAR; }
+        if (v > MATE_NEAR)    { v = MATE_NEAR; }
+        if (report.score > 0) { ret v; }
+        ret 0 - v;
+    }
+    var s: i64 = report.score;
+    if (s > MATE_NEAR)     { s = MATE_NEAR; }
+    if (s < 0 - MATE_NEAR) { s = 0 - MATE_NEAR; }
+    ret s;
+}
+
+# ---- one game (gen.py's play_game) ----
+
+# the outcome, from white: 1 won, 0 drew, -1 lost; nrows 0 if the game was skipped
+fun play_game(w: *Worker) i64 {
+    w.nrows = 0;
+    w.nkeys = 0;
+    var line: i64 = 0;
+    if (GATE) {
+        line        = w.next_book % NLINES;
+        w.next_book = w.next_book + 1;
+    }
+    or {
+        line = rng.below(?w.r, NLINES::u64)::i64;
+    }
+    val fen: *u8 = ?BOOK[LINES[line]];
+    if (!pos.set_fen(?w.p, fen)) { ret 0; }
+    # python-chess's ep_square from the FEN's fourth field
+    w.ep_pot = 0 - 1;
+    var f:      i64 = 0;
+    var spaces: i64 = 0;
+    for (fen[f] != 0 && spaces < 3) {
+        if (fen[f] == ' ') { spaces = spaces + 1; }
+        f = f + 1;
+    }
+    if (fen[f] >= 'a' && fen[f] <= 'h') {
+        w.ep_pot = (fen[f] - 'a')::i64 + ((fen[f + 1] - '1')::i64) * 8;
+    }
+    begin_position(w, fen);
+    var list: MoveList;
+    movegen.generate_legal(?w.p, ?list);
+    if (list.count == 0 || w.p.halfmove >= 100 || insufficient(?w.p)) { ret 0; }
+    var report: uci.Report;
+    if (!analyse(w, NODES, ?report)) {
+        w.failed = true;
+        ret 0;
+    }
+    var opening: i64 = score_of(?report);
+    if (opening < 0)               { opening = 0 - opening; }
+    if (opening > OPENING_BALANCE) { ret 0; }
+
+    var outcome: i64 = 0;
+    var decided: i64 = 0;
+    var plies:   i64 = 0;
+    for (plies < MAX_PLIES) {
+        movegen.generate_legal(?w.p, ?list);
+        val checked: bool = pos.in_check(?w.p);
+        if (list.count == 0) {
+            if (checked) {
+                # the side to move is mated
+                if (w.p.side == pos.WHITE) { outcome = 0 - 1; }
+                or                         { outcome = 1; }
+            }
+            brk;
+        }
+        if (w.p.halfmove >= 100 || insufficient(?w.p)) { brk; }
+        val key:  u64 = position_key(w);
+        val seen: i64 = seen_count(w, key);
+        if (seen >= 3) { brk; }
+        val pieces: i64  = popcount(w.p.occ[0] | w.p.occ[1]);
+        val ending: bool = pieces <= ENDGAME_PIECES;
+        var budget: i64  = NODES;
+        if (ending) { budget = NODES * ENDGAME_NODES_FACTOR; }
+        if (!analyse(w, budget, ?report)) {
+            w.failed = true;
+            ret 0;
+        }
+        val score: i64 = score_of(?report);
+        if (seen == 1 && !checked && w.nrows < ROWS_CAP) {
+            var label: i64 = score;
+            if (ending) { label = ending_label(?report); }
+            binpack.write_record(?w.p, label, 0, ?w.rows[w.nrows * 70]);
+            w.rows[w.nrows * 70 + 69] = 0; # the engine: gen.py's worker index % teachers, one teacher here
+            w.turns[w.nrows]          = w.p.side;
+            w.nrows                   = w.nrows + 1;
+        }
+        var abs_score: i64 = score;
+        if (abs_score < 0) { abs_score = 0 - abs_score; }
+        if (abs_score >= ADJUDICATE_AT) {
+            decided = decided + 1;
+            if (decided >= ADJUDICATE_PLIES) {
+                var ahead_white: bool = w.p.side == pos.WHITE;
+                if (score < 0)   { ahead_white = !ahead_white; }
+                if (ahead_white) { outcome = 1; }
+                or               { outcome = 0 - 1; }
+                brk;
+            }
+        }
+        or {
+            decided = 0;
+        }
+        var m: Move = movegen.parse_uci(?w.p, ?report.pv[0]);
+        if (!GATE && rng.below(?w.r, 1000) < VARIETY_PER_MILLE) {
+            m = variety(w, m);
+        }
+        if (m == mv.NONE) {
+            m = movegen.parse_uci(?w.p, ?report.best[0]);
+        }
+        if (m == mv.NONE) {
+            w.failed = true;
+            ret 0;
+        }
+        # python-chess's ep_square: set after a double pawn push, cleared otherwise
+        val from: i64 = mv.from(m);
+        val to:   i64 = mv.to(m);
+        w.ep_pot = 0 - 1;
+        if (pos.kind_of(w.p.board[from]) == pos.PAWN && (to - from == 16 || from - to == 16)) {
+            w.ep_pot = (from + to) / 2;
+        }
+        pos.make(?w.p, m);
+        push_move(w, m);
+        plies = plies + 1;
+    }
+    ret outcome;
+}
+
+# a near-best move from a multi-line search: any of the teacher's lines within
+# VARIETY_MARGIN of its best, at random (gen.py's variety)
+fun variety(w: *Worker, fallback: Move) Move {
+    var cmd: [64]u8;
+    uci.fill(?cmd[0], "setoption name MultiPV value ", VARIETY_LINES);
+    if (!uci.send(?w.engine, ?cmd[0]))   { ret fallback; }
+    if (!uci.send(?w.engine, ?w.cmd[0])) { ret fallback; }
+    var limit: [32]u8;
+    uci.fill(?limit[0], "go nodes ", NODES);
+    if (!uci.send(?w.engine, ?limit[0])) { ret fallback; }
+    var lines: [4]uci.Report;
+    var k:     i64 = 0;
+    for (k < VARIETY_LINES) {
+        lines[k].has_score = false;
+        lines[k].pv[0]     = 0;
+        k                  = k + 1;
+    }
+    for (uci.read_line(?w.engine)) {
+        if (w.engine.line[0] == 'b') { brk; } # bestmove
+        k = 0;
+        for (k < VARIETY_LINES) {
+            uci.take_info(?w.engine.line[0], ?lines[k], k + 1);
+            k = k + 1;
+        }
+    }
+    uci.fill(?cmd[0], "setoption name MultiPV value ", 1);
+    val back: bool = uci.send(?w.engine, ?cmd[0]);
+    if (!lines[0].has_score) { ret fallback; }
+    val best: i64 = score_of(?lines[0]);
+    var near: [4]Move;
+    var n:    i64 = 0;
+    k = 0;
+    for (k < VARIETY_LINES) {
+        if (lines[k].has_score && lines[k].pv[0] != 0 && best - score_of(?lines[k]) <= VARIETY_MARGIN) {
+            val m: Move = movegen.parse_uci(?w.p, ?lines[k].pv[0]);
+            if (m != mv.NONE) {
+                near[n] = m;
+                n       = n + 1;
+            }
+        }
+        k = k + 1;
+    }
+    if (n == 0) { ret fallback; }
+    ret near[rng.below(?w.r, n::u64)::i64];
+}
+
+# ---- workers ----
+
+fun worker_entry(arg: *u8) {
+    val w:   *Worker = ?WORKERS[arg::usize::i64];
+    var dir: str     = nil;
+    if (ENGINE_DIR[0] != 0) { dir = ?ENGINE_DIR[0]; }
+    if (!uci.start(?w.engine, ENGINE, dir) || !uci.init(?w.engine, 1, HASH_MB)) {
+        print.eprintlnf("worker {}: cannot start the teacher", w.index);
+        w.failed = true;
+        ret;
+    }
+    for (w.written < w.share && !w.failed) {
+        val outcome: i64 = play_game(w);
+        if (w.nrows == 0) { cnt; }
+        var i: i64 = 0;
+        for (i < w.nrows) {
+            var result: u8 = 1;
+            if (outcome != 0) {
+                val white_won: bool = outcome > 0;
+                val white_row: bool = w.turns[i] == pos.WHITE;
+                if (white_won == white_row) { result = 2; }
+                or                          { result = 0; }
+            }
+            w.rows[i * 70 + 68] = result;
+            i                   = i + 1;
+        }
+        if (!write_all(w.out, ?w.rows[0], w.nrows * 70)) {
+            w.failed = true;
+            brk;
+        }
+        w.written = w.written + w.nrows;
+        val total: i64 = atomic.fetch_add(?TOTAL, w.nrows) + w.nrows;
+    }
+    uci.stop(?w.engine);
+}
+
+fun shard_name(out: str, index: i64, name: *u8) {
+    var n: i64 = 0;
+    for (out[n] != 0 && n < 1000) {
+        name[n] = out[n];
+        n       = n + 1;
+    }
+    name[n]     = '.';
+    name[n + 1] = ('0'::i64 + index / 10)::u8;
+    name[n + 2] = ('0'::i64 + index % 10)::u8;
+    val tail: str = ".part";
+    var i:    i64 = 0;
+    for (tail[i] != 0) {
+        name[n + 3 + i] = tail[i];
+        i               = i + 1;
+    }
+    name[n + 3 + i] = 0;
+}
+
+var CHUNK: [1048576]u8;
+
+# append every shard to out and remove it; returns the records joined
+fun join_shards(out: str, workers: i64) i64 {
+    val created: res[fs.File, io_error.Error] = fs.create(out, 420);
+    if (sel created.err) { ret 0 - 1; }
+    var dst:   fs.File = created.ok;
+    var total: i64     = 0;
+    var name:  [1100]u8;
+    var i:     i64     = 0;
+    for (i < workers) {
+        shard_name(out, i, ?name[0]);
+        val opened: res[fs.File, io_error.Error] = fs.open(?name[0]);
+        if (sel opened.ok) {
+            var src: fs.File = opened.ok;
+            for {
+                val got: res[usize, io_error.Error] = fs.read(src, ?CHUNK[0], 1048576);
+                if (sel got.err)      { brk; }
+                if (got.ok::i64 == 0) { brk; }
+                val ok: bool = write_all(dst, ?CHUNK[0], got.ok::i64);
+                total = total + got.ok::i64;
+            }
+            val shut: err[io_error.Error] = fs.close(?src);
+            val gone: err[io_error.Error] = fs.remove_file(?name[0]);
+        }
+        i = i + 1;
+    }
+    val shut: err[io_error.Error] = fs.close(?dst);
+    ret total / 70;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    pos.init();
+    if (argc < 8) { ret usage(); }
+    val out:       str = argv[1];
+    val positions: i64 = int_arg(argv[4], 0);
+    NODES = int_arg(argv[5], 1500);
+    var workers: i64 = int_arg(argv[6], 1);
+    val seed:    i64 = int_arg(argv[7], 1);
+    GATE = argc >= 9 && str_equals(argv[8], "gate");
+    if (workers < 1)           { workers = 1; }
+    if (workers > MAX_WORKERS) { workers = MAX_WORKERS; }
+    if (!load_book(argv[2])) {
+        print.eprintlnf("cannot read the book {}", argv[2]);
+        ret EXIT_FAIL;
+    }
+    ENGINE = argv[3];
+    # the teacher runs in its own folder, as panel.open_engine starts it
+    var cut: i64 = 0 - 1;
+    var i:   i64 = 0;
+    for (ENGINE[i] != 0 && i < 1023) {
+        ENGINE_DIR[i] = ENGINE[i];
+        if (ENGINE[i] == '/' || ENGINE[i] == '\\') { cut = i; }
+        i = i + 1;
+    }
+    if (cut > 0) { ENGINE_DIR[cut] = 0; }
+    or           { ENGINE_DIR[0] = 0; }
+    # a relative path is relative to where gen was started, not to the
+    # engine's folder: start such an engine where we are
+    val absolute: bool = ENGINE[0] == '/' || ENGINE[0] == '\\' || (ENGINE[0] != 0 && ENGINE[1] == ':');
+    if (!absolute) { ENGINE_DIR[0] = 0; }
+    print.printlnf("{} book positions, {} workers, {} nodes, teacher {}", NLINES, workers, NODES, ENGINE);
+    atomic.store(?TOTAL, 0);
+    i = 0;
+    for (i < workers) {
+        val w: *Worker = ?WORKERS[i];
+        w.index     = i;
+        w.share     = positions / workers + 1;
+        w.written   = 0;
+        w.failed    = false;
+        w.next_book = i;
+        w.r         = rng.seeded((seed + i * 7919)::u64);
+        var name: [1100]u8;
+        shard_name(out, i, ?name[0]);
+        val created: res[fs.File, io_error.Error] = fs.create(?name[0], 420);
+        if (sel created.err) {
+            print.eprintlnf("cannot create {}", ?name[0]);
+            ret EXIT_FAIL;
+        }
+        w.out = created.ok;
+        i     = i + 1;
+    }
+    val started: i64 = clock.now_ms();
+    i = 0;
+    for (i < workers) {
+        var config: thread.Config;
+        thread.config_default(?config);
+        config.name = "machete-gen";
+        val op: thread.Operation = thread.spawn_with_config(worker_entry, i::usize::*u8, ?config, ?THREADS[i]);
+        if (sel op.err) {
+            print.eprintln("cannot start a worker");
+            ret EXIT_FAIL;
+        }
+        i = i + 1;
+    }
+    # progress, as gen.py prints it
+    var done: i64 = 0;
+    for (done < workers) {
+        os.sleep(2000000000);
+        val total: i64 = atomic.load(?TOTAL);
+        val ms:    i64 = clock.now_ms() - started + 1;
+        print.printf("\r{} positions  {}/s    ", total, total * 1000 / ms);
+        done = 0;
+        i    = 0;
+        for (i < workers) {
+            if (WORKERS[i].written >= WORKERS[i].share || WORKERS[i].failed) { done = done + 1; }
+            i = i + 1;
+        }
+    }
+    i = 0;
+    for (i < workers) {
+        thread.join(?THREADS[i]);
+        val shut: err[io_error.Error] = fs.close(?WORKERS[i].out);
+        i = i + 1;
+    }
+    var failed: i64 = 0;
+    i = 0;
+    for (i < workers) {
+        if (WORKERS[i].failed) { failed = failed + 1; }
+        i = i + 1;
+    }
+    val joined:  i64 = join_shards(out, workers);
+    val minutes: i64 = (clock.now_ms() - started) / 60000;
+    print.printlnf("\n{} positions in {} ({} min){}", joined, out, minutes, "");
+    if (failed > 0) {
+        print.eprintlnf("{} workers stopped early: their teacher failed", failed);
+        ret EXIT_FAIL;
+    }
+    ret 0;
+}

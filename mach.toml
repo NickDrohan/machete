@@ -1,7 +1,7 @@
 [project]
 id = "machete"
-version = "0.3.6"
-mach = "^6.5"
+version = "0.4.0"
+mach = "^6.10"
 src = "src"
 out = "out/{target.name}/{profile.name}"
 
@@ -35,6 +35,33 @@ default = true
 kind = "bin"
 entry = "root.mach"
 out = "bin/machete{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# plays engine-vs-engine matches and sequential tests in Mach (src/tools/arena.mach), held to harness/match.py
+[artifact.arena]
+kind = "bin"
+entry = "tools/arena.mach"
+out = "bin/arena{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# generates labelled positions in Mach (src/tools/gen.mach), held to harness/nnue/gen.py
+[artifact.gen]
+kind = "bin"
+entry = "tools/gen.mach"
+out = "bin/gen{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# trains the network in Mach (src/train.mach), checked against harness/nnue/train.py
+[artifact.trainer]
+kind = "bin"
+entry = "tools/train.mach"
+out = "bin/train{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -73,4 +100,4 @@ float_reassoc = false
 
 [dep.std]
 git = "https://github.com/briar-systems/mach-std"
-version = "^9.0"
+version = "^9.4"

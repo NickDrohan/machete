@@ -19,7 +19,6 @@ it a net can train beautifully and then evaluate garbage once quantized.
 """
 
 import argparse
-import concurrent.futures
 import os
 import sys
 import time
@@ -131,21 +130,21 @@ class Corpus(object):
         # without a window, otherwise the window loaded last
         self.live = {name: getattr(self, name) for name in COLUMNS}
 
-    def host_rows(self, rows):
-        """Gather these global rows (sorted) in host memory, pinned for a fast
-        copy to the device. Runs on a helper thread while the device trains on
-        the window before: torch's index_select releases the interpreter lock."""
-        picked = torch.from_numpy(rows)
-        out = {}
-        for name in COLUMNS:
-            column = getattr(self, name).index_select(0, picked)
-            out[name] = column.pin_memory() if torch.cuda.is_available() else column
-        return out
+    def load_rows(self, rows):
+        """Gather these global rows (sorted) from host memory onto the device
+        as the live window.
 
-    def load_rows(self, host):
-        """Make a gathered window (see host_rows) the live one on the device."""
+        The window it replaces is dropped first. Assigning over it kept both
+        on the card while the new one was copied: two 120M windows are 6.7 GB
+        of an 8 GB card, and on Windows the driver does not fail an
+        allocation past the card, it moves memory to system RAM behind the
+        PCIe bus. C30 then trained at a tenth of its speed with the GPU
+        reading 100% at 43 W, and v6's prefetched third window hung it."""
+        picked = torch.from_numpy(rows)
         for name in COLUMNS:
-            self.live[name] = host[name].to(self.device, non_blocking=True)
+            self.live[name] = None
+        for name in COLUMNS:
+            self.live[name] = getattr(self, name).index_select(0, picked).to(self.device)
 
     def gather(self, index):
         """Rows by global index as a small device-side corpus of their own,
@@ -208,29 +207,16 @@ class Corpus(object):
         # contiguous slices of the corpus itself, which is its sources laid
         # end to end: the network trained on one source at a time, drifted to
         # whichever came last, and C18 and C19 lost 54 and 60 Elo for it.
-        # The next window is gathered on a helper thread while this one
-        # trains: the gather is the CPU's work (a sort and an index_select over
-        # the corpus in host memory), and doing it in line left the GPU idle
-        # for about a quarter of every epoch (C22, 2026-09-28).
-        starts = list(range(0, len(order), self.window))
-        rows_of = lambda first: np.sort(order[first:first + self.window])
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        pending = pool.submit(lambda: self.host_rows(rows_of(starts[0])))
-        for k, first in enumerate(starts):
-            host = pending.result()
-            count = len(host["stm"])
-            if k + 1 < len(starts):
-                pending = pool.submit(lambda f=starts[k + 1]: self.host_rows(rows_of(f)))
-            self.load_rows(host)
-            del host
-            local = np.arange(count)
+        for first in range(0, len(order), self.window):
+            rows = np.sort(order[first:first + self.window])
+            self.load_rows(rows)
+            local = np.arange(len(rows))
             if rng is not None:
                 rng.shuffle(local)
             for at in range(0, len(local) - size + 1, size):
                 index = torch.from_numpy(np.sort(local[at:at + size])).to(self.device)
                 us, them, bucket = self.features(index)
                 yield us, them, bucket, self.targets(index)
-        pool.shutdown()
 
 
 def pack(rows):
@@ -290,6 +276,25 @@ def export(model, path):
     return worst
 
 
+def start_from(model, path, device):
+    """Put a written network's weights into the model: export() run backwards.
+
+    The file holds what export() rounded, so a network trained on from here
+    starts a rounding step away from where the last training left off."""
+    net = reference.load(path)
+    hidden = model.feature_bias.shape[0]
+    if net["hidden"] != hidden:
+        raise SystemExit("{} is {} wide, this training {} (--hidden)".format(path, net["hidden"], hidden))
+    if net["scale"] != SCALE:
+        raise SystemExit("{} was trained at scale {}, this training is at {} (--scale)".format(path, net["scale"], SCALE))
+    with torch.no_grad():
+        model.features.weight[:PAD].copy_(torch.from_numpy(net["feature_weights"].astype(np.float32) / QA).to(device))
+        model.feature_bias.copy_(torch.from_numpy(net["feature_bias"].astype(np.float32) / QA).to(device))
+        model.out.weight.copy_(torch.from_numpy(net["output_weights"].astype(np.float32) / QB).to(device))
+        model.out.bias.copy_(torch.tensor([b / float(QA * QB) for b in net["output_bias"]], dtype=torch.float32, device=device))
+    print("starting from {}".format(path))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
@@ -304,6 +309,9 @@ def main():
                         help="positions on the device at a time; 0 keeps the whole corpus there. "
                              "The card holds about 150M; with a window the corpus is bounded by host memory")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--init", default="",
+                        help="start from this network's weights instead of from random ones: "
+                             "fine-tuning, as a self-play loop does each generation")
     parser.add_argument("--scale", type=int, default=0,
                         help="centipawn scale for the target; 0 keeps the default")
     parser.add_argument("--blend", type=float, default=-1.0,
@@ -340,6 +348,8 @@ def main():
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
     model = Net(args.hidden).to(device)
+    if args.init:
+        start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
     loss_of = nn.MSELoss()

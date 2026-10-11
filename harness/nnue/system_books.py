@@ -41,6 +41,7 @@ SYSTEMS = {
     "najdorf": (("Sicilian Defense: Najdorf",), "d6"),
     "dragon": (("Sicilian Defense: Dragon",), "d6"),
     "sveshnikov": (("Sicilian Defense: Lasker-Pelikan",), "Nc6"),
+    "kalashnikov": (("Sicilian Defense: Kalashnikov",), "Nc6"),
     "classical": (("Sicilian Defense: Classical", "Sicilian Defense: Richter-Rauzer"), "Nc6"),
     "taimanov": (("Sicilian Defense: Taimanov",), "e6"),
     "kan": (("Sicilian Defense: Kan",), "e6"),
@@ -83,6 +84,7 @@ def main():
     parser.add_argument("--anti", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--only", default="sicilian,marshall", help="which books to write: sicilian, marshall or both")
+    parser.add_argument("--systems", default="", help="comma-separated systems to write; all by default")
     args = parser.parse_args()
     names = opening_table(args.openings)
 
@@ -182,6 +184,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     for system, (_, second) in SYSTEMS.items():
         if ("marshall" if system == "marshall" else "sicilian") not in args.only:
+            continue
+        if args.systems and system not in args.systems.split(","):
             continue
         main_n = args.per if second is None else int(round(args.per * (1 - args.anti)))
         book = level(list(found[system].values()), main_n)

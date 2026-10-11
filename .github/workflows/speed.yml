@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  MACH_VERSION: v6.5.0
+  MACH_VERSION: v6.10.1
   NET_RELEASE: v0.3.1
 
 jobs:
