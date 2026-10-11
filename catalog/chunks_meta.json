@@ -694,6 +694,193 @@
     "machine": "PC",
     "made": "2026-10-09"
    }
+  },
+  "kd500.bin": {
+   "family": "deficit starts",
+   "teacher": "Stockfish 19",
+   "source": "classical openings with a knight (one time in eight a bishop) taken off one side, Stockfish deficit 250 to 700 cp (harness/nnue/knight_down_book.py)",
+   "addresses": "the owner's corpus of 2026-10-09: classical positions played from about a knight down",
+   "status": "30M; trained on alone it is 413 Elo behind level starts at the same size and depth",
+   "recipe": {
+    "book": "knight_down.epd",
+    "starts": "classical, a knight down",
+    "play_nodes": 500,
+    "label_nodes": 500,
+    "seed": 99001,
+    "flags": "odds",
+    "machine": "PC",
+    "made": "2026-10-10"
+   }
+  },
+  "e1_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77501,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "e2_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77502,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "e3_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77503,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "e4_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77504,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "e5_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77505,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "e6_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77506,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "e7_deficit960.bin": {
+   "family": "Fischer Random",
+   "teacher": "Stockfish 19",
+   "source": "more of d1..d8's recipe: Chess960 starts with one side really worse, 24 kinds of trade, deficit 60 to 350 cp",
+   "addresses": "whether the gain that made 0.4.0's network keeps going past 140M",
+   "status": "20M, generating from 2026-10-11",
+   "recipe": {
+    "book": "deficit960.epd",
+    "starts": "Fischer Random, varied deficit",
+    "play_nodes": 1500,
+    "label_nodes": 1500,
+    "seed": 77507,
+    "flags": "odds takeback 4",
+    "machine": "PC",
+    "made": "2026-10-11"
+   }
+  },
+  "n15000_mac_NN.bin": {
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move; one file a run (NN = 00, 01, ...), started and pulled by E:/machete/claude/r3/orchestrate.py",
+   "addresses": "the owner's 200M set at 15,000 nodes, tested against shallower sets of the same size as it grows",
+   "status": "growing: 28.7M on 2026-10-11",
+   "recipe": {
+    "book": "book_v2.epd",
+    "starts": "classical, equal",
+    "play_nodes": 15000,
+    "label_nodes": 15000,
+    "seed": "881xx / 882xx / 883xx, one a run",
+    "flags": "",
+    "machine": "Mac",
+    "made": "2026-10-10 on"
+   }
+  },
+  "n15000_pi01_NN.bin": {
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move; one file a run (NN = 00, 01, ...), started and pulled by E:/machete/claude/r3/orchestrate.py",
+   "addresses": "the owner's 200M set at 15,000 nodes, tested against shallower sets of the same size as it grows",
+   "status": "growing: 28.7M on 2026-10-11",
+   "recipe": {
+    "book": "book_v2.epd",
+    "starts": "classical, equal",
+    "play_nodes": 15000,
+    "label_nodes": 15000,
+    "seed": "881xx / 882xx / 883xx, one a run",
+    "flags": "",
+    "machine": "pi-01",
+    "made": "2026-10-10 on"
+   }
+  },
+  "n15000_pi02_NN.bin": {
+   "family": "label-depth sweep",
+   "teacher": "Stockfish 19",
+   "source": "the classical book, Stockfish playing itself at 15,000 nodes a move; one file a run (NN = 00, 01, ...), started and pulled by E:/machete/claude/r3/orchestrate.py",
+   "addresses": "the owner's 200M set at 15,000 nodes, tested against shallower sets of the same size as it grows",
+   "status": "growing: 28.7M on 2026-10-11",
+   "recipe": {
+    "book": "book_v2.epd",
+    "starts": "classical, equal",
+    "play_nodes": 15000,
+    "label_nodes": 15000,
+    "seed": "881xx / 882xx / 883xx, one a run",
+    "flags": "",
+    "machine": "pi-02",
+    "made": "2026-10-10 on"
+   }
   }
  },
  "experiments": [
@@ -1170,6 +1357,187 @@
    "games": 600,
    "verdict": "not a depth comparison (half the size, one source): how far the sweep's small networks are from a real one",
    "source": "LADDER-D500X30-S60"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "C33F140",
+   "base": "C33",
+   "delta": "+ 140M Fischer Random (six varied-deficit chunks and gap960_pc2) on C33's 364M",
+   "chunks": [
+    "gap960_pc2.bin",
+    "d1_deficit960.bin",
+    "d2_deficit960.bin",
+    "d4_deficit960.bin",
+    "d6_deficit960.bin",
+    "p1_deficit960.bin",
+    "d8_deficit960.bin"
+   ],
+   "elo": 20,
+   "margin": 22,
+   "games": 988,
+   "verdict": "the first network to pass against C33: SPRT [0, 10] accepted at 10+0.1; +32 +/- 34 at 60+0.6 (409 games, accepted); +27 +/- 28 at 40,000 nodes. Released as 0.4.0 (packaged against 0.3.6: +22 +/- 23, 853 games)",
+   "source": "SPRT-NET-C33F140, LTC-C33F140, PACKAGED-040"
+  },
+  {
+   "date": "2026-10-11",
+   "net": "C33F140N60",
+   "base": "C33F140",
+   "delta": "+ 60M one-book classical positions at 500 nodes",
+   "chunks": [
+    "n500.bin",
+    "n500b.bin"
+   ],
+   "elo": -17,
+   "margin": 42,
+   "games": 270,
+   "verdict": "no gain: ordinary self-play at another depth is not a new kind of data for a network that has 364M of it",
+   "source": "LADDER-C33F140N60-C33F140"
+  },
+  {
+   "date": "2026-10-09",
+   "net": "D5000",
+   "base": "D1500",
+   "delta": "10M at 5,000 nodes in place of 10M at 1,500",
+   "chunks": [
+    "n5000.bin"
+   ],
+   "elo": -383,
+   "margin": 47,
+   "games": 600,
+   "verdict": "deep self-play is a narrow diet: 51% of its positions come from drawn games",
+   "source": "LADDER-D5000-D1500"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "D15000",
+   "base": "D1500",
+   "delta": "10M at 15,000 nodes in place of 10M at 1,500",
+   "chunks": [
+    "n15000_pc.bin",
+    "n15000_mac.bin"
+   ],
+   "elo": -869,
+   "margin": 387,
+   "games": 600,
+   "verdict": "3 wins in 600; 66% of positions from drawn games",
+   "source": "LADDER-D15000-D1500"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "D150",
+   "base": "D500",
+   "delta": "10M at 150 nodes in place of 10M at 500",
+   "chunks": [
+    "n150.bin"
+   ],
+   "elo": -48,
+   "margin": 28,
+   "games": 600,
+   "verdict": "there is a floor: 150 is behind 500 (and +55 +/- 28 ahead of 1,500 at this size)",
+   "source": "LADDER-D150-D500"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "D1500X30",
+   "base": "D500X30",
+   "delta": "30M at 1,500 nodes in place of 30M at 500",
+   "chunks": [
+    "n1500.bin",
+    "n1500b.bin"
+   ],
+   "elo": -8,
+   "margin": 28,
+   "games": 600,
+   "verdict": "level: the 79 Elo lead 500 nodes had at 10M is gone at 30M. Shallow data's edge was a small-data effect; it is still three times cheaper",
+   "source": "LADDER-D1500X30-D500X30"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "D150X30",
+   "base": "D1500X30",
+   "delta": "30M at 150 nodes in place of 30M at 1,500",
+   "chunks": [
+    "n150.bin",
+    "n150b.bin"
+   ],
+   "elo": -38,
+   "margin": 46,
+   "games": 223,
+   "verdict": "150 is behind at 30M too (stopped early)",
+   "source": "LADDER-D150X30-D1500X30"
+  },
+  {
+   "date": "2026-10-11",
+   "net": "D5000X30",
+   "base": "D1500X30",
+   "delta": "30M at 5,000 nodes in place of 30M at 1,500",
+   "chunks": [
+    "n5000.bin",
+    "n5000b.bin"
+   ],
+   "elo": -309,
+   "margin": 175,
+   "games": 45,
+   "verdict": "still far behind at 30M: 4 wins, 5 draws, 36 losses when the match stopped itself",
+   "source": "LADDER-D5000X30-D1500X30"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "D500X60",
+   "base": "S60",
+   "delta": "60M one-book 500-node data in place of 60M of C33's mix",
+   "chunks": [
+    "n500.bin",
+    "n500b.bin"
+   ],
+   "elo": -103,
+   "margin": 29,
+   "games": 600,
+   "verdict": "at equal size the existing mix of sources is about 100 ahead of one book at the best depth",
+   "source": "LADDER-D500X60-S60"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "P1500_L500",
+   "base": "D1500",
+   "delta": "the 1,500-node set's positions with every score replaced by a 500-node one",
+   "chunks": [
+    "p1500_l500.bin"
+   ],
+   "elo": 10,
+   "margin": 28,
+   "games": 600,
+   "verdict": "the label's depth changes nothing; the reverse set (500-node positions, 1,500-node labels) beats this one by 57 +/- 56: the positions carry the effect",
+   "source": "LADDER-P1500_L500-D1500"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "K30",
+   "base": "D500X30",
+   "delta": "30M classical positions played a knight down in place of 30M from level starts, same depth",
+   "chunks": [
+    "kd500.bin"
+   ],
+   "elo": -413,
+   "margin": 51,
+   "games": 600,
+   "verdict": "a clean piece down is too lopsided to learn from alone",
+   "source": "LADDER-K30-D500X30"
+  },
+  {
+   "date": "2026-10-10",
+   "net": "KM60",
+   "base": "D500X60",
+   "delta": "30M knight-down + 30M level in place of 60M level",
+   "chunks": [
+    "kd500.bin",
+    "n500.bin"
+   ],
+   "elo": -93,
+   "margin": 29,
+   "games": 600,
+   "verdict": "mixed in, it costs strength against more level positions",
+   "source": "LADDER-KM60-D500X60"
   }
  ],
  "seed_noise": [
