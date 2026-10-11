@@ -78,7 +78,7 @@ pub fun start(e: *Engine, path: str, cwd: str) bool {
     options.stderr  = out_write;
     options.grouped = true;
     if (cwd != nil) { options.cwd = cwd; }
-    var pid: i64 = -1;
+    var pid:     i64                         = -1;
     val spawned: res[exec.Child, exec.Error] = exec.spawn_with_options(path, ?argv[0], nil, options);
     if (sel spawned.ok) { pid = spawned.ok.pid; }
     # the child holds its own copies; ours of its ends must close, or its
