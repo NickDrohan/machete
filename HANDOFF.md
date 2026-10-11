@@ -1,5 +1,17 @@
 # Handing off machete
 
+## 2026-10-10: 0.4.0
+
+**0.4.0 is released and on the lichess bot.** One change from 0.3.6: the network, C33F140, which is C33's recipe (364M) plus 140M Fischer Random positions - six 20M chunks played from starts where one side is really but not decisively worse (`harness/nnue/deficit960_book.py`, on the `feat/deficit960` branch) and 20M from compensated trades. Against C33 on 0.3.6's executable: +27 +/- 28 at 40,000 nodes (600 games), +20 +/- 22 at 10+0.1 (988, SPRT [0, 10] accepted), +32 +/- 34 at 60+0.6 (409, accepted). 0.4.0 as packaged against 0.3.6 as released: +22 +/- 23 (853, accepted). `check.sh` 35 of 35. `release/notes-0.4.0.md` has the account.
+
+What the week measured, for whoever trains the next network (the numbers are in `catalog/` on the `feat/league-eval` branch, not yet merged):
+
+- Fischer Random data alone loses to ordinary data (200M of it against 60M ordinary: -54 +/- 28); added to ordinary data it gains. More of C33's own kind of data had stopped gaining (C34, C35, C36).
+- Varied small deficits teach; a clean knight down does not (a network trained only on classical knight-down positions: -413 against level starts at the same size).
+- Label depth: the same positions scored at 500 or at 1,500 nodes train the same network (+10 +/- 28). What depth changes is which positions the teacher's games reach: at 15,000 nodes two in three come from drawn games. 500 nodes leads 1,500 by 79 at 10M positions and is level at 30M.
+- A policy network's first choice (Leela, one node) is the teacher panel's best move 64% of the time; C33's is 40%, and 60% after a 40,000-node search. A move-ordering prior is the untried lever.
+- The 8 GB card holds about 200M positions outright; larger corpora need `--window` (C33's recipe uses 120M).
+
 ## 2026-10-04: the 0.4.0 match, the chunk catalog, the mate dataset
 
 **The 0.4.0 match** (`E:/machete/competition/v040/RESULT.md`): `c36` (the dev engine with a new network, C36) against `0.4.0_perplexity` (0.3.6's exact search about 4.5% faster on this PC, network C33), by the neutral referee at tag `referee-v1`.
