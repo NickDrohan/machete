@@ -49,9 +49,15 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 
 
 class Net(nn.Module):
-    def __init__(self, hidden):
+    def __init__(self, hidden, factorise=False):
         super(Net, self).__init__()
         self.features = nn.EmbeddingBag(PAD + 1, hidden, mode="sum", padding_idx=PAD)
+        # --factorise: one more table, shared by every king zone, added to each zone's own. A zone then learns
+        # only how it differs from the rest, and a zone the king seldom stands in (the far ranks) still has what
+        # every other zone learned about a knight on f3. Without it each of 32 zones is trained on its own
+        # thirty-second of the positions: on 504M positions 32 zones fitted the training set better than 8 and
+        # unseen positions no better (C33F140K32). The engine never sees the table: export adds it into every zone.
+        self.shared = nn.EmbeddingBag(INPUTS + 1, hidden, mode="sum", padding_idx=INPUTS) if factorise else None
         self.feature_bias = nn.Parameter(torch.zeros(hidden))
         # one output layer per band of piece counts (reference.bucket); all
         # are computed and the position's own is picked, which on a GPU costs
@@ -60,16 +66,39 @@ class Net(nn.Module):
         nn.init.uniform_(self.features.weight, -0.01, 0.01)
         with torch.no_grad():
             self.features.weight[PAD].zero_()
+            if factorise:
+                nn.init.uniform_(self.shared.weight, -0.01, 0.01)
+                self.shared.weight[INPUTS].zero_()
+
+    def half(self, index):
+        """One side's hidden values before the bias: its zone's rows, and the shared table's when there is one."""
+        total = self.features(index)
+        if self.shared is not None:
+            total = total + self.shared(torch.where(index == PAD, INPUTS, index % INPUTS))
+        return total
+
+    def zone_weights(self):
+        """The feature weights as the engine reads them: each zone's rows with the shared table added in."""
+        own = self.features.weight[:PAD]
+        if self.shared is None:
+            return own
+        return own + self.shared.weight[:INPUTS].repeat(KING_BUCKETS, 1)
 
     def forward(self, us, them, bucket):
-        ours = torch.clamp(self.features(us) + self.feature_bias, 0.0, 1.0)
-        theirs = torch.clamp(self.features(them) + self.feature_bias, 0.0, 1.0)
+        ours = torch.clamp(self.half(us) + self.feature_bias, 0.0, 1.0)
+        theirs = torch.clamp(self.half(them) + self.feature_bias, 0.0, 1.0)
         every = self.out(torch.cat([ours, theirs], dim=1))
         return every.gather(1, bucket[:, None]).squeeze(1)
 
     def clip_weights(self):
         with torch.no_grad():
-            self.features.weight.clamp_(-CLIP, CLIP)
+            if self.shared is None:
+                self.features.weight.clamp_(-CLIP, CLIP)
+            else:
+                # the bound is on what the engine reads, a zone's row plus the shared one
+                shared = self.shared.weight[:INPUTS].repeat(KING_BUCKETS, 1)
+                own = self.features.weight[:PAD]
+                own.copy_(torch.minimum(torch.maximum(own, -CLIP - shared), CLIP - shared))
             self.feature_bias.clamp_(-CLIP, CLIP)
             self.out.weight.clamp_(-CLIP, CLIP)
             self.features.weight[PAD].zero_()
@@ -273,7 +302,7 @@ def open_sources(specs):
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
     with torch.no_grad():
-        fw = model.features.weight[:PAD].cpu().numpy() * QA
+        fw = model.zone_weights().cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
         ow = model.out.weight.cpu().numpy() * QB
         ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * QB
@@ -323,6 +352,8 @@ def main():
     parser.add_argument("--out", default="machete.nnue")
     parser.add_argument("--king-zones", type=int, default=reference.KING_BUCKETS, choices=(8, 16, 32),
                         help="king zones a side: the engine that plays the network must be built for the same number")
+    parser.add_argument("--factorise", action="store_true",
+                        help="train a table shared by every king zone beside the zones' own; the file written is the same shape")
     parser.add_argument("--piece-roles", action="store_true",
                         help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
@@ -373,7 +404,7 @@ def main():
     if corpus.window:
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
-    model = Net(args.hidden).to(device)
+    model = Net(args.hidden, args.factorise).to(device)
     if args.init:
         start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
