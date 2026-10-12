@@ -33,6 +33,7 @@ QA*QB and one divide at the end turns it into centipawns.
     python reference.py dump net.nnue                # header fields
 """
 
+import os
 import argparse
 import struct
 import sys
@@ -41,7 +42,11 @@ import numpy as np
 
 MAGIC = b"MCHNNUE3"
 INPUTS = 768       # per king zone
-KING_BUCKETS = 8   # king zones per side; the file holds KING_BUCKETS * INPUTS rows
+# king zones per side; the file holds KING_BUCKETS * INPUTS rows. 8 is what the released engine is built for.
+# MACHETE_KING_ZONES=16 or 32 makes this module (and train.py, which reads it) describe a network with more:
+# 16 splits every rank in two, 32 is one zone for each square the mirrored king can stand on.
+KING_BUCKETS = int(os.environ.get("MACHETE_KING_ZONES", "8"))
+assert KING_BUCKETS in (8, 16, 32), "MACHETE_KING_ZONES must be 8, 16 or 32"
 HIDDEN = 256       # the width a new file gets unless told otherwise
 BUCKETS = 8        # output layers, by (pieces - 2) // 4
 QA = 255           # hidden-layer scale: a clipped-relu output of 1.0 is QA
@@ -84,17 +89,24 @@ def orient(perspective, king):
 
     Returns zone * 2 + mirror. Seen from that side (black's view flipped
     vertically), the board is mirrored left-right when the king is on files
-    e-h, and the king's square then falls in one of eight zones:
+    e-h, and the king's square then falls in one of KING_BUCKETS zones. Eight:
 
         rank 1: a-b 0, c-d 1      rank 2: a-b 2, c-d 3
         ranks 3-4: a-b 4, c-d 5   ranks 5-8: a-b 6, c-d 7
+
+    Sixteen: every rank, a-b and c-d (rank * 2 + half). Thirty-two: every
+    square of files a-d (rank * 4 + file).
     """
     rel = king ^ 56 if perspective == BLACK else king
     mirror = 1 if rel & 7 >= 4 else 0
     if mirror:
         rel ^= 7
     rank = rel >> 3
+    if KING_BUCKETS == 32:
+        return (rank * 4 + (rel & 7)) * 2 + mirror
     zone = 1 if rel & 7 >= 2 else 0
+    if KING_BUCKETS == 16:
+        return (rank * 2 + zone) * 2 + mirror
     if rank == 1:
         zone += 2
     elif rank in (2, 3):

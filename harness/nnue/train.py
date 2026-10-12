@@ -28,6 +28,9 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# reference.py sizes itself at import from MACHETE_KING_ZONES, so --king-zones is read off the command line first
+if "--king-zones" in sys.argv:
+    os.environ["MACHETE_KING_ZONES"] = sys.argv[sys.argv.index("--king-zones") + 1]
 import reference
 from reference import RECORD
 
@@ -299,6 +302,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
     parser.add_argument("--out", default="machete.nnue")
+    parser.add_argument("--king-zones", type=int, default=reference.KING_BUCKETS, choices=(8, 16, 32),
+                        help="king zones a side: the engine that plays the network must be built for the same number")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
     parser.add_argument("--epochs", type=int, default=12)

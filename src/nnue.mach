@@ -140,6 +140,51 @@ pub fun stack(id: i64) *Acc {
     ret ?STACKS[id][0];
 }
 
+# The refresh cache. A king that steps into another zone changes how its side
+# reads every piece, so that half cannot be patched and was rebuilt from the
+# bias: up to thirty-two column additions. But a search keeps coming back to
+# the same few zones with nearly the same pieces on the board. So each thread
+# keeps, for each side and each way of reading the board (zone and mirror),
+# the half it last built there and the board it built it for. The next
+# rebuild for that reading starts from the kept half and adds and removes
+# only the pieces that differ, then keeps the result. Integer additions are
+# exact in any order, so the half is bit for bit what a rebuild from the bias
+# gives. With eight zones a rebuild is rare; with thirty-two every king move
+# is one, and this is what makes that many zones affordable.
+#[align(16)]
+rec Cached {
+    v:     [HIDDEN]i16;
+    board: [64]u8;
+    valid: i64;
+}
+
+# no piece on the square, in a Cached board
+val NOTHING: u8 = 12;
+
+val     READINGS: i64 = KING_BUCKETS * 2;
+pub var REBUILDS: i64 = 0;
+var     CACHE:    [STACK_COUNT * 2 * READINGS]Cached;
+
+# every kept half is for the weights loaded when it was built
+fun forget() {
+    var i: i64 = 0;
+    for (i < STACK_COUNT * 2 * READINGS) {
+        CACHE[i].valid = 0;
+        i              = i + 1;
+    }
+}
+
+# which thread's stack this is, or -1 for an accumulator that is not one of
+# STACKS (a test's own), which then has no cache
+fun owner(accs: *Acc) i64 {
+    var id: i64 = 0;
+    for (id < STACK_COUNT) {
+        if (accs == ?STACKS[id][0]) { ret id; }
+        id = id + 1;
+    }
+    ret 0 - 1;
+}
+
 # how one side reads the board with its king on `king`: the zone times two,
 # plus one when the board is mirrored left-right to put that king on a-d
 pub fun orient(perspective: i64, king: i64) i64 {
@@ -150,9 +195,12 @@ pub fun orient(perspective: i64, king: i64) i64 {
         mirror = 1;
         rel    = rel ^ 7;
     }
-    var zone: i64 = 0;
-    if ((rel & 7) >= 2) { zone = 1; }
     val rank: i64 = rel >> 3;
+    # thirty-two zones: every square of files a-d. Sixteen: every rank, in two halves
+    if (KING_BUCKETS == 32) { ret (rank * 4 + (rel & 7)) * 2 + mirror; }
+    var zone: i64 = 0;
+    if ((rel & 7) >= 2)         { zone = 1; }
+    if (KING_BUCKETS == 16)     { ret (rank * 2 + zone) * 2 + mirror; }
     if (rank == 1)              { zone = zone + 2; }
     or (rank <= 3 && rank >= 2) { zone = zone + 4; }
     or (rank >= 4)              { zone = zone + 6; }
@@ -246,7 +294,7 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
         if (crossed) {
             var king: i64 = white_king;
             if (side == 1) { king = black_king; }
-            rebuild_side(?accs[top], side, king, board);
+            refresh_side(accs, top, side, king, board);
         }
         or {
             var at: i64 = first + 1;
@@ -265,6 +313,74 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
         }
         side = side + 1;
     }
+}
+
+# add (or take away) one input's column, for `side` reading the board as `o`
+fun column(into: *i16, side: i64, o: i64, pc: u8, sq: i64, plus: bool) {
+    val base: i64 = index(side, o, pc, sq) * HIDDEN;
+    if (AVX2) {
+        if (plus) { kernels.add_column_avx2(into, ?FEATURE_WEIGHTS[base]); }
+        or        { kernels.sub_column_avx2(into, ?FEATURE_WEIGHTS[base]); }
+        ret;
+    }
+    var i: i64 = 0;
+    for (i < HIDDEN) {
+        if (plus) { store8(into, i, load8(into, i) + load8(?FEATURE_WEIGHTS[base], i)); }
+        or        { store8(into, i, load8(into, i) - load8(?FEATURE_WEIGHTS[base], i)); }
+        i = i + 8;
+    }
+}
+
+# the half of slot `top` for a side whose king has changed zone: from this
+# thread's kept half for that reading of the board, brought up to `board`
+fun refresh_side(accs: *Acc, top: i64, side: i64, king: i64, board: *u8) {
+    val a:  *Acc = ?accs[top];
+    val id: i64  = owner(accs);
+    if (id < 0) {
+        rebuild_side(a, side, king, board);
+        ret;
+    }
+    val o:    i64     = orient(side, king);
+    val kept: *Cached = ?CACHE[(id * 2 + side) * READINGS + o];
+    val into: *i16    = ?kept.v[0];
+    var sq:   i64     = 0;
+    if (kept.valid == 0) {
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            kept.v[i] = FEATURE_BIAS[i];
+            i         = i + 1;
+        }
+        for (sq < 64) {
+            kept.board[sq] = NOTHING;
+            sq             = sq + 1;
+        }
+        kept.valid = 1;
+        sq         = 0;
+    }
+    for (sq < 64) {
+        var now: u8 = board[sq];
+        if (now > NOTHING) { now = NOTHING; }
+        val was: u8 = kept.board[sq];
+        if (was != now) {
+            if (was < NOTHING) { column(into, side, o, was, sq, false); }
+            if (now < NOTHING) { column(into, side, o, now, sq, true); }
+            kept.board[sq] = now;
+        }
+        sq = sq + 1;
+    }
+    val to: *i16 = ?a.v[side][0];
+    if (AVX2) { kernels.copy_half_avx2(to, into); }
+    or {
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            store8(to, i, load8(into, i));
+            i = i + 8;
+        }
+    }
+    a.king[side]    = o;
+    a.ready[side]   = 1;
+    a.refresh[side] = 0;
+    REBUILDS        = REBUILDS + 1;
 }
 
 # one half from the bias and every piece on `board`, oriented to `king`
@@ -491,6 +607,7 @@ fun read_body(f: fs.File) bool {
 # read a network file; false leaves the engine on its hand-written evaluation
 pub fun load(path: str) bool {
     loaded = false;
+    forget();
     val opened: res[fs.File, io_error.Error] = fs.open(path);
     if (sel opened.err) { ret false; }
     var f:    fs.File             = opened.ok;
