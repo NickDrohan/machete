@@ -61,6 +61,21 @@ pub val INPUTS: i64 = 768;
 # which compares what each square holds now with what it held last time.
 pub val ROLES: bool = false;
 
+# Layers by the kind of position in place of king zones, the owner's design:
+# which inputs a side reads is chosen by the phase of the game and its pawns,
+# not by where its king stands, so a king that walks the board in an endgame
+# reads one layer all the way. The endgame begins when the queens are off.
+# Built with LAYERS 3 or 6 and KING_BUCKETS the same number:
+#   3: opening (queens on, OPENING_MEN or more men), middlegame, endgame
+#   6: opening; middlegame with an open centre (at most one pawn left on the
+#      d- and e-files), a closed one (a white and a black pawn head to head
+#      on the d- or e-file), or neither; endgame where the side reading has a
+#      passed pawn, and where it has none
+# A capture or a pawn move can change the layer, so like ROLES this builds
+# every half through the refresh cache.
+pub val LAYERS:      i64 = 0;
+val     OPENING_MEN: i64 = 28;
+
 # a channel by kind: pawn, knight (and the second, one higher), bishop, rook
 # (and the second), queen, king; the opponent's are 8 higher
 val     CHANNEL: [6]i64 = [6]i64{0, 1, 3, 4, 6, 7};
@@ -308,7 +323,7 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
             if (accs[k].refresh[side] != 0) { crossed = true; }
             k = k + 1;
         }
-        if (crossed || ROLES) {
+        if (crossed || ROLES || LAYERS != 0) {
             var king: i64 = white_king;
             if (side == 1) { king = black_king; }
             refresh_side(accs, top, side, king, board);
@@ -330,6 +345,71 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
         }
         side = side + 1;
     }
+}
+
+# does `side` have a pawn with no enemy pawn ahead of it on its own or a
+# neighbouring file
+fun has_passer(side: i64, board: *u8) bool {
+    val mine:   u8  = (side * 6)::u8;
+    val theirs: u8  = ((1 - side) * 6)::u8;
+    var sq:     i64 = 0;
+    for (sq < 64) {
+        if (board[sq] == mine) {
+            val file:    i64  = sq & 7;
+            var blocked: bool = false;
+            var at:      i64  = sq + 8;
+            if (side == 1) { at = sq - 8; }
+            for (at >= 0 && at < 64 && !blocked) {
+                var f: i64 = file - 1;
+                for (f <= file + 1) {
+                    if (f >= 0 && f < 8 && board[(at & 56) + f] == theirs) { blocked = true; }
+                    f = f + 1;
+                }
+                if (side == 1) { at = at - 8; }
+                or             { at = at + 8; }
+            }
+            if (!blocked) { ret true; }
+        }
+        sq = sq + 1;
+    }
+    ret false;
+}
+
+# how `side` reads `board` with its king on `king`: the layer (or the king
+# zone) times two, plus one when mirrored
+fun reading(side: i64, king: i64, board: *u8) i64 {
+    val o: i64 = orient(side, king);
+    if (LAYERS == 0) { ret o; }
+    val mirror: i64  = o & 1;
+    var men:    i64  = 0;
+    var queens: bool = false;
+    var centre: i64  = 0;
+    var locked: bool = false;
+    var sq:     i64  = 0;
+    for (sq < 64) {
+        val pc: u8 = board[sq];
+        if (pc < 12) {
+            men = men + 1;
+            if (pc == 4 || pc == 10) { queens = true; }
+            if ((pc == 0 || pc == 6) && ((sq & 7) == 3 || (sq & 7) == 4)) {
+                centre = centre + 1;
+                if (pc == 0 && sq < 56 && board[sq + 8] == 6) { locked = true; }
+            }
+        }
+        sq = sq + 1;
+    }
+    var layer: i64 = 0;
+    if (queens) {
+        if (men >= OPENING_MEN) { layer = 0; }
+        or (LAYERS == 3)        { layer = 1; }
+        or (locked)             { layer = 2; }
+        or (centre <= 1)        { layer = 1; }
+        or                      { layer = 3; }
+    }
+    or (LAYERS == 3)             { layer = 2; }
+    or (has_passer(side, board)) { layer = 4; }
+    or                           { layer = 5; }
+    ret layer * 2 + mirror;
 }
 
 # a square as `side` reads the board oriented `o`
@@ -397,7 +477,7 @@ fun refresh_side(accs: *Acc, top: i64, side: i64, king: i64, board: *u8) {
         rebuild_side(a, side, king, board);
         ret;
     }
-    val o:    i64     = orient(side, king);
+    val o:    i64     = reading(side, king, board);
     val kept: *Cached = ?CACHE[(id * 2 + side) * READINGS + o];
     val into: *i16    = ?kept.v[0];
     var sq:   i64     = 0;
@@ -442,7 +522,7 @@ fun refresh_side(accs: *Acc, top: i64, side: i64, king: i64, board: *u8) {
 
 # one half from the bias and every piece on `board`, oriented to `king`
 fun rebuild_side(a: *Acc, side: i64, king: i64, board: *u8) {
-    a.king[side] = orient(side, king);
+    a.king[side] = reading(side, king, board);
     var i: i64 = 0;
     for (i < HIDDEN) {
         a.v[side][i] = FEATURE_BIAS[i];
@@ -476,7 +556,7 @@ pub fun reset(a: *Acc, white_king: i64, black_king: i64) {
     }
     # with ROLES a half is only ever built from the whole board (see ROLES),
     # so what the caller adds piece by piece is not it: leave it owing
-    if (ROLES) {
+    if (ROLES || LAYERS != 0) {
         a.ready[0] = 0;
         a.ready[1] = 0;
     }

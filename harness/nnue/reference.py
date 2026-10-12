@@ -54,6 +54,20 @@ INPUTS = 1024 if ROLES else 768   # per king zone
 # 16 splits every rank in two, 32 is one zone for each square the mirrored king can stand on.
 KING_BUCKETS = int(os.environ.get("MACHETE_KING_ZONES", "8"))
 assert KING_BUCKETS in (8, 16, 32), "MACHETE_KING_ZONES must be 8, 16 or 32"
+
+# Layers by the kind of position in place of king zones (MACHETE_LAYERS), the owner's design of 2026-10-12: which
+# set of inputs a side reads is chosen by the phase of the game and its pawns, not by where its king stands, so a
+# king that walks the board in an endgame reads the same layer all the way. The endgame begins when the queens
+# are off. Still mirrored left-right by the king's file. KING_BUCKETS is then the number of layers.
+#   phase3:  0 opening (queens on, 28 or more men)   1 middlegame (queens on)   2 endgame (no queens)
+#   struct6: 0 opening   1 middlegame, open centre (at most one pawn left on the d- and e-files)
+#            2 middlegame, closed centre (a white and a black pawn head to head on the d- or e-file)
+#            3 middlegame, otherwise   4 endgame and the side reading has a passed pawn   5 endgame, it has none
+LAYERS = os.environ.get("MACHETE_LAYERS", "")
+assert LAYERS in ("", "phase3", "struct6"), "MACHETE_LAYERS must be phase3 or struct6"
+if LAYERS:
+    KING_BUCKETS = 3 if LAYERS == "phase3" else 6
+OPENING_MEN = 28
 HIDDEN = 256       # the width a new file gets unless told otherwise
 BUCKETS = 8        # output layers, by (pieces - 2) // 4
 QA = 255           # hidden-layer scale: a clipped-relu output of 1.0 is QA
@@ -127,7 +141,35 @@ def orient(perspective, king):
 ORIENT = np.array([[orient(side, square) for square in range(64)] for side in (WHITE, BLACK)])
 
 
-def feature_index(perspective, colour, kind, square, king, second=False):
+def has_passer(colour, pieces):
+    """Does `colour` have a pawn with no enemy pawn ahead of it on its own or a neighbouring file?"""
+    enemy = [(q & 7, q >> 3) for c, k, q in pieces if k == 0 and c != colour]
+    for c, k, q in pieces:
+        if k == 0 and c == colour:
+            f, r = q & 7, q >> 3
+            if not any(abs(ef - f) <= 1 and (er > r if colour == WHITE else er < r) for ef, er in enemy):
+                return True
+    return False
+
+
+def layer_of(perspective, pieces):
+    """The layer `perspective` reads in a position, a list of (colour, kind, square). See LAYERS."""
+    if any(kind == 4 for _, kind, _ in pieces):
+        if len(pieces) >= OPENING_MEN:
+            return 0
+        if LAYERS == "phase3":
+            return 1
+        white = {q for c, k, q in pieces if k == 0 and c == WHITE and q & 7 in (3, 4)}
+        black = {q for c, k, q in pieces if k == 0 and c == BLACK and q & 7 in (3, 4)}
+        if any(q + 8 in black for q in white):
+            return 2
+        return 1 if len(white) + len(black) <= 1 else 3
+    if LAYERS == "phase3":
+        return 2
+    return 4 if has_passer(perspective, pieces) else 5
+
+
+def feature_index(perspective, colour, kind, square, king, second=False, layer=None):
     """Where (colour, kind, square) lands in the inputs, seen from one side
     whose own king stands on `king`.
 
@@ -138,6 +180,8 @@ def feature_index(perspective, colour, kind, square, king, second=False):
     block of 768 inputs is read.
     """
     o = orient(perspective, king)
+    if LAYERS:
+        o = layer * 2 + (o & 1)
     if perspective == BLACK:
         colour = colour ^ 1
         square = square ^ 56
@@ -188,6 +232,10 @@ def feature_indices(rows):
         kings.append(np.take_along_axis(squares, slot[:, None], axis=1)[:, 0])
     ow = ORIENT[WHITE][kings[0]][:, None]
     ob = ORIENT[BLACK][kings[1]][:, None]
+    if LAYERS:
+        lw, lb = layers_of(pieces, squares, live, counts)
+        ow = lw[:, None] * 2 + (ow & 1)
+        ob = lb[:, None] * 2 + (ob & 1)
 
     white_squares = squares ^ ((ow & 1) * 7)
     black_squares = squares ^ 56 ^ ((ob & 1) * 7)
@@ -212,6 +260,39 @@ def feature_indices(rows):
     them = np.where(black_to_move, white, black)
     pad = KING_BUCKETS * INPUTS
     return np.where(live, us, pad), np.where(live, them, pad)
+
+
+# squares ahead of a pawn on its own and the neighbouring files, as bitboards: FRONT[colour][square]
+def _front(colour, square):
+    f, r = square & 7, square >> 3
+    ranks = range(r + 1, 8) if colour == WHITE else range(0, r)
+    return sum(1 << (rr * 8 + ff) for rr in ranks for ff in (f - 1, f, f + 1) if 0 <= ff < 8)
+
+
+FRONT = np.array([[_front(colour, square) for square in range(64)] for colour in (WHITE, BLACK)], dtype=np.uint64)
+CENTRE_FILES = np.uint64(sum(1 << (r * 8 + f) for r in range(8) for f in (3, 4)))
+
+
+def layers_of(pieces, squares, live, counts):
+    """layer_of for a batch: (white's layer, black's layer) for arrays of piece codes and squares."""
+    queens = (live & ((pieces == 4) | (pieces == 10))).any(axis=1)
+    one = np.uint64(1)
+    bit = one << squares.astype(np.uint64)
+    wp, bp = live & (pieces == 0), live & (pieces == 6)
+    white = np.bitwise_or.reduce(np.where(wp, bit, np.uint64(0)), axis=1)
+    black = np.bitwise_or.reduce(np.where(bp, bit, np.uint64(0)), axis=1)
+    middle = np.full(len(pieces), 1)
+    if LAYERS == "struct6":
+        centre = ((wp | bp) & np.isin(squares & 7, (3, 4))).sum(axis=1)
+        locked = ((white << np.uint64(8)) & black & CENTRE_FILES) != 0
+        middle = np.where(locked, 2, np.where(centre <= 1, 1, 3))
+    with_queens = np.where(counts >= OPENING_MEN, 0, middle)
+    if LAYERS == "phase3":
+        end = np.full(len(pieces), 2)
+        return np.where(queens, with_queens, end), np.where(queens, with_queens, end)
+    white_passer = (wp & ((FRONT[WHITE][squares] & black[:, None]) == 0)).any(axis=1)
+    black_passer = (bp & ((FRONT[BLACK][squares] & white[:, None]) == 0)).any(axis=1)
+    return np.where(queens, with_queens, np.where(white_passer, 4, 5)), np.where(queens, with_queens, np.where(black_passer, 4, 5))
 
 
 def bucket(pieces):
@@ -276,9 +357,10 @@ def accumulate(net, pieces):
     acc = np.stack([net["feature_bias"].copy(), net["feature_bias"].copy()])
     for perspective in (WHITE, BLACK):
         second = seconds(perspective, pieces, kings[perspective])
+        layer = layer_of(perspective, pieces) if LAYERS else None
         for (colour, kind, square), two in zip(pieces, second):
             acc[perspective] += net["feature_weights"][
-                feature_index(perspective, colour, kind, square, kings[perspective], two)]
+                feature_index(perspective, colour, kind, square, kings[perspective], two, layer)]
     return acc
 
 

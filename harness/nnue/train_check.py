@@ -64,7 +64,8 @@ def main():
                   for c, q in zip(row["pieces"][:row["count"]], row["squares"][:row["count"]])]
         kings = {colour: square for colour, kind, square in pieces if kind == 5}
         for side, got in ((row["stm"], us_ref[r]), (row["stm"] ^ 1, them_ref[r])):
-            want = sorted(reference.feature_index(side, colour, kind, square, kings[side], two)
+            layer = reference.layer_of(side, pieces) if reference.LAYERS else None
+            want = sorted(reference.feature_index(side, colour, kind, square, kings[side], two, layer)
                           for (colour, kind, square), two in zip(pieces, reference.seconds(side, pieces, kings[side])))
             if sorted(got[got != reference.KING_BUCKETS * reference.INPUTS].tolist()) != want:
                 raise SystemExit("reference.feature_indices disagrees with feature_index on record {}".format(r))

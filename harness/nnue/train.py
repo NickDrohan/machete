@@ -33,6 +33,8 @@ if "--king-zones" in sys.argv:
     os.environ["MACHETE_KING_ZONES"] = sys.argv[sys.argv.index("--king-zones") + 1]
 if "--piece-roles" in sys.argv:
     os.environ["MACHETE_PIECE_ROLES"] = "1"
+if "--layers" in sys.argv:
+    os.environ["MACHETE_LAYERS"] = sys.argv[sys.argv.index("--layers") + 1]
 import reference
 from reference import RECORD
 
@@ -161,6 +163,9 @@ class Corpus(object):
         self.slots = torch.arange(32, device=device)[None, :]
         self.orient = torch.from_numpy(reference.ORIENT).to(device)
         self.channel = torch.tensor(reference.CHANNEL, device=device)
+        # bitboards as int64: the top bit is the sign, which and/or/shift do not mind
+        self.front = torch.from_numpy(reference.FRONT.astype(np.int64)).to(device)
+        self.centre_files = torch.tensor(int(np.int64(reference.CENTRE_FILES)), device=device)
         # the device-side columns a batch gathers from: the corpus itself
         # without a window, otherwise the window loaded last
         self.live = {name: getattr(self, name) for name in COLUMNS}
@@ -193,6 +198,7 @@ class Corpus(object):
         held.live = {name: getattr(held, name) for name in COLUMNS}
         held.squares, held.slots, held.orient = self.squares, self.slots, self.orient
         held.channel = self.channel
+        held.front, held.centre_files = self.front, self.centre_files
         return held
 
     def features(self, index):
@@ -214,6 +220,10 @@ class Corpus(object):
             kings.append(squares.gather(1, slot[:, None])[:, 0])
         ow = self.orient[0][kings[0]][:, None]
         ob = self.orient[1][kings[1]][:, None]
+        if reference.LAYERS:
+            lw, lb = self.layers(pieces, squares, live, count)
+            ow = lw[:, None] * 2 + (ow & 1)
+            ob = lb[:, None] * 2 + (ob & 1)
         white_squares = squares ^ ((ow & 1) * 7)
         black_squares = squares ^ 56 ^ ((ob & 1) * 7)
         white_rows, black_rows = pieces, (pieces + 6) % 12
@@ -236,6 +246,29 @@ class Corpus(object):
         them = torch.where(black_to_move, white, black)
         pad = torch.full_like(us, PAD)
         return torch.where(live, us, pad), torch.where(live, them, pad), bucket
+
+    def layers(self, pieces, squares, live, count):
+        """reference.layers_of on the device: each side's layer by phase and pawns."""
+        queens = (live & ((pieces == 4) | (pieces == 10))).any(dim=1)
+        bit = torch.ones_like(squares) << squares
+        zero = torch.zeros_like(squares)
+        wp, bp = live & (pieces == 0), live & (pieces == 6)
+        white = torch.where(wp, bit, zero).sum(dim=1)   # a pawn stands on a square once, so the sum is the union
+        black = torch.where(bp, bit, zero).sum(dim=1)
+        middle = torch.ones_like(count)
+        if reference.LAYERS == "struct6":
+            file = squares & 7
+            centre = ((wp | bp) & ((file == 3) | (file == 4))).sum(dim=1)
+            locked = ((white << 8) & black & self.centre_files) != 0
+            middle = torch.where(locked, 2, torch.where(centre <= 1, 1, 3))
+        with_queens = torch.where(count >= reference.OPENING_MEN, torch.zeros_like(count), middle)
+        if reference.LAYERS == "phase3":
+            both = torch.where(queens, with_queens, torch.full_like(count, 2))
+            return both, both
+        white_passer = (wp & ((self.front[0][squares] & black[:, None]) == 0)).any(dim=1)
+        black_passer = (bp & ((self.front[1][squares] & white[:, None]) == 0)).any(dim=1)
+        five, four = torch.full_like(count, 5), torch.full_like(count, 4)
+        return torch.where(queens, with_queens, torch.where(white_passer, four, five)), torch.where(queens, with_queens, torch.where(black_passer, four, five))
 
     def targets(self, index):
         """The number the network is asked to produce, as a win probability."""
@@ -354,6 +387,8 @@ def main():
                         help="king zones a side: the engine that plays the network must be built for the same number")
     parser.add_argument("--factorise", action="store_true",
                         help="train a table shared by every king zone beside the zones' own; the file written is the same shape")
+    parser.add_argument("--layers", choices=("phase3", "struct6"), default=reference.LAYERS or None,
+                        help="layers by phase and pawns in place of king zones (reference.LAYERS); needs an engine built for it")
     parser.add_argument("--piece-roles", action="store_true",
                         help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
