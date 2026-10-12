@@ -41,7 +41,14 @@ import sys
 import numpy as np
 
 MAGIC = b"MCHNNUE3"
-INPUTS = 768       # per king zone
+# Piece roles (MACHETE_PIECE_ROLES=1), the owner's per-piece inputs: a side's two knights get an input channel
+# each, and so do its two rooks; the bishops share one (the square's colour says which bishop it is) and so do the
+# pawns (the square says which file). Which knight is which is read off the position, never remembered: the one
+# nearer the a-file as that side reads the board (then the lower rank) is the first, every other the second.
+# Channels a side: pawn 0, knight 1 and 2, bishop 3, rook 4 and 5, queen 6, king 7; the opponent's are 8 higher.
+ROLES = os.environ.get("MACHETE_PIECE_ROLES", "0") == "1"
+CHANNEL = (0, 1, 3, 4, 6, 7)   # by kind: pawn, knight, bishop, rook, queen, king
+INPUTS = 1024 if ROLES else 768   # per king zone
 # king zones per side; the file holds KING_BUCKETS * INPUTS rows. 8 is what the released engine is built for.
 # MACHETE_KING_ZONES=16 or 32 makes this module (and train.py, which reads it) describe a network with more:
 # 16 splits every rank in two, 32 is one zone for each square the mirrored king can stand on.
@@ -120,7 +127,7 @@ def orient(perspective, king):
 ORIENT = np.array([[orient(side, square) for square in range(64)] for side in (WHITE, BLACK)])
 
 
-def feature_index(perspective, colour, kind, square, king):
+def feature_index(perspective, colour, kind, square, king, second=False):
     """Where (colour, kind, square) lands in the inputs, seen from one side
     whose own king stands on `king`.
 
@@ -136,7 +143,31 @@ def feature_index(perspective, colour, kind, square, king):
         square = square ^ 56
     if o & 1:
         square ^= 7
+    if ROLES:
+        return (o >> 1) * INPUTS + (colour * 8 + CHANNEL[kind] + (1 if second else 0)) * 64 + square
     return (o >> 1) * INPUTS + (colour * 6 + kind) * 64 + square
+
+
+def role_key(perspective, square, king):
+    """Where a piece stands as `perspective` reads the board, file first: the smaller key is the first of a pair."""
+    o = orient(perspective, king)
+    if perspective == BLACK:
+        square = square ^ 56
+    if o & 1:
+        square ^= 7
+    return (square & 7) * 8 + (square >> 3)
+
+
+def seconds(perspective, pieces, king):
+    """For each (colour, kind, square) of `pieces`: is it a second knight or rook, as `perspective` reads the board?"""
+    if not ROLES:
+        return [False] * len(pieces)
+    first = {}
+    for colour, kind, square in pieces:
+        if kind in (1, 3):
+            key = role_key(perspective, square, king)
+            first[(colour, kind)] = min(first.get((colour, kind), 64), key)
+    return [kind in (1, 3) and role_key(perspective, square, king) != first[(colour, kind)] for colour, kind, square in pieces]
 
 
 def feature_indices(rows):
@@ -158,8 +189,23 @@ def feature_indices(rows):
     ow = ORIENT[WHITE][kings[0]][:, None]
     ob = ORIENT[BLACK][kings[1]][:, None]
 
-    white = (ow >> 1) * INPUTS + pieces * 64 + (squares ^ ((ow & 1) * 7))
-    black = (ob >> 1) * INPUTS + ((pieces + 6) % 12) * 64 + (squares ^ 56 ^ ((ob & 1) * 7))
+    white_squares = squares ^ ((ow & 1) * 7)
+    black_squares = squares ^ 56 ^ ((ob & 1) * 7)
+    white_rows, black_rows = pieces, (pieces + 6) % 12
+    if ROLES:
+        channel = np.array(CHANNEL)
+        rows_of = []
+        for seen, mine in ((white_squares, pieces < 6), (black_squares, pieces >= 6)):
+            key = (seen & 7) * 8 + (seen >> 3)
+            second = np.zeros_like(pieces, dtype=bool)
+            for code in (1, 3, 7, 9):   # each colour's knights and rooks
+                group = live & (pieces == code)
+                first = np.where(group, key, 64).min(axis=1, keepdims=True)
+                second |= group & (key != first)
+            rows_of.append(np.where(mine, 0, 8) + channel[pieces % 6] + second)
+        white_rows, black_rows = rows_of
+    white = (ow >> 1) * INPUTS + white_rows * 64 + white_squares
+    black = (ob >> 1) * INPUTS + black_rows * 64 + black_squares
 
     black_to_move = (rows["stm"] == 1)[:, None]
     us = np.where(black_to_move, black, white)
@@ -228,10 +274,11 @@ def accumulate(net, pieces):
     """Both perspectives, from scratch. `pieces` is a list of (colour, kind, square)."""
     kings = {colour: square for colour, kind, square in pieces if kind == 5}
     acc = np.stack([net["feature_bias"].copy(), net["feature_bias"].copy()])
-    for colour, kind, square in pieces:
-        for perspective in (WHITE, BLACK):
+    for perspective in (WHITE, BLACK):
+        second = seconds(perspective, pieces, kings[perspective])
+        for (colour, kind, square), two in zip(pieces, second):
             acc[perspective] += net["feature_weights"][
-                feature_index(perspective, colour, kind, square, kings[perspective])]
+                feature_index(perspective, colour, kind, square, kings[perspective], two)]
     return acc
 
 

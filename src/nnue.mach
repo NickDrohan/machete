@@ -48,7 +48,23 @@ use fs:       std.filesystem;
 use io_error: std.io.error;
 
 pub val INPUTS: i64 = 768;
-pub val HIDDEN: i64 = 768;
+
+# Piece roles, the owner's per-piece inputs: built with ROLES true and INPUTS
+# 1024, a side's two knights get an input channel each and so do its two
+# rooks; the bishops share one (the square's colour says which bishop) and so
+# do the pawns (the square says which file). Which knight is which is read off
+# the position, never remembered, so equal positions still evaluate equally:
+# the one nearer the a-file as that side reads the board (then the lower rank)
+# is the first, every other the second. A knight's channel can therefore
+# change when the other knight moves, which the deferred changes of a move
+# cannot express; a roles build builds every half through the refresh cache,
+# which compares what each square holds now with what it held last time.
+pub val ROLES: bool = false;
+
+# a channel by kind: pawn, knight (and the second, one higher), bishop, rook
+# (and the second), queen, king; the opponent's are 8 higher
+val     CHANNEL: [6]i64 = [6]i64{0, 1, 3, 4, 6, 7};
+pub val HIDDEN:  i64    = 768;
 
 # king zones, per side, after mirroring the king onto files a-d:
 #   rank 1: a-b, c-d     rank 2: a-b, c-d
@@ -158,8 +174,9 @@ rec Cached {
     valid: i64;
 }
 
-# no piece on the square, in a Cached board
-val NOTHING: u8 = 12;
+# no piece on the square, in a Cached board, which holds each square's row
+# (see row_of)
+val NOTHING: u8 = 255;
 
 val     READINGS: i64 = KING_BUCKETS * 2;
 pub var REBUILDS: i64 = 0;
@@ -291,7 +308,7 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
             if (accs[k].refresh[side] != 0) { crossed = true; }
             k = k + 1;
         }
-        if (crossed) {
+        if (crossed || ROLES) {
             var king: i64 = white_king;
             if (side == 1) { king = black_king; }
             refresh_side(accs, top, side, king, board);
@@ -315,9 +332,49 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
     }
 }
 
-# add (or take away) one input's column, for `side` reading the board as `o`
-fun column(into: *i16, side: i64, o: i64, pc: u8, sq: i64, plus: bool) {
-    val base: i64 = index(side, o, pc, sq) * HIDDEN;
+# a square as `side` reads the board oriented `o`
+fun seen(side: i64, o: i64, sq: i64) i64 {
+    var square: i64 = sq;
+    if (side == 1)    { square = square ^ 56; }
+    if ((o & 1) != 0) { square = square ^ 7; }
+    ret square;
+}
+
+# which row of a zone's inputs the piece on `sq` reads from, for `side`
+# oriented `o`: its code as that side sees it, or with ROLES its channel
+fun row_of(side: i64, o: i64, pc: u8, sq: i64, board: *u8) u8 {
+    var code: i64 = pc::i64;
+    if (side == 1) { code = SWAPPED[code]; }
+    if (!ROLES)    { ret code::u8; }
+    var kind: i64 = code;
+    var row:  i64 = 0;
+    if (code >= 6) {
+        kind = code - 6;
+        row  = 8;
+    }
+    row = row + CHANNEL[kind];
+    if (kind == 1 || kind == 3) {
+        # a second knight or rook: another of the same stands before it, file first
+        val here: i64 = seen(side, o, sq);
+        val key:  i64 = (here & 7) * 8 + (here >> 3);
+        var at:   i64 = 0;
+        for (at < 64) {
+            if (at != sq && board[at] == pc) {
+                val there: i64 = seen(side, o, at);
+                if ((there & 7) * 8 + (there >> 3) < key) {
+                    row = row + 1;
+                    brk;
+                }
+            }
+            at = at + 1;
+        }
+    }
+    ret row::u8;
+}
+
+# add (or take away) the column of one row and square of the zone `o` reads
+fun column(into: *i16, side: i64, o: i64, row: u8, sq: i64, plus: bool) {
+    val base: i64 = ((o >> 1) * INPUTS + row::i64 * 64 + seen(side, o, sq)) * HIDDEN;
     if (AVX2) {
         if (plus) { kernels.add_column_avx2(into, ?FEATURE_WEIGHTS[base]); }
         or        { kernels.sub_column_avx2(into, ?FEATURE_WEIGHTS[base]); }
@@ -358,12 +415,12 @@ fun refresh_side(accs: *Acc, top: i64, side: i64, king: i64, board: *u8) {
         sq         = 0;
     }
     for (sq < 64) {
-        var now: u8 = board[sq];
-        if (now > NOTHING) { now = NOTHING; }
+        var now: u8 = NOTHING;
+        if (board[sq] < 12) { now = row_of(side, o, board[sq], sq, board); }
         val was: u8 = kept.board[sq];
         if (was != now) {
-            if (was < NOTHING) { column(into, side, o, was, sq, false); }
-            if (now < NOTHING) { column(into, side, o, now, sq, true); }
+            if (was != NOTHING) { column(into, side, o, was, sq, false); }
+            if (now != NOTHING) { column(into, side, o, now, sq, true); }
             kept.board[sq] = now;
         }
         sq = sq + 1;
@@ -393,7 +450,7 @@ fun rebuild_side(a: *Acc, side: i64, king: i64, board: *u8) {
     }
     var sq: i64 = 0;
     for (sq < 64) {
-        if (board[sq] < 12) { add_side(a, side, board[sq], sq); }
+        if (board[sq] < 12) { column(?a.v[side][0], side, a.king[side], row_of(side, a.king[side], board[sq], sq, board), sq, true); }
         sq = sq + 1;
     }
     a.ready[side]   = 1;
@@ -416,6 +473,12 @@ pub fun reset(a: *Acc, white_king: i64, black_king: i64) {
             i            = i + 1;
         }
         side = side + 1;
+    }
+    # with ROLES a half is only ever built from the whole board (see ROLES),
+    # so what the caller adds piece by piece is not it: leave it owing
+    if (ROLES) {
+        a.ready[0] = 0;
+        a.ready[1] = 0;
     }
 }
 

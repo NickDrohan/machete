@@ -31,6 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # reference.py sizes itself at import from MACHETE_KING_ZONES, so --king-zones is read off the command line first
 if "--king-zones" in sys.argv:
     os.environ["MACHETE_KING_ZONES"] = sys.argv[sys.argv.index("--king-zones") + 1]
+if "--piece-roles" in sys.argv:
+    os.environ["MACHETE_PIECE_ROLES"] = "1"
 import reference
 from reference import RECORD
 
@@ -129,6 +131,7 @@ class Corpus(object):
         self.squares = torch.arange(64, device=device)[None, :]
         self.slots = torch.arange(32, device=device)[None, :]
         self.orient = torch.from_numpy(reference.ORIENT).to(device)
+        self.channel = torch.tensor(reference.CHANNEL, device=device)
         # the device-side columns a batch gathers from: the corpus itself
         # without a window, otherwise the window loaded last
         self.live = {name: getattr(self, name) for name in COLUMNS}
@@ -160,6 +163,7 @@ class Corpus(object):
             setattr(held, name, getattr(self, name)[picked].to(self.device))
         held.live = {name: getattr(held, name) for name in COLUMNS}
         held.squares, held.slots, held.orient = self.squares, self.slots, self.orient
+        held.channel = self.channel
         return held
 
     def features(self, index):
@@ -181,8 +185,23 @@ class Corpus(object):
             kings.append(squares.gather(1, slot[:, None])[:, 0])
         ow = self.orient[0][kings[0]][:, None]
         ob = self.orient[1][kings[1]][:, None]
-        white = (ow >> 1) * INPUTS + pieces * 64 + (squares ^ ((ow & 1) * 7))
-        black = (ob >> 1) * INPUTS + ((pieces + 6) % 12) * 64 + (squares ^ 56 ^ ((ob & 1) * 7))
+        white_squares = squares ^ ((ow & 1) * 7)
+        black_squares = squares ^ 56 ^ ((ob & 1) * 7)
+        white_rows, black_rows = pieces, (pieces + 6) % 12
+        if reference.ROLES:
+            # reference.feature_indices' piece roles: a side's second knight and second rook have channels of their own
+            rows_of = []
+            for seen, mine in ((white_squares, pieces < 6), (black_squares, pieces >= 6)):
+                key = (seen & 7) * 8 + (seen >> 3)
+                second = torch.zeros_like(pieces, dtype=torch.bool)
+                for code in (1, 3, 7, 9):
+                    group = live & (pieces == code)
+                    first = torch.where(group, key, torch.full_like(key, 64)).min(dim=1, keepdim=True).values
+                    second |= group & (key != first)
+                rows_of.append(torch.where(mine, 0, 8) + self.channel[pieces % 6] + second.long())
+            white_rows, black_rows = rows_of
+        white = (ow >> 1) * INPUTS + white_rows * 64 + white_squares
+        black = (ob >> 1) * INPUTS + black_rows * 64 + black_squares
         black_to_move = (self.live["stm"][index] == 1)[:, None]
         us = torch.where(black_to_move, black, white)
         them = torch.where(black_to_move, white, black)
@@ -304,6 +323,8 @@ def main():
     parser.add_argument("--out", default="machete.nnue")
     parser.add_argument("--king-zones", type=int, default=reference.KING_BUCKETS, choices=(8, 16, 32),
                         help="king zones a side: the engine that plays the network must be built for the same number")
+    parser.add_argument("--piece-roles", action="store_true",
+                        help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
     parser.add_argument("--epochs", type=int, default=12)
