@@ -1,9 +1,12 @@
-# transposition table: fixed size, allocated with the program
+# transposition table: 128 MB with the program, or the size the UCI Hash
+# option asks for
 #
-# the table is a statically sized array so the engine allocates nothing at
-# run time. 2^23 slots of 16 bytes is 128 MB, and because the size never
-# changes it is one less thing that can fail mid-search. The UCI Hash option
-# is therefore reported but not honoured.
+# the default table is a statically sized array, 2^23 slots of 16 bytes, so
+# an engine nobody configures allocates nothing at run time. resize swaps in a
+# table of another size from the page allocator (a power of two megabytes, up
+# to MAX_MEGABYTES) and gives the old one back; it is called between
+# searches, from the UCI thread, never during one. A refused allocation
+# leaves the table as it was.
 #
 # Slots come in buckets of four, one 64-byte cache line, and a position may
 # live in any slot of its bucket. A store that finds no slot of its own
@@ -19,6 +22,13 @@ use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
 
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+
+use A: std.allocator;
+use std.allocator.page;
+
 use mv: machete.move;
 use machete.move.Move;
 
@@ -29,13 +39,14 @@ pub val LOWER: u8 = 1;
 # the score is an upper bound: no move beat alpha
 pub val UPPER: u8 = 2;
 
-pub val ENTRIES: i64 = 8388608;
-# what the UCI Hash option reports: ENTRIES (2^23) slots of 16 bytes, a fixed size
-pub val MEGABYTES: i64 = 128;
+# the table an unconfigured engine has, and the bounds of the UCI Hash option
+pub val MEGABYTES:     i64 = 128;
+pub val MIN_MEGABYTES: i64 = 1;
+pub val MAX_MEGABYTES: i64 = 16384;
 
-# slots per bucket, and buckets in the table
-val WAYS:    i64 = 4;
-val BUCKETS: i64 = 2097152;
+# slots of 16 bytes in a megabyte, and slots per bucket
+val SLOTS_PER_MB: i64 = 65536;
+val WAYS:         i64 = 4;
 
 pub rec Entry {
     key:   u64;
@@ -55,7 +66,61 @@ rec Slot {
     data:  u64;
 }
 
-var TABLE: [8388608]Slot;
+var BUILT_IN: [8388608]Slot;
+
+# the table in use: its slots, how many, how many buckets of WAYS that is,
+# and its size in megabytes. OWNED is true when it came from HEAP.
+var TABLE:    *Slot = nil;
+var ENTRIES:  i64   = 8388608;
+var BUCKETS:  i64   = 2097152;
+var SIZE_MB:  i64   = 128;
+var OWNED:    bool  = false;
+var HEAP:     A.Allocator;
+var HEAP_SET: bool  = false;
+
+# the table in use; the built-in one until resize says otherwise
+fun slots() *Slot {
+    if (TABLE == nil) { TABLE = ?BUILT_IN[0]; }
+    ret TABLE;
+}
+
+# the size in use, in megabytes
+pub fun megabytes() i64 {
+    ret SIZE_MB;
+}
+
+# use a table of `wanted` megabytes, rounded down to a power of two and held
+# to MIN_MEGABYTES..MAX_MEGABYTES, empty. false, and the table unchanged, when
+# the memory is refused.
+pub fun resize(wanted: i64) bool {
+    var mb: i64 = MIN_MEGABYTES;
+    for (mb * 2 <= wanted && mb * 2 <= MAX_MEGABYTES) { mb = mb * 2; }
+    if (mb == SIZE_MB) {
+        clear();
+        ret true;
+    }
+    var fresh: *Slot = ?BUILT_IN[0];
+    if (mb != MEGABYTES) {
+        if (!HEAP_SET) {
+            val made: err[A.Error] = page.make(?HEAP);
+            if (sel made.err) { ret false; }
+            HEAP_SET = true;
+        }
+        val got: res[*Slot, A.Error] = A.allocate[Slot](?HEAP, (mb * SLOTS_PER_MB)::usize);
+        if (sel got.err) { ret false; }
+        fresh = got.ok;
+    }
+    if (OWNED) {
+        val gone: err[A.Error] = A.deallocate[Slot](?HEAP, TABLE, ENTRIES::usize);
+    }
+    TABLE   = fresh;
+    OWNED   = mb != MEGABYTES;
+    ENTRIES = mb * SLOTS_PER_MB;
+    BUCKETS = ENTRIES / WAYS;
+    SIZE_MB = mb;
+    clear();
+    ret true;
+}
 
 # which search wrote an entry, counted modulo 64; new_search moves it on
 var GENERATION: u64 = 0;
@@ -89,10 +154,11 @@ fun worth(e: *Slot) i64 {
 }
 
 pub fun clear() {
-    var i: i64 = 0;
+    val table: *Slot = slots();
+    var i:     i64   = 0;
     for (i < ENTRIES) {
-        TABLE[i].guard = 0;
-        TABLE[i].data  = 0;
+        table[i].guard = 0;
+        table[i].data  = 0;
         i              = i + 1;
     }
     GENERATION = 0;
@@ -106,10 +172,11 @@ fun bucket(key: u64) i64 {
 # copy the entry for key into out; false when this position is not stored, or
 # when its slot was caught mid-write by another thread
 pub fun probe(key: u64, out: *Entry) bool {
-    val first: i64 = bucket(key);
-    var way:   i64 = 0;
+    val table: *Slot = slots();
+    val first: i64   = bucket(key);
+    var way:   i64   = 0;
     for (way < WAYS) {
-        val e:    *Slot = ?TABLE[first + way];
+        val e:    *Slot = ?table[first + way];
         val data: u64   = e.data;
         if ((e.guard ^ data) == key) {
             out.key = key;
@@ -124,12 +191,13 @@ pub fun probe(key: u64, out: *Entry) bool {
 # the position's own slot keeps the deeper search unless this one is exact;
 # a position new to the bucket takes the slot worth least
 pub fun store(key: u64, move: Move, score: i64, depth: i64, flag: u8) {
-    val first:  i64 = bucket(key);
-    var victim: i64 = first;
-    var least:  i64 = 1000000;
-    var way:    i64 = 0;
+    val table:  *Slot = slots();
+    val first:  i64   = bucket(key);
+    var victim: i64   = first;
+    var least:  i64   = 1000000;
+    var way:    i64   = 0;
     for (way < WAYS) {
-        val e:       *Slot = ?TABLE[first + way];
+        val e:       *Slot = ?table[first + way];
         val current: u64   = e.data;
         if ((e.guard ^ current) == key) {
             if (flag != EXACT && depth < ((current >> 48) & 0xFF)::i64) { ret; }
@@ -144,8 +212,8 @@ pub fun store(key: u64, move: Move, score: i64, depth: i64, flag: u8) {
         way = way + 1;
     }
     val data: u64 = pack(move, score, depth, flag);
-    TABLE[victim].data  = data;
-    TABLE[victim].guard = key ^ data;
+    table[victim].data  = data;
+    table[victim].guard = key ^ data;
 }
 
 test stores_probes_prefers_depth {
@@ -201,5 +269,28 @@ test stores_probes_prefers_depth {
         way                          = way + 1;
     }
     if (probe(78, ?out)) { ret 10; }
+    ret 0;
+}
+
+test resize_changes_the_table_and_keeps_it_working {
+    clear();
+    store(4242, mv.make(12, 28, mv.QUIET), 7, 3, EXACT);
+    var out: Entry;
+    # another size: empty, and of that size, rounded down to a power of two
+    if (!resize(40))       { ret 1; }
+    if (megabytes() != 32) { ret 2; }
+    if (probe(4242, ?out)) { ret 3; }
+    # keys that shared a bucket in 128 MB (2^21 buckets) do not in 32 MB's 2^19, and all are kept
+    store(9, mv.make(1, 2, mv.QUIET), 1, 1, EXACT);
+    store(9 + 524288, mv.make(1, 3, mv.QUIET), 2, 1, EXACT);
+    if (!probe(9, ?out) || out.score != 1)          { ret 4; }
+    if (!probe(9 + 524288, ?out) || out.score != 2) { ret 5; }
+    # the bounds hold
+    if (!resize(0) || megabytes() != MIN_MEGABYTES) { ret 6; }
+    # back to the built-in table, empty
+    if (!resize(MEGABYTES) || megabytes() != MEGABYTES) { ret 7; }
+    if (probe(9, ?out))                                 { ret 8; }
+    store(4242, mv.make(12, 28, mv.QUIET), 7, 3, EXACT);
+    if (!probe(4242, ?out) || out.score != 7) { ret 9; }
     ret 0;
 }

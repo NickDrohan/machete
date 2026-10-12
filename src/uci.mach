@@ -284,7 +284,7 @@ pub fun loop(exe: str) i64 {
             print.println("id name machete 0.4.0");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min {} max {}",
-                tt.MEGABYTES, tt.MEGABYTES, tt.MEGABYTES);
+                tt.MEGABYTES, tt.MIN_MEGABYTES, tt.MAX_MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
             # tells the GUI it may send go ponder; nothing in the engine changes with it
             print.println("option name Ponder type check default false");
@@ -327,11 +327,11 @@ pub fun loop(exe: str) i64 {
             halt();
         }
         or (str_equals(command, "setoption")) {
-            # "setoption name <id> value <v>": Threads is applied, Hash is not,
-            # because the table is a fixed-size static array. UCI expects no
-            # reply to setoption, and an info line sent while no command is
-            # running made python-chess warn (and at times assert) in matches
-            # and on lichess; only EvalFile answers, to report a failed load.
+            # "setoption name <id> value <v>". UCI expects no reply to setoption,
+            # and an info line sent while no command is running made
+            # python-chess warn (and at times assert) in matches and on
+            # lichess; only EvalFile and Hash answer, and only to report a
+            # failure.
             if (t.count >= 5 && str_equals(t.item[2], "Threads")) {
                 var wanted: i64 = token_i64(?t, 4, 1);
                 if (wanted < 1)               { wanted = 1; }
@@ -342,8 +342,12 @@ pub fun loop(exe: str) i64 {
             or (t.count >= 5 && str_equals(t.item[2], "Avx2")) {
                 nn.allow_avx2(str_equals(t.item[4], "true"));
             }
-            or (t.count >= 3 && str_equals(t.item[2], "Hash")) {
-                # accepted and ignored: the table is a fixed-size static array
+            or (t.count >= 5 && str_equals(t.item[2], "Hash")) {
+                # a power of two megabytes, rounded down; the table is emptied.
+                # A size the system refuses leaves the table as it was.
+                if (!tt.resize(token_i64(?t, 4, tt.MEGABYTES))) {
+                    print.printlnf("info string Hash {} MB refused; still {} MB", token_i64(?t, 4, tt.MEGABYTES), tt.megabytes());
+                }
             }
             or (t.count >= 5 && str_equals(t.item[2], "EvalFile")) {
                 var path: [256]u8;
