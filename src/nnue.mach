@@ -227,6 +227,8 @@ pub fun orient(perspective: i64, king: i64) i64 {
         mirror = 1;
         rel    = rel ^ 7;
     }
+    # with LAYERS the king chooses only the mirroring; the layer is the board's (see layer)
+    if (LAYERS != 0) { ret mirror; }
     val rank: i64 = rel >> 3;
     # thirty-two zones: every square of files a-d. Sixteen: every rank, in two halves
     if (KING_BUCKETS == 32) { ret (rank * 4 + (rel & 7)) * 2 + mirror; }
@@ -323,7 +325,10 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
             if (accs[k].refresh[side] != 0) { crossed = true; }
             k = k + 1;
         }
-        if (crossed || ROLES || LAYERS != 0) {
+        # a half no slot below has built (LAYERS: reset cannot know the layer
+        # before the pieces are on the board) is built here from the board
+        if (accs[first].ready[side] == 0) { crossed = true; }
+        if (crossed || ROLES) {
             var king: i64 = white_king;
             if (side == 1) { king = black_king; }
             refresh_side(accs, top, side, king, board);
@@ -380,7 +385,14 @@ fun has_passer(side: i64, board: *u8) bool {
 fun reading(side: i64, king: i64, board: *u8) i64 {
     val o: i64 = orient(side, king);
     if (LAYERS == 0) { ret o; }
-    val mirror: i64  = o & 1;
+    ret layer(side, board) * 2 + (o & 1);
+}
+
+# which layer `side` reads `board` through. A half is carried from move to
+# move like any other while this stays the same; position.make asks before
+# and after the moves that can change it (a capture, a promotion, and with
+# six layers a pawn move) and marks the half for a rebuild when it has.
+pub fun layer(side: i64, board: *u8) i64 {
     var men:    i64  = 0;
     var queens: bool = false;
     var centre: i64  = 0;
@@ -398,18 +410,24 @@ fun reading(side: i64, king: i64, board: *u8) i64 {
         }
         sq = sq + 1;
     }
-    var layer: i64 = 0;
+    if (LAYERS == 3) { ret phase(men, queens); }
     if (queens) {
-        if (men >= OPENING_MEN) { layer = 0; }
-        or (LAYERS == 3)        { layer = 1; }
-        or (locked)             { layer = 2; }
-        or (centre <= 1)        { layer = 1; }
-        or                      { layer = 3; }
+        if (men >= OPENING_MEN) { ret 0; }
+        if (locked)             { ret 2; }
+        if (centre <= 1)        { ret 1; }
+        ret 3;
     }
-    or (LAYERS == 3)             { layer = 2; }
-    or (has_passer(side, board)) { layer = 4; }
-    or                           { layer = 5; }
-    ret layer * 2 + mirror;
+    if (has_passer(side, board)) { ret 4; }
+    ret 5;
+}
+
+# the three layers: the opening, the middlegame, and the endgame, which
+# begins when the queens are off. position.make has the two counts without
+# looking at the board.
+pub fun phase(men: i64, queens: bool) i64 {
+    if (!queens)            { ret 2; }
+    if (men >= OPENING_MEN) { ret 0; }
+    ret 1;
 }
 
 # a square as `side` reads the board oriented `o`
@@ -555,7 +573,8 @@ pub fun reset(a: *Acc, white_king: i64, black_king: i64) {
         side = side + 1;
     }
     # with ROLES a half is only ever built from the whole board (see ROLES),
-    # so what the caller adds piece by piece is not it: leave it owing
+    # and with LAYERS the layer is not known until the pieces are on it, so
+    # what the caller adds piece by piece is not it: leave it owing
     if (ROLES || LAYERS != 0) {
         a.ready[0] = 0;
         a.ready[1] = 0;
