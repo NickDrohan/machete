@@ -379,6 +379,16 @@ def start_from(model, path, device):
     print("starting from {}".format(path))
 
 
+def share_of(path):
+    """The fraction of the card's time `path` asks for, 1.0 when it is absent, empty or not a fraction."""
+    try:
+        with open(path) as handle:
+            share = float(handle.read().strip())
+    except (OSError, ValueError):
+        return 1.0
+    return share if 0.05 <= share < 1.0 else 1.0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
@@ -409,6 +419,12 @@ def main():
     parser.add_argument("--blend", type=float, default=-1.0,
                         help="how much of the target is the search score, the rest "
                              "the game result; -1 keeps the default")
+    parser.add_argument("--resume", action="store_true",
+                        help="keep the training state beside --out after every epoch and, when it is there at the "
+                             "start, carry on from it: a stopped run loses the epoch it was in and no more")
+    parser.add_argument("--share-file", default="",
+                        help="a file holding the fraction of the card's time to use (0.5 trains half the time and "
+                             "sleeps the other half), read as training goes; absent or empty is all of it")
     args = parser.parse_args()
 
     if args.scale:
@@ -446,12 +462,35 @@ def main():
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
     loss_of = nn.MSELoss()
 
-    for epoch in range(args.epochs):
+    # --resume: what a run needs to carry on is the weights, the optimiser's
+    # moments, the learning rate's place in its schedule and the shuffler's
+    # state. The held-out positions are the same ones (they come from the seed
+    # before any of this); the epochs still to run shuffle differently from an
+    # unbroken run's, each still a shuffle of every row. The state names the run
+    # it belongs to, so one left by a different recipe is refused, not continued;
+    # the window is not part of that, it only says how much is on the card.
+    state = args.out + ".state"
+    recipe = repr((args.data, args.hidden, args.epochs, args.batch, args.lr, args.validation, args.seed, args.init,
+                   args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles))
+    first = 0
+    if args.resume and os.path.exists(state):
+        kept = torch.load(state, map_location=device, weights_only=False)
+        if kept["recipe"] != recipe:
+            raise SystemExit("{} is from a different run: remove it or run that one".format(state))
+        model.load_state_dict(kept["model"])
+        optimiser.load_state_dict(kept["optimiser"])
+        schedule.load_state_dict(kept["schedule"])
+        rng.set_state(kept["rng"])
+        first = kept["epoch"]
+        print("resuming after epoch {} of {}".format(first, args.epochs))
+
+    for epoch in range(first, args.epochs):
         model.train()
         rng.shuffle(training)
         # the loss stays on the device and is read back every 100 steps;
         # reading it every step made the CPU wait on the GPU each batch
         started, seen, running = time.time(), 0, torch.zeros((), device=device)
+        slept, mark = 0.0, time.time()
         for us, them, bucket, target in corpus.batches(training, args.batch, rng):
             predicted = torch.sigmoid(model(us, them, bucket))
             loss = loss_of(predicted, target)
@@ -461,6 +500,18 @@ def main():
             model.clip_weights()
             running += loss.detach()
             seen += 1
+            if args.share_file and seen % 20 == 0:
+                # the card is shared with whatever else the owner is running:
+                # wait for the queued steps to finish, then leave it alone for
+                # as long as makes the work this fraction of the time
+                share = share_of(args.share_file)
+                if share < 1.0:
+                    if device == "cuda":
+                        torch.cuda.synchronize()
+                    pause = (time.time() - mark) * (1.0 - share) / share
+                    time.sleep(pause)
+                    slept += pause
+                mark = time.time()
             if seen % 100 == 0:
                 rate = seen * args.batch / (time.time() - started)
                 sys.stdout.write("\repoch {}  {:,} positions  loss {:.5f}  {:,.0f}/s".format(
@@ -482,7 +533,16 @@ def main():
         # network still training
         worst = export(model, partial)
         print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
+        if slept:
+            print("  slept {:.0f} s of the epoch to share the card".format(slept))
+        if args.resume:
+            torch.save({"recipe": recipe, "epoch": epoch + 1, "model": model.state_dict(),
+                        "optimiser": optimiser.state_dict(), "schedule": schedule.state_dict(),
+                        "rng": rng.get_state()}, state + ".new")
+            os.replace(state + ".new", state)
     os.replace(partial, args.out)
+    if args.resume and os.path.exists(state):
+        os.remove(state)
     print("finished: {}".format(args.out))
     return 0
 
