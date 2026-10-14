@@ -1,16 +1,19 @@
-# machete status, 2026-10-14 12:23
+# machete status, 2026-10-14 12:26
 
 ## What I did
 
-First full run, done by hand to test the loop end to end (12:23).
+Autopilot run 2026-10-14 12:25.
 
-- Everything standing is running; nothing needed repair.
-- GPU: TRAIN-C33F280 in epoch 5 of 14 (about 4 hours left). Its matches against 0.4.0's network start by themselves.
-- Lane A: 0.3.0 search tune at 60+0.6 against 0.4.0's defaults (400 games). So far it has +38 ± 35 (SPRT, 381 games) and +17 ± 22 (1,000 games) at 10+0.1.
-- Lane B: the search tune (SPSA), chunk 2 of 6, about step 7,800 of 15,000.
-- No comments from the owner yet.
-
-The schedule now runs inside the owner's main Claude session every two hours, at 17 minutes past even hours. The desktop scheduled task was turned off because its permission prompts could not be seen.
+- No new comments on PR #47.
+- All seven processes are running. The GPU is at 84%. There is no HOLD file.
+- GPU: TRAIN-C33F280 is in epoch 5 of 14 (validation loss 0.01687 after epoch 4). TRAIN-C33F140K16F and TRAIN-D15000X60 are queued behind it.
+- Lane A: LONG-SPSA030-ON-040 (400 games at 60+0.6) has been running since 11:05. Five matches are queued behind it, and each waits for its network.
+- Lane B: SPSA040-R1 finished, R2 has been running since 12:11, and R3-R6 are queued. The tune is at step 7,859 of 15,000. Since SPSA chunks are already queued, no new chunks were added.
+- The failure of SPSA-040-5 at 10:09 is from before the setup session (KeyError 'Variety' in spsa.py). The new SPSA040-R series replaced it and runs cleanly. Nothing needs resubmitting.
+- The endgame miner is still running (started 11:09) and endgames.txt does not exist yet.
+- Disk: C has 17 GB free, which is under the 50 GB rule. Data generation writes to E (6.8 TB free), so there is no data generation to stop. I am flagging it for the owner and have not deleted anything.
+- Bot: 99 games in 24 hours (11 W, 45 D, 43 L). 14 of those were non-wins against lower-rated opponents. The last game started 13 minutes before this run.
+- Nothing was changed or queued in this run.
 
 ## Processes
 
@@ -21,12 +24,12 @@ The schedule now runs inside the owner's main Claude session every two hours, at
 - lane B runner: running
 - farm watchdog: running
 - deep-mate search: running
-- GPU: 74 %, 6522 MiB, 8188 MiB, 59 (utilisation, memory used, memory total, temperature)
+- GPU: 82 %, 6511 MiB, 8188 MiB, 56 (utilisation, memory used, memory total, temperature)
 
 ## Queues
 
 **gpu**: 1 running, 2 pending
-- running `TRAIN-C33F280` since 2026-10-14 09:42:32: epoch 4 done: training loss 0.01679, validation 0.01687; last line: epoch 5  419,430,400 positions  loss 0.01648  452,310/s
+- running `TRAIN-C33F280` since 2026-10-14 09:42:32: epoch 4 done: training loss 0.01679, validation 0.01687; last line: epoch 5  484,966,400 positions  loss 0.01648  442,357/s
 - pending `TRAIN-C33F140K16F`
 - pending `TRAIN-D15000X60`
 
@@ -70,30 +73,30 @@ The schedule now runs inside the owner's main Claude session every two hours, at
 
 ## Search tune (SPSA)
 
-step 7867 of 15000; plus side +3335 =9190 -3169
+step 7908 of 15000; plus side +3356 =9227 -3193
 
 | constant | default | now |
 |---|---|---|
-| AspWindow | 25 | 19.8 |
-| FutBase | 120 | 114.9 |
+| AspWindow | 25 | 19.7 |
+| FutBase | 120 | 115.1 |
 | FutMul | 110 | 102.0 |
-| IirDepth | 6 | 5.7 |
+| IirDepth | 6 | 5.8 |
 | LmpBase | 6 | 6.9 |
-| LmrBase | 75 | 83.5 |
-| LmrDiv | 225 | 219.3 |
-| LmrHistDiv | 4096 | 3888.4 |
+| LmrBase | 75 | 83.7 |
+| LmrDiv | 225 | 219.4 |
+| LmrHistDiv | 4096 | 3882.3 |
 | NmpBase | 3 | 2.2 |
 | NmpDiv | 3 | 2.8 |
-| NmpEvalDiv | 200 | 187.7 |
-| QsDelta | 200 | 199.2 |
+| NmpEvalDiv | 200 | 187.8 |
+| QsDelta | 200 | 199.3 |
 | RfpMargin | 85 | 65.8 |
 | SeDepth | 8 | 6.5 |
 | SeMargin | 2 | 2.1 |
 
 ## Lichess bot
 
-- ratings: bullet 2739 (310 games), blitz 2766 (1066 games), rapid 2802 (35 games)
-- last 24 hours: 99 games: 11 W 45 D 43 L; not won against lower-rated: 14; last game started 14 min ago
+- ratings: bullet 2745 (311 games), blitz 2766 (1066 games), rapid 2802 (35 games)
+- last 24 hours: 100 games: 12 W 45 D 43 L; not won against lower-rated: 14; last game started 5 min ago
 - 10-12 23:37  ALARM: the lichess bot has played no game for 61 minutes and has no daily limit: restarting it
 - 10-13 00:41  ALARM: the lichess bot has played no game for 63 minutes and has no daily limit: restarting it
 - 10-13 01:42  ALARM: the lichess bot has played no game for 61 minutes and has no daily limit: restarting it
@@ -119,7 +122,7 @@ step 7867 of 15000; plus side +3335 =9190 -3169
 
 ## Disks
 
-- C 17 GB free of 299
+- C 15 GB free of 299
 - D 296 GB free of 3001
 - E 6832 GB free of 8001
 
