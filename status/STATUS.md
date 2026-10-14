@@ -1,19 +1,15 @@
-# machete status, 2026-10-14 12:26
+# machete status, 2026-10-14 19:50
 
 ## What I did
 
-Autopilot run 2026-10-14 12:25.
+Run by hand at 19:50. The scheduled runs at 14:17, 16:17 and 18:17 did not happen, so nobody checked for six hours. Lane A had been idle since 16:54 and lane B since 17:14. Both are refilled.
 
-- No new comments on PR #47.
-- All seven processes are running. The GPU is at 84%. There is no HOLD file.
-- GPU: TRAIN-C33F280 is in epoch 5 of 14 (validation loss 0.01687 after epoch 4). TRAIN-C33F140K16F and TRAIN-D15000X60 are queued behind it.
-- Lane A: LONG-SPSA030-ON-040 (400 games at 60+0.6) has been running since 11:05. Five matches are queued behind it, and each waits for its network.
-- Lane B: SPSA040-R1 finished, R2 has been running since 12:11, and R3-R6 are queued. The tune is at step 7,859 of 15,000. Since SPSA chunks are already queued, no new chunks were added.
-- The failure of SPSA-040-5 at 10:09 is from before the setup session (KeyError 'Variety' in spsa.py). The new SPSA040-R series replaced it and runs cleanly. Nothing needs resubmitting.
-- The endgame miner is still running (started 11:09) and endgames.txt does not exist yet.
-- Disk: C has 17 GB free, which is under the 50 GB rule. Data generation writes to E (6.8 TB free), so there is no data generation to stop. I am flagging it for the owner and have not deleted anything.
-- Bot: 99 games in 24 hours (11 W, 45 D, 43 L). 14 of those were non-wins against lower-rated opponents. The last game started 13 minutes before this run.
-- Nothing was changed or queued in this run.
+Results since the last report:
+- The 0.3.0 search tune against Koivisto: 44-304-852, -284 ± 27 over 1,200 games at 10+0.1. 0.4.0's defaults scored -302 ± 28 in an earlier run, so that is about +18 outside, matching the +17 to +21 head to head. That run shared the machine differently, so the defaults are being rerun now under the same load (KOI-C33F140-FAST2).
+- 280M Fischer Random supplement (C33F280) against 0.4.0's network: 70-196-85, -15 ± 37. The early stop rejected it. Like the 200M version (-18 ± 41), more Fischer Random data does not help beyond 140M.
+- The search tune is at step 12,572 of 15,000. Chunks R7-R9 are queued.
+- The endgame miner died without saving anything (cause unknown). It now saves each game as it finishes and has been restarted.
+- GPU: TRAIN-C33F140K16F is training.
 
 ## Processes
 
@@ -23,35 +19,41 @@ Autopilot run 2026-10-14 12:25.
 - lane A runner: running
 - lane B runner: running
 - farm watchdog: running
+- live page relay: running
 - deep-mate search: running
-- GPU: 82 %, 6511 MiB, 8188 MiB, 56 (utilisation, memory used, memory total, temperature)
+- GPU: 93 %, 6235 MiB, 8188 MiB, 60 (utilisation, memory used, memory total, temperature)
 
 ## Queues
 
-**gpu**: 1 running, 2 pending
-- running `TRAIN-C33F280` since 2026-10-14 09:42:32: epoch 4 done: training loss 0.01679, validation 0.01687; last line: epoch 5  484,966,400 positions  loss 0.01648  442,357/s
-- pending `TRAIN-C33F140K16F`
+**gpu**: 1 running, 1 pending
+- running `TRAIN-C33F140K16F` since 2026-10-14 16:24:39: epoch 5 done: training loss 0.01616, validation 0.01656; last line: epoch 6  468,582,400 positions  loss 0.01591  305,510/s
 - pending `TRAIN-D15000X60`
 
-**lane A**: 1 running, 5 pending
-- running `LONG-SPSA030-ON-040` since 2026-10-14 11:04:55
-- pending `LADDER-C33F280-C33F140` (waits for c33f280.nnue)
-- pending `LADDER-C33F280-C33` (waits for c33f280.nnue)
+**lane A**: 0 running, 4 pending
 - pending `ZONES-C33F140K16F-C33F140` (waits for c33f140k16f.nnue)
 - pending `TIMED-C33F140K16F-C33F140` (waits for c33f140k16f.nnue)
 - pending `LADDER-D15000X60-D500X60` (waits for d15000x60.nnue)
+- pending `KOI-C33F140-FAST2`
 
-**lane B**: 1 running, 4 pending
-- running `SPSA040-R2` since 2026-10-14 12:11:07
-- pending `SPSA040-R3`
-- pending `SPSA040-R4`
-- pending `SPSA040-R5`
-- pending `SPSA040-R6`
+**lane B**: 0 running, 3 pending
+- pending `SPSA040-R7`
+- pending `SPSA040-R8`
+- pending `SPSA040-R9`
 
 ## Results in the last 26 hours
 
 | job | finished | W-D-L | Elo | verdict |
 |---|---|---|---|---|
+| `SPSA040-R6` | 10-14 17:14 |  |  |  |
+| `LADDER-C33F280-C33` | 10-14 16:54 | 57-102-42 | +26 ± 48 | accepted H1: the change is worth at least 15 Elo |
+| `LADDER-C33F280-C33F140` | 10-14 16:43 | 70-196-85 | -15 ± 37 | accepted H0: the change is worth at most -15 Elo |
+| `TRAIN-C33F280` | 10-14 16:24 |  |  |  |
+| `SPSA040-R5` | 10-14 16:14 |  |  |  |
+| `KOI-SPSA030-FAST` | 10-14 15:24 | 44-304-852 | -284 ± 27 |  |
+| `SPSA040-R4` | 10-14 15:13 |  |  |  |
+| `SPSA040-R3` | 10-14 14:12 |  |  |  |
+| `SPSA040-R2` | 10-14 13:11 |  |  |  |
+| `LONG-SPSA030-ON-040` | 10-14 13:07 | 49-326-25 | +21 ± 34 |  |
 | `SPSA040-R1` | 10-14 12:11 |  |  |  |
 | `SPSA-040-6` | 10-14 11:10 |  |  |  |
 | `CONFIRM-SPSA030-ON-040` | 10-14 11:04 | 198-652-150 | +17 ± 22 |  |
@@ -68,35 +70,33 @@ Autopilot run 2026-10-14 12:25.
 | `KOI-C33F140P3-FAST` | 10-14 02:47 | 33-315-852 | -290 ± 27 |  |
 | `LONG2-C33F140P3-C33F140` | 10-13 21:29 | 125-570-105 | +9 ± 24 |  |
 | `SPRT-C33F140P3-C33F140` | 10-13 18:55 | 446-1123-376 | +13 ± 15 | accepted H1: the change is worth at least 10 Elo |
-| `LONG-C33F140P3-C33F140` | 10-13 12:10 | 57-295-48 | +8 ± 34 |  |
-| `CONFIRM-C33F140P3-C33F140` | 10-13 10:57 | 262-528-210 | +18 ± 22 |  |
 
 ## Search tune (SPSA)
 
-step 7908 of 15000; plus side +3356 =9227 -3193
+step 12572 of 15000; plus side +5113 =14955 -5052
 
 | constant | default | now |
 |---|---|---|
-| AspWindow | 25 | 19.7 |
-| FutBase | 120 | 115.1 |
-| FutMul | 110 | 102.0 |
-| IirDepth | 6 | 5.8 |
-| LmpBase | 6 | 6.9 |
-| LmrBase | 75 | 83.7 |
-| LmrDiv | 225 | 219.4 |
-| LmrHistDiv | 4096 | 3882.3 |
-| NmpBase | 3 | 2.2 |
-| NmpDiv | 3 | 2.8 |
-| NmpEvalDiv | 200 | 187.8 |
-| QsDelta | 200 | 199.3 |
-| RfpMargin | 85 | 65.8 |
-| SeDepth | 8 | 6.5 |
-| SeMargin | 2 | 2.1 |
+| AspWindow | 25 | 18.5 |
+| FutBase | 120 | 115.4 |
+| FutMul | 110 | 101.2 |
+| IirDepth | 6 | 5.6 |
+| LmpBase | 6 | 7.0 |
+| LmrBase | 75 | 86.0 |
+| LmrDiv | 225 | 214.9 |
+| LmrHistDiv | 4096 | 3932.1 |
+| NmpBase | 3 | 2.3 |
+| NmpDiv | 3 | 2.9 |
+| NmpEvalDiv | 200 | 184.1 |
+| QsDelta | 200 | 202.8 |
+| RfpMargin | 85 | 60.4 |
+| SeDepth | 8 | 6.2 |
+| SeMargin | 2 | 2.4 |
 
 ## Lichess bot
 
-- ratings: bullet 2745 (311 games), blitz 2766 (1066 games), rapid 2802 (35 games)
-- last 24 hours: 100 games: 12 W 45 D 43 L; not won against lower-rated: 14; last game started 5 min ago
+- ratings: bullet 2748 (317 games), blitz 2799 (1095 games), rapid 2802 (35 games)
+- last 24 hours: 106 games: 13 W 56 D 37 L; not won against lower-rated: 14; last game started 29 min ago
 - 10-12 23:37  ALARM: the lichess bot has played no game for 61 minutes and has no daily limit: restarting it
 - 10-13 00:41  ALARM: the lichess bot has played no game for 63 minutes and has no daily limit: restarting it
 - 10-13 01:42  ALARM: the lichess bot has played no game for 61 minutes and has no daily limit: restarting it
@@ -106,10 +106,6 @@ step 7908 of 15000; plus side +3356 =9227 -3193
 ## Farm and orchestrator (last lines of its log)
 
 ```
-10-13 18:55  pi-02 starts n15000_pi02_08 (1000000 positions at 15,000 nodes, seed 88308)
-10-14 01:05  the GPU queue runner is not running: restarting it
-10-14 03:05  ALARM: the lichess bot has played no game for 64 minutes and has no daily limit: restarting it
-10-14 05:20  mac finished n15000_mac_08 (4000444 positions): pulled; the 15,000-node set is at 61.7M
 10-14 05:20  mac starts n15000_mac_09 (4000000 positions at 15,000 nodes, seed 88109)
 10-14 05:22  the 15,000-node set has reached 60M: training D15000X60 and matching it against D500X60
 10-14 05:22  queueing TRAIN-D15000X60
@@ -118,11 +114,15 @@ step 7908 of 15000; plus side +3356 =9227 -3193
 10-14 06:36  pi-02 starts n15000_pi02_09 (1000000 positions at 15,000 nodes, seed 88309)
 10-14 09:09  pi-01 finished n15000_pi01_06 (1000359 positions): pulled; the 15,000-node set is at 63.7M
 10-14 09:09  pi-01 starts n15000_pi01_07 (1000000 positions at 15,000 nodes, seed 88207)
+10-14 16:26  mac finished n15000_mac_09 (4000242 positions): pulled; the 15,000-node set is at 67.7M
+10-14 16:26  mac starts n15000_mac_10 (4000000 positions at 15,000 nodes, seed 88110)
+10-14 17:55  pi-02 finished n15000_pi02_09 (1000175 positions): pulled; the 15,000-node set is at 68.7M
+10-14 17:55  pi-02 starts n15000_pi02_10 (1000000 positions at 15,000 nodes, seed 88310)
 ```
 
 ## Disks
 
-- C 15 GB free of 299
+- C 19 GB free of 299
 - D 296 GB free of 3001
 - E 6832 GB free of 8001
 
