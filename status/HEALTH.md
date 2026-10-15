@@ -1,11 +1,10 @@
-# machete health, 2026-10-15 16:15
+# machete health, 2026-10-15 17:20
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
-- processes: DOWN: live page relay
-- ran recover.ps1 for: live page relay
+- processes: all running
 - gpu: running TRAIN-C33F140P3S8
-- laneA: running LONG2-SPSA040-ON-040
+- laneA: running KOI-SPSA040-FAST
 - laneB: running GEN-ROOK1
 - bot: last new game 0.0 h ago
