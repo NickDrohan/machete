@@ -1,10 +1,5 @@
-# machete health, 2026-10-15 15:48
+# machete health, 2026-10-15 16:06
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
-- processes: all running
-- gpu: running TRAIN-C33F140P3S8
-- laneA: running LONG2-SPSA040-ON-040
-- laneB: running GEN-ROOK1
-- bot: last new game 0.1 h ago
+- ALERT: the health check itself failed: TimeoutExpired(['powershell', '-NoProfile', '-Command', '(Get-Volume -DriveLetter E -ErrorAction SilentlyContinue).OperationalStatus'], 120)
