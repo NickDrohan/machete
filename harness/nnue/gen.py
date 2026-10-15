@@ -67,6 +67,8 @@ CLAMP = 10000           # mate scores become this, so one position cannot domina
 VARIETY_CHANCE = 0.05   # how often a near-best move is played instead of the best
 VARIETY_MARGIN = 50     # ... chosen among the teacher's lines within this of its best
 VARIETY_LINES = 4
+SHARP_AT = 80           # beyond this, only the best move keeps the position
+SHARP_HOLD = 8          # plies afterwards that also stay on the best move
 ENDGAME_PIECES = 5      # kings included: KR v K, KQ v KN, KBB v K
 ENDGAME_NODES_FACTOR = 20
 MATE_NEAR = 900         # ending_label: a mate in one, on the training scale
@@ -74,6 +76,8 @@ MATE_FAR = 400          # ... a mate far enough away to be nearly flat
 MATE_STEP = 10          # ... centipawns per ply of distance
 MAX_PLIES = 300
 OPENING_BALANCE = 150   # a game starting further from equal than this is skipped
+# "odds" raises it so a missing knight or rook is kept and a missing queen is not
+ODDS_BALANCE = 700
 ADJUDICATE_AT = 1500    # once one side is this far ahead for a while, stop
 ADJUDICATE_PLIES = 6
 
@@ -124,35 +128,33 @@ def position_key(board):
 
 
 def play_game(engine, limit, ending_limit, rng, book, engine_id):
-    """One game. Returns encoded rows with the result still to be filled in.
+    """Single game for gen_check.py parity and simple calls."""
+    for seen, outcome in play_tree(engine, limit, ending_limit, rng, book, engine_id, takeback=0):
+        return seen, outcome
+    return [], None
 
-    The game-over test is deliberately the cheap one. python-chess's
-    `is_game_over(claim_draw=True)` walks the whole move stack looking for a
-    threefold repetition, which profiled at a seventh of the entire run - more
-    than the position encoding and board copying put together. Here a game ends
-    on mate, stalemate, bare material, the fifty-move counter, the ply cap, or
-    a threefold repetition counted in a dictionary as the game goes.
 
-    Two filters keep the output useful rather than merely plentiful. A game
-    whose opening is already lopsided is abandoned before it starts, and one
-    that becomes lopsided is adjudicated rather than played out. Measured on
-    the previous corpus, 55% of positions were beyond 400cp and only 9.7%
-    inside 50cp - and the training target is a sigmoid, so everything in that
-    55% sat flat against the top of the curve contributing almost no gradient.
-    """
-    board = chess.Board(rng.choice(book))
+def play_tree(engine, limit, ending_limit, rng, book, engine_id, takeback=0):
+    """Play trunk game plus up to `takeback` branches, yielding (seen_records, outcome) for each."""
+    start_fen = rng.choice(book)
+    board = chess.Board(start_fen)
     if board.is_game_over():
-        return [], None
+        return
 
     # refuse an opening that has already decided the game
     opening_info = engine.analyse(board, limit)
     if abs(score_of(opening_info, board.turn)) > OPENING_BALANCE:
-        return [], None
+        return
+
+    tree_seen = set()
+    trunk_moves = []
+    branch_candidates = []
 
     rows, turns = [], []
     outcome = "1/2-1/2"
     decided = 0
     seen = {}
+    sharp_hold = 0
     while board.ply() < MAX_PLIES:
         legal = list(board.legal_moves)
         if not legal:
@@ -166,10 +168,13 @@ def play_game(engine, limit, ending_limit, rng, book, engine_id):
         if seen[key] >= 3:
             break
 
+        in_tree = key in tree_seen
+        tree_seen.add(key)
+
         ending = len(board.piece_map()) <= ENDGAME_PIECES
         info = engine.analyse(board, ending_limit if ending else limit)
         score = score_of(info, board.turn)
-        if seen[key] == 1 and not board.is_check():
+        if seen[key] == 1 and not board.is_check() and not in_tree:
             label = score
             if ending:
                 relative = info["score"].relative
@@ -189,19 +194,120 @@ def play_game(engine, limit, ending_limit, rng, book, engine_id):
             decided = 0
 
         move = info.get("pv", [None])[0]
-        if rng.random() < VARIETY_CHANCE:
+        if abs(score) >= SHARP_AT:
+            sharp_hold = SHARP_HOLD
+        if sharp_hold > 0:
+            # one correct move, and the stretch that follows it: a sidestep
+            # here is how a won line is given back
+            sharp_hold -= 1
+        elif rng.random() < VARIETY_CHANCE:
             # a second, multi-line search picks the move; the label above
             # stays the single-line search's, at full strength
             lines = engine.analyse(board, limit, multipv=VARIETY_LINES)
             best = score_of(lines[0], board.turn)
             near = [line["pv"][0] for line in lines
                     if line.get("pv") and best - score_of(line, board.turn) <= VARIETY_MARGIN]
-            if near:
+            if len(near) >= 2:
                 move = rng.choice(near)
+            else:
+                sharp_hold = SHARP_HOLD
+
+        if takeback > 0 and len(branch_candidates) < 64 and abs(score) < SHARP_AT and board.ply() >= 2 and not board.is_check():
+            if rng.random() < 0.30:
+                lines = engine.analyse(board, limit, multipv=VARIETY_LINES)
+                if len(lines) >= 2 and lines[0].get("pv") and lines[1].get("pv"):
+                    best = score_of(lines[0], board.turn)
+                    sec = score_of(lines[1], board.turn)
+                    if best - sec <= VARIETY_MARGIN:
+                        alt = lines[1]["pv"][0]
+                        if alt != move:
+                            branch_candidates.append((len(trunk_moves), alt))
+
         if move is None or move not in legal:
             move = engine.play(board, limit).move
+        trunk_moves.append(move)
         board.push(move)
-    return list(zip(rows, turns)), outcome
+
+    if rows:
+        yield list(zip(rows, turns)), outcome
+
+    if takeback > 0 and branch_candidates:
+        num_branches = min(takeback, len(branch_candidates))
+        chosen = rng.sample(branch_candidates, num_branches) if len(branch_candidates) > num_branches else branch_candidates
+        for target_ply, alt_move in chosen:
+            b_branch = chess.Board(start_fen)
+            seen_b = {}
+            for m in trunk_moves[:target_ply]:
+                k = position_key(b_branch)
+                seen_b[k] = seen_b.get(k, 0) + 1
+                b_branch.push(m)
+
+            k = position_key(b_branch)
+            seen_b[k] = seen_b.get(k, 0) + 1
+            b_branch.push(alt_move)
+
+            b_rows, b_turns = [], []
+            b_outcome = "1/2-1/2"
+            b_decided = 0
+            b_sharp_hold = 0
+
+            while b_branch.ply() < MAX_PLIES:
+                legal = list(b_branch.legal_moves)
+                if not legal:
+                    if b_branch.is_check():
+                        b_outcome = "0-1" if b_branch.turn == chess.WHITE else "1-0"
+                    break
+                if b_branch.halfmove_clock >= 100 or b_branch.is_insufficient_material():
+                    break
+                key = position_key(b_branch)
+                seen_b[key] = seen_b.get(key, 0) + 1
+                if seen_b[key] >= 3:
+                    break
+
+                in_tree = key in tree_seen
+                tree_seen.add(key)
+
+                ending = len(b_branch.piece_map()) <= ENDGAME_PIECES
+                info = engine.analyse(b_branch, ending_limit if ending else limit)
+                score = score_of(info, b_branch.turn)
+                if seen_b[key] == 1 and not b_branch.is_check() and not in_tree:
+                    label = score
+                    if ending:
+                        relative = info["score"].relative
+                        label = ending_label(relative.score(), relative.mate() and relative.mate() * 2)
+                    b_rows.append(encode(b_branch, label, 1, engine_id))
+                    b_turns.append(b_branch.turn)
+
+                if abs(score) >= ADJUDICATE_AT:
+                    b_decided += 1
+                    if b_decided >= ADJUDICATE_PLIES:
+                        ahead = b_branch.turn if score > 0 else not b_branch.turn
+                        b_outcome = "1-0" if ahead == chess.WHITE else "0-1"
+                        break
+                else:
+                    b_decided = 0
+
+                move = info.get("pv", [None])[0]
+                if abs(score) >= SHARP_AT:
+                    b_sharp_hold = SHARP_HOLD
+                if b_sharp_hold > 0:
+                    b_sharp_hold -= 1
+                elif rng.random() < VARIETY_CHANCE:
+                    lines = engine.analyse(b_branch, limit, multipv=VARIETY_LINES)
+                    best = score_of(lines[0], b_branch.turn)
+                    near = [line["pv"][0] for line in lines
+                            if line.get("pv") and best - score_of(line, b_branch.turn) <= VARIETY_MARGIN]
+                    if len(near) >= 2:
+                        move = rng.choice(near)
+                    else:
+                        b_sharp_hold = SHARP_HOLD
+
+                if move is None or move not in legal:
+                    move = engine.play(b_branch, limit).move
+                b_branch.push(move)
+
+            if b_rows:
+                yield list(zip(b_rows, b_turns)), b_outcome
 
 
 def shard_path(out, index):
@@ -237,22 +343,24 @@ def worker(index, args, counter):
     try:
         with open(shard_path(args.out, index), "wb") as handle:
             while mine < share:
-                seen, outcome = play_game(engine, limit, ending_limit, rng, book, engine_id)
-                if not seen:
-                    continue
-                rows = np.zeros(len(seen), dtype=RECORD)
-                for slot, (row, turn) in enumerate(seen):
-                    if outcome == "1/2-1/2":
-                        row["result"] = 1
-                    elif (outcome == "1-0") == (turn == chess.WHITE):
-                        row["result"] = 2
-                    else:
-                        row["result"] = 0
-                    rows[slot] = row
-                handle.write(rows.tobytes())
-                mine += len(rows)
-                with counter.get_lock():
-                    counter.value += len(rows)
+                for seen, outcome in play_tree(engine, limit, ending_limit, rng, book, engine_id, getattr(args, "takeback", 0)):
+                    if not seen:
+                        continue
+                    rows = np.zeros(len(seen), dtype=RECORD)
+                    for slot, (row, turn) in enumerate(seen):
+                        if outcome == "1/2-1/2":
+                            row["result"] = 1
+                        elif (outcome == "1-0") == (turn == chess.WHITE):
+                            row["result"] = 2
+                        else:
+                            row["result"] = 0
+                        rows[slot] = row
+                    handle.write(rows.tobytes())
+                    mine += len(rows)
+                    with counter.get_lock():
+                        counter.value += len(rows)
+                    if mine >= share:
+                        break
     except KeyboardInterrupt:
         pass
     finally:
@@ -292,7 +400,14 @@ def main():
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--hash", type=int, default=32)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--odds", action="store_true",
+                        help="keep a start down a knight or a rook; a queen down is still skipped")
+    parser.add_argument("--takeback", type=int, default=0,
+                        help="number of take-back branches per game (default: 0)")
     args = parser.parse_args()
+    if args.odds:
+        global OPENING_BALANCE
+        OPENING_BALANCE = ODDS_BALANCE
     if not os.path.exists(args.book):
         parser.error("the book {} is missing; every game starts from it".format(args.book))
 

@@ -11,26 +11,25 @@ Companion files: [HANDOFF.md](HANDOFF.md) (boundary and house rules),
 
 ---
 
-## 1. Where we stand — updated 2026-09-25
+## 1. Where we stand — updated 2026-10-05
 
 ### The engine today, and what is and is not measured about it
 
-The shipping engine (machete 0.1, network A) is **not** the one LADDER-02
-rated. Since then S-03, S-04 and S-05 merged and network A replaced the old
-network; CONFIRM-01 measured the combination against the LADDER-02 engine at
-**+109 +/- 49** (200 ms, 214 games). A self-play gain does not transfer one to
-one onto a rating scale, so the honest statement is: **the current engine has
-no rating of its own in the ledger.** `HANDOFF.md` quotes "about 3100-3200
-(ladder 4: Spike and Rybka at 3+2)"; ladder 4 has no line in `RESULTS.tsv`
-and two anchors are not a rating. P0-8 is what fixes this.
+**Shipping:** machete **0.3.6** with network **C33**, about **2760** on
+Lichess. Self-play since C30 has been noise-floor moves (C34 −3, C35 +1).
 
-The reference field was re-run as **FIELD-02** (3+2, one thread, 128 MB, no
-engine books, balanced book): 360 games, 78% drawn, spread 173, with Black
-Marlin (-105) now the floor and Koivisto at -58. Section 2 uses FIELD-02.
+**No challenger in this worktree (`feat/corpus-3000`) is stronger than C33.**
+`net_odds_sf` (30M handicap Chess960 with take-backs, SF labels) beat a
+size-matched 30M C33 retrain by +203 ± 72 (SPRT-ODDS-SF), but that retrain
+is itself shut out by real C33 (DIAG-X0-C33 0–0–80), and odds_sf loses
+0–1–79 to 0.3.6 (DIAG-ODDS-C33).
 
-Everything below this block, down to "The engine, profiled", is the
-2026-09-22 picture, kept because the per-opponent detail is still the best
-available.
+Why it loses (ODDS-LOSSES, ODDS-MATERIAL-PROBE): flattened piece values
+(knight +789, queen +1034 against C33's +456 / +1200, because X1's labels
+are 51% saturated under sigmoid(cp/150)); 112 of 147 blunders at even
+material; it castles in 55% of games where 0.3.6 castles in 89%. The
+targeted follow-up, CORPUS-GAP960 (10M compensated piece-down 960, half
+with castling), is generating. `net_odds_panel2m` is not yet matched.
 
 ### Rating (2026-09-22, the engine before network A)
 
@@ -475,6 +474,7 @@ that may be the data, not the idea (see D-02).
 | D-05 | Fold `data/train3.bin` (21.3M, unused) into the corpus | A | cheap |
 | D-06 | **Done on the GPU** (`b560d0e`): 28 bytes a position, about 190M on an 8 GB card; several corpora per run, `PATH@N` for the first N records | B | 70 bytes a record is 70 GB per billion |
 | D-07 | **Teacher panel from LABEL-01.** At 1,500 nodes Berserk (.689) and Alexandria (.683) track deep evaluations far worse than Stockfish (.872), PlentyChess (.871), Reckless (.861) or Obsidian (.859), yet supplied about 40% of network A's labels. Generate an equal-size corpus from the better panel and SPRT the two networks. The most direct test of "label consistency beats depth" | B | cheap relative to its prior; decides D-02's panel |
+| D-08 | **In progress** (`feat/corpus-3000`). LeelaKnightOdds path. SPRT-ODDS-SF +203 ± 72 was against a weak 30M C33 retrain; vs 0.3.6 the odds net is 0–1–79 (DIAG-ODDS-C33). Loss pattern in ODDS-LOSSES / ODDS-MATERIAL-PROBE; TRAIN-C33HX2 running: C33 stack + X1+X2 (414M). CORPUS-GAP960 still generating. Panel 2M net not yet matched | A | HANDOFF 2026-10-05 |
 
 Remember HIST-06: an outside corpus with a different label scale lost 159 Elo.
 Consistency of labels has mattered more than their depth. Do not mix pipelines

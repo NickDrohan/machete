@@ -121,6 +121,13 @@ pub var ASP_WINDOW: i64 = 25;
 pub var QS_DELTA: i64 = 200;
 # internal iterative reduction from this depth
 pub var IIR_DEPTH: i64 = 6;
+# a root score this far above the previous move's score means the opponent
+# just erred. The rest of that search spends more depth on checks and on
+# quiet moves that land next to the enemy king. 0 would fire on noise.
+val EXPLOIT_JUMP: i64 = 80;
+# set while the main search is in that mode, so helper threads and the draw
+# rule see it. The main search clears it when the next move starts.
+var EXPLOIT_FLAG: i64 = 0;
 
 fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
     if (!str_equals(name, want)) { ret false; }
@@ -249,9 +256,17 @@ pub var RATING_ADV: i64 = 0;
 
 # draw_value: a draw's score for the side to move at this ply; the engine's
 # own side moves at even plies
+fun exploiting(s: *Search) bool {
+    if (s.exploit != 0) { ret true; }
+    ret atomic.load(?EXPLOIT_FLAG) != 0;
+}
+
 fun draw_value(ply: i64) i64 {
-    if (CONTEMPT <= 0 || RATING_ADV < 0) { ret 0; }
-    if (ply % 2 == 0)                    { ret 0 - CONTEMPT; }
+    # a fresh mistake makes a draw the wrong result even against a stronger
+    # opponent: the score just jumped, so settling is throwing the gain away
+    if (CONTEMPT <= 0)                                         { ret 0; }
+    if (RATING_ADV < 0 && atomic.load(?EXPLOIT_FLAG) == 0)     { ret 0; }
+    if (ply % 2 == 0)                                          { ret 0 - CONTEMPT; }
     ret CONTEMPT;
 }
 
@@ -396,6 +411,11 @@ pub rec Search {
     known_check: [64]i64;
     pv:          [64][64]Move;
     pv_len:      [64]i64;
+    # the previous move's completed root score, kept across next_search and
+    # cleared by reset. exploit is 1 once this search's score has jumped.
+    prior_ok:    i64;
+    prior_score: i64;
+    exploit:     i64;
 }
 
 # everything a search starts from, and the history tables cleared: a new
@@ -412,6 +432,9 @@ pub fun reset(s: *Search) {
         }
         pc = pc + 1;
     }
+    s.prior_ok    = 0;
+    s.prior_score = 0;
+    s.exploit     = 0;
 }
 
 # the state the next move's search starts from within one game. The history
@@ -765,7 +788,13 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     val in_check: bool = check_at(p, noted);
     var depth:    i64  = depth_in;
     # a king in check is never quiesced: the position is not quiet by definition
-    if (in_check) { depth = depth + 1; }
+    if (in_check) {
+        depth = depth + 1;
+        # one ply more than the usual check extension, and only after a
+        # mistake: a checking move is how a quiet attack becomes mate, and
+        # the ordinary extension already exists for every check
+        if (exploiting(s) && ply < 2 * s.root_depth) { depth = depth + 1; }
+    }
     if (depth <= 0) {
         s.known_check[ply] = 1 + in_check::i64;
         ret quiesce(s, p, alpha_in, beta, ply);
@@ -1003,6 +1032,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (credit > 2)     { credit = 2; }
                 if (credit < 0 - 2) { credit = 0 - 2; }
                 reduction = reduction - credit;
+                # a quiet move that lands within two squares of the enemy
+                # king is the attack. After make, the side to move is the
+                # side just checked or left to answer, so its king is the target.
+                if (exploiting(s)) {
+                    val king: i64 = pos.king_square(p, p.side);
+                    val bit:  u64 = (1::u64) << (mv.to(m)::u64);
+                    if ((ZONE2[king] & bit) != 0) { reduction = reduction - 1; }
+                }
                 if (reduction < 0) { reduction = 0; }
                 # never reduce straight into quiescence: leave a ply to look
                 if (reduction > depth - 2) { reduction = depth - 2; }
@@ -1216,6 +1253,12 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     s.nodes         = 0;
     s.stop          = 0;
     s.started       = start;
+    # helpers leave the flag to the main search; clearing it here would
+    # turn the mode off under the thread that just turned it on
+    if (s.thread_id == 0) {
+        s.exploit = 0;
+        atomic.store(?EXPLOIT_FLAG, 0);
+    }
     s.best          = mv.NONE;
     s.ponder        = mv.NONE;
     s.depth_reached = 0;
@@ -1283,6 +1326,10 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         if (s.stop != 0) { brk; }
         val drop: i64 = previous - score;
         previous = score;
+        if (s.thread_id == 0 && s.prior_ok != 0 && score >= s.prior_score + EXPLOIT_JUMP) {
+            s.exploit = 1;
+            atomic.store(?EXPLOIT_FLAG, 1);
+        }
         # the ponder move comes from the same completed iteration as the best
         # move; an aborted iteration can leave pv[0] half overwritten
         if (s.pv_len[0] > 0) {
@@ -1330,6 +1377,10 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         os.sleep(1000000);
     }
     pos.detach(p);
+    if (s.thread_id == 0 && s.depth_reached > 0) {
+        s.prior_score = previous;
+        s.prior_ok    = 1;
+    }
     ret s.best;
 }
 
@@ -1503,6 +1554,46 @@ test tunables_set_clamp_and_reach_the_search {
     val again: i64 = search_depth(?p, 7, ?s);
     if (moved == base) { ret 7; }
     if (again != base) { ret 8; }
+    ret 0;
+}
+
+test exploit_after_a_score_jump_changes_the_tree {
+    pos.init();
+    var p: Position;
+    if (!pos.set_fen(?p, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")) { ret 1; }
+    var s: Search;
+    var limits: Limits;
+    limits.depth = 5;
+    tt.clear();
+    reset(?s);
+    s.quiet = 1;
+    think(?s, ?p, ?limits);
+    val plain: i64 = s.nodes;
+    tt.clear();
+    reset(?s);
+    s.quiet       = 1;
+    s.prior_ok    = 1;
+    s.prior_score = 0 - 800;
+    think(?s, ?p, ?limits);
+    if (s.exploit == 0)    { ret 2; }
+    if (s.nodes == plain)  { ret 3; }
+    atomic.store(?EXPLOIT_FLAG, 0);
+    ret 0;
+}
+
+test exploit_contempt_applies_when_the_opponent_is_stronger {
+    val c: i64 = CONTEMPT;
+    val r: i64 = RATING_ADV;
+    CONTEMPT   = 30;
+    RATING_ADV = 0 - 50;
+    if (draw_value(0) != 0) { ret 1; }
+    atomic.store(?EXPLOIT_FLAG, 1);
+    if (draw_value(0) != 0 - 30) { ret 2; }
+    if (draw_value(1) != 30)     { ret 3; }
+    atomic.store(?EXPLOIT_FLAG, 0);
+    if (draw_value(0) != 0) { ret 4; }
+    CONTEMPT   = c;
+    RATING_ADV = r;
     ret 0;
 }
 

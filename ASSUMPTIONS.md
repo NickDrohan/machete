@@ -203,13 +203,53 @@ the noise floor of each other, so five teachers helps against one while
 
 Book openings remain unisolated.
 
-### open - that 1500 nodes per label is enough teacher depth
-Never swept. The external-corpus result (-159 Elo against a deeper but less
-consistent corpus) hints that consistency matters more than depth, but that is
-an inference from one comparison, not a measurement of this parameter.
+### measured - ten times the nodes barely moves the label; not yet an Elo test
+LABEL-DEPTH (2026-10-03): Stockfish 19 at 16,000 nodes against 1,500 nodes, on
+400 positions drawn from `pi_gen4_pi01_sf19.bin` whose stored label is inside
+±400. Mean absolute gap 30.9 cp, median 16, 90th percentile 81, correlation
+0.945. Inside ±200 the gap is 25.5 cp (median 13). 6.2% of positions move by
+more than 100 cp. A fresh 1,500-node search already matches the stored label
+to 33 cp (correlation 0.934), so the record's missing castling rights are not
+the gap. C33's own evaluation sits 69 cp from the 16,000-node score
+(correlation 0.764), which is the fitted residual, about twice the label gap.
+
+Whether that 31 cp is worth Elo is still open. What is closed is the hope
+that the same positions, searched an order of magnitude longer, are a
+different training target. C34 already showed more positions from this
+generator are worth nothing (−3 ± 17).
+
+The sharp positions are not a different answer. STOMP-DEPTH (2026-10-04):
+100 positions from `stomp_seed.epd`, Stockfish 19 at 1,500, 8,000 and
+24,000 nodes. 8,000 against 1,500: mean absolute gap 38.5 cp, median 28,
+best move changes in 29 of 100. When the move changes the two scores still
+differ by median 22 cp, inside the 50 cp band the generator already uses
+for a near-best move. 24,000 against 8,000 is median 16 cp. C33 sits 69 cp
+from a 16,000-node search of ordinary positions, so a 25 cp sharper label
+is inside an error the network does not fit.
 
 ### open - that RANDOM_MOVE_CHANCE = 0.02 is right
 Inherited. Never varied.
+
+### measured - that handicap Chess960 games train a stronger normal-chess net than a size-matched C33 control
+**Retired as a strength claim.** SPRT-ODDS-SF (+203 vs net_x0) reproduced
+(DIAG-ODDS-X0, +260 at 300 ms), but both nets are crushed by real C33 /
+0.3.6 (DIAG-ODDS-C33 0–1–79; DIAG-X0-C33 0–0–80). The "control" was a weak
+30M retrain, not shipping strength. Odds960 data remains on disk; the open
+question is how to use it without replacing C33.
+
+### open - that compensated piece-down 960 (GAP960) fixes the odds net's gaps
+ODDS-LOSSES / ODDS-MATERIAL-PROBE: the X1 net flattens piece values
+(saturated labels), drifts in even middlegames, and under-castles.
+CORPUS-GAP960 keeps a side a piece down but balanced by compensation, half
+with castling rights. Smoke labels: 23% saturated vs 51%. Not yet trained
+or measured.
+
+### open - that a panel consensus label beats single-teacher Stockfish on odds960
+Owner direction for 0.7: 100% handicap Chess960 data, labelled by the
+LABEL-01 panel (Stockfish, PlentyChess, Reckless, Obsidian, Caissa) with
+deep Stockfish as adjudicator on win-prob divergence (CONSENSUS-SMOKE,
+PANEL-2M). `net_odds_panel2m` exists (2M, val loss 0.01480). Not yet
+matched against `net_odds_sf`.
 
 ---
 

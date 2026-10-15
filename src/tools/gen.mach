@@ -57,6 +57,11 @@ val EXIT_FAIL:  i64 = 2;
 val CLAMP:                i64 = 10000;
 val VARIETY_PER_MILLE:    u64 = 50; # VARIETY_CHANCE 0.05
 val VARIETY_MARGIN:       i64 = 50;
+# a position this far from equal has one move that keeps the advantage.
+# variety is off there, and for the next SHARP_HOLD plies, so a forced
+# stretch is not broken by a sidestep the shallow search calls close.
+val SHARP_AT:             i64 = 80;
+val SHARP_HOLD:           i64 = 8;
 val VARIETY_LINES:        i64 = 4;
 val ENDGAME_PIECES:       i64 = 5;
 val ENDGAME_NODES_FACTOR: i64 = 20;
@@ -64,7 +69,10 @@ val MATE_NEAR:            i64 = 900;
 val MATE_FAR:             i64 = 400;
 val MATE_STEP:            i64 = 10;
 val MAX_PLIES:            i64 = 300;
-val OPENING_BALANCE:      i64 = 150;
+# 150 skips a start that is already decided. An odds book passes "odds"
+# and raises this to 700, so a missing knight or rook is played and a
+# missing queen is still refused.
+var OPENING_BALANCE:      i64 = 150;
 val ADJUDICATE_AT:        i64 = 1500;
 val ADJUDICATE_PLIES:     i64 = 6;
 val HASH_MB:              i64 = 32;
@@ -100,6 +108,16 @@ rec Worker {
     turns:     [320]u8;
     nrows:     i64;
     ep_pot:    i64;
+    # plies left to play only the teacher's best move
+    sharp_hold: i64;
+    start_fen:  [256]u8;
+    tree_keys:  [4096]u64;
+    ntree_keys: i64;
+    trunk_moves: [320]Move;
+    trunk_len:   i64;
+    branch_ply:  [64]i64;
+    branch_alt:  [64]Move;
+    nbranch:     i64;
 }
 
 var WORKERS:    [32]Worker;
@@ -112,6 +130,7 @@ var ENGINE:     str  = nil;
 var ENGINE_DIR: [1024]u8;
 var NODES:      i64  = 1500;
 var GATE:       bool = false;
+var TAKEBACK_N: i64  = 0;
 var TOTAL:      i64  = 0;
 
 fun usage() i64 {
@@ -264,6 +283,19 @@ fun seen_count(w: *Worker, key: u64) i64 {
     ret 1;
 }
 
+fun tree_seen(w: *Worker, key: u64) bool {
+    var i: i64 = 0;
+    for (i < w.ntree_keys) {
+        if (w.tree_keys[i] == key) { ret true; }
+        i = i + 1;
+    }
+    if (w.ntree_keys < 4096) {
+        w.tree_keys[w.ntree_keys] = key;
+        w.ntree_keys              = w.ntree_keys + 1;
+    }
+    ret false;
+}
+
 # ---- talking to the teacher ----
 
 # "position fen <start> moves ...": the start is kept at the front of cmd and
@@ -351,10 +383,174 @@ fun ending_label(report: *uci.Report) i64 {
 
 # ---- one game (gen.py's play_game) ----
 
-# the outcome, from white: 1 won, 0 drew, -1 lost; nrows 0 if the game was skipped
-fun play_game(w: *Worker) i64 {
+fun flush_rows(w: *Worker, outcome: i64) bool {
+    if (w.nrows == 0) { ret true; }
+    var i: i64 = 0;
+    for (i < w.nrows) {
+        var result: u8 = 1;
+        if (outcome != 0) {
+            val white_won: bool = outcome > 0;
+            val white_row: bool = w.turns[i] == pos.WHITE;
+            if (white_won == white_row) { result = 2; }
+            or                          { result = 0; }
+        }
+        w.rows[i * 70 + 68] = result;
+        i                   = i + 1;
+    }
+    if (!write_all(w.out, ?w.rows[0], w.nrows * 70)) {
+        w.failed = true;
+        ret false;
+    }
+    w.written = w.written + w.nrows;
+    atomic.fetch_add(?TOTAL, w.nrows);
     w.nrows = 0;
-    w.nkeys = 0;
+    ret true;
+}
+
+fun check_alternative(w: *Worker) Move {
+    var cmd: [64]u8;
+    uci.fill(?cmd[0], "setoption name MultiPV value ", VARIETY_LINES);
+    if (!uci.send(?w.engine, ?cmd[0]))   { ret mv.NONE; }
+    if (!uci.send(?w.engine, ?w.cmd[0])) { ret mv.NONE; }
+    var limit: [32]u8;
+    uci.fill(?limit[0], "go nodes ", NODES);
+    if (!uci.send(?w.engine, ?limit[0])) { ret mv.NONE; }
+    var lines: [4]uci.Report;
+    var k:     i64 = 0;
+    for (k < VARIETY_LINES) {
+        lines[k].has_score = false;
+        lines[k].pv[0]     = 0;
+        k                  = k + 1;
+    }
+    for (uci.read_line(?w.engine)) {
+        if (w.engine.line[0] == 'b') { brk; } # bestmove
+        k = 0;
+        for (k < VARIETY_LINES) {
+            uci.take_info(?w.engine.line[0], ?lines[k], k + 1);
+            k = k + 1;
+        }
+    }
+    uci.fill(?cmd[0], "setoption name MultiPV value ", 1);
+    val back: bool = uci.send(?w.engine, ?cmd[0]);
+    if (!lines[0].has_score || !lines[1].has_score) { ret mv.NONE; }
+    val best:   i64 = score_of(?lines[0]);
+    val second: i64 = score_of(?lines[1]);
+    if (best - second > VARIETY_MARGIN) { ret mv.NONE; }
+    if (lines[1].pv[0] == 0)            { ret mv.NONE; }
+    ret movegen.parse_uci(?w.p, ?lines[1].pv[0]);
+}
+
+fun play_branch(w: *Worker, branch_idx: i64) {
+    w.nrows      = 0;
+    w.nkeys      = 0;
+    w.sharp_hold = 0;
+    if (!pos.set_fen(?w.p, ?w.start_fen[0])) { ret; }
+    begin_position(w, ?w.start_fen[0]);
+    val target_ply: i64  = w.branch_ply[branch_idx];
+    val alt_move:   Move = w.branch_alt[branch_idx];
+
+    var p: i64 = 0;
+    for (p < target_ply) {
+        val m: Move = w.trunk_moves[p];
+        pos.make(?w.p, m);
+        push_move(w, m);
+        seen_count(w, position_key(w));
+        p = p + 1;
+    }
+
+    pos.make(?w.p, alt_move);
+    push_move(w, alt_move);
+    seen_count(w, position_key(w));
+
+    var outcome: i64 = 0;
+    var decided: i64 = 0;
+    var plies:   i64 = target_ply + 1;
+    var list:    MoveList;
+    var report:  uci.Report;
+
+    for (plies < MAX_PLIES) {
+        movegen.generate_legal(?w.p, ?list);
+        val checked: bool = pos.in_check(?w.p);
+        if (list.count == 0) {
+            if (checked) {
+                if (w.p.side == pos.WHITE) { outcome = 0 - 1; }
+                or                         { outcome = 1; }
+            }
+            brk;
+        }
+        if (w.p.halfmove >= 100 || insufficient(?w.p)) { brk; }
+        val key:     u64  = position_key(w);
+        val seen:    i64  = seen_count(w, key);
+        if (seen >= 3) { brk; }
+        val in_tree: bool = tree_seen(w, key);
+        val pieces:  i64  = popcount(w.p.occ[0] | w.p.occ[1]);
+        val ending:  bool = pieces <= ENDGAME_PIECES;
+        var budget:  i64  = NODES;
+        if (ending) { budget = NODES * ENDGAME_NODES_FACTOR; }
+        if (!analyse(w, budget, ?report)) {
+            w.failed = true;
+            ret;
+        }
+        val score: i64 = score_of(?report);
+        if (seen == 1 && !checked && !in_tree && w.nrows < ROWS_CAP) {
+            var label: i64 = score;
+            if (ending) { label = ending_label(?report); }
+            binpack.write_record(?w.p, label, 0, ?w.rows[w.nrows * 70]);
+            w.rows[w.nrows * 70 + 69] = 0;
+            w.turns[w.nrows]          = w.p.side;
+            w.nrows                   = w.nrows + 1;
+        }
+        var abs_score: i64 = score;
+        if (abs_score < 0) { abs_score = 0 - abs_score; }
+        if (abs_score >= ADJUDICATE_AT) {
+            decided = decided + 1;
+            if (decided >= ADJUDICATE_PLIES) {
+                var ahead_white: bool = w.p.side == pos.WHITE;
+                if (score < 0)   { ahead_white = !ahead_white; }
+                if (ahead_white) { outcome = 1; }
+                or               { outcome = 0 - 1; }
+                brk;
+            }
+        }
+        or {
+            decided = 0;
+        }
+        var m:         Move = movegen.parse_uci(?w.p, ?report.pv[0]);
+        var magnitude: i64  = score;
+        if (magnitude < 0) { magnitude = 0 - magnitude; }
+        if (magnitude >= SHARP_AT) { w.sharp_hold = SHARP_HOLD; }
+        if (w.sharp_hold > 0) {
+            w.sharp_hold = w.sharp_hold - 1;
+        }
+        or (!GATE && rng.below(?w.r, 1000) < VARIETY_PER_MILLE) {
+            m = variety(w, m);
+        }
+        if (m == mv.NONE) {
+            m = movegen.parse_uci(?w.p, ?report.best[0]);
+        }
+        if (m == mv.NONE) {
+            w.failed = true;
+            ret;
+        }
+        val from: i64 = mv.from(m);
+        val to:   i64 = mv.to(m);
+        w.ep_pot = 0 - 1;
+        if (pos.kind_of(w.p.board[from]) == pos.PAWN && (to - from == 16 || from - to == 16)) {
+            w.ep_pot = (from + to) / 2;
+        }
+        pos.make(?w.p, m);
+        push_move(w, m);
+        plies = plies + 1;
+    }
+    flush_rows(w, outcome);
+}
+
+fun play_game(w: *Worker) {
+    w.nrows      = 0;
+    w.nkeys      = 0;
+    w.ntree_keys = 0;
+    w.nbranch    = 0;
+    w.trunk_len  = 0;
     var line: i64 = 0;
     if (GATE) {
         line        = w.next_book % NLINES;
@@ -364,8 +560,14 @@ fun play_game(w: *Worker) i64 {
         line = rng.below(?w.r, NLINES::u64)::i64;
     }
     val fen: *u8 = ?BOOK[LINES[line]];
-    if (!pos.set_fen(?w.p, fen)) { ret 0; }
-    # python-chess's ep_square from the FEN's fourth field
+    var si:  i64 = 0;
+    for (fen[si] != 0 && si < 255) {
+        w.start_fen[si] = fen[si];
+        si              = si + 1;
+    }
+    w.start_fen[si] = 0;
+
+    if (!pos.set_fen(?w.p, fen)) { ret; }
     w.ep_pot = 0 - 1;
     var f:      i64 = 0;
     var spaces: i64 = 0;
@@ -379,19 +581,20 @@ fun play_game(w: *Worker) i64 {
     begin_position(w, fen);
     var list: MoveList;
     movegen.generate_legal(?w.p, ?list);
-    if (list.count == 0 || w.p.halfmove >= 100 || insufficient(?w.p)) { ret 0; }
+    if (list.count == 0 || w.p.halfmove >= 100 || insufficient(?w.p)) { ret; }
     var report: uci.Report;
     if (!analyse(w, NODES, ?report)) {
         w.failed = true;
-        ret 0;
+        ret;
     }
     var opening: i64 = score_of(?report);
     if (opening < 0)               { opening = 0 - opening; }
-    if (opening > OPENING_BALANCE) { ret 0; }
+    if (opening > OPENING_BALANCE) { ret; }
 
     var outcome: i64 = 0;
     var decided: i64 = 0;
     var plies:   i64 = 0;
+    w.sharp_hold = 0;
     for (plies < MAX_PLIES) {
         movegen.generate_legal(?w.p, ?list);
         val checked: bool = pos.in_check(?w.p);
@@ -404,19 +607,20 @@ fun play_game(w: *Worker) i64 {
             brk;
         }
         if (w.p.halfmove >= 100 || insufficient(?w.p)) { brk; }
-        val key:  u64 = position_key(w);
-        val seen: i64 = seen_count(w, key);
+        val key:     u64  = position_key(w);
+        val seen:    i64  = seen_count(w, key);
         if (seen >= 3) { brk; }
-        val pieces: i64  = popcount(w.p.occ[0] | w.p.occ[1]);
-        val ending: bool = pieces <= ENDGAME_PIECES;
-        var budget: i64  = NODES;
+        val in_tree: bool = tree_seen(w, key);
+        val pieces:  i64  = popcount(w.p.occ[0] | w.p.occ[1]);
+        val ending:  bool = pieces <= ENDGAME_PIECES;
+        var budget:  i64  = NODES;
         if (ending) { budget = NODES * ENDGAME_NODES_FACTOR; }
         if (!analyse(w, budget, ?report)) {
             w.failed = true;
-            ret 0;
+            ret;
         }
         val score: i64 = score_of(?report);
-        if (seen == 1 && !checked && w.nrows < ROWS_CAP) {
+        if (seen == 1 && !checked && !in_tree && w.nrows < ROWS_CAP) {
             var label: i64 = score;
             if (ending) { label = ending_label(?report); }
             binpack.write_record(?w.p, label, 0, ?w.rows[w.nrows * 70]);
@@ -439,8 +643,14 @@ fun play_game(w: *Worker) i64 {
         or {
             decided = 0;
         }
-        var m: Move = movegen.parse_uci(?w.p, ?report.pv[0]);
-        if (!GATE && rng.below(?w.r, 1000) < VARIETY_PER_MILLE) {
+        var m:         Move = movegen.parse_uci(?w.p, ?report.pv[0]);
+        var magnitude: i64  = score;
+        if (magnitude < 0) { magnitude = 0 - magnitude; }
+        if (magnitude >= SHARP_AT) { w.sharp_hold = SHARP_HOLD; }
+        if (w.sharp_hold > 0) {
+            w.sharp_hold = w.sharp_hold - 1;
+        }
+        or (!GATE && rng.below(?w.r, 1000) < VARIETY_PER_MILLE) {
             m = variety(w, m);
         }
         if (m == mv.NONE) {
@@ -448,8 +658,25 @@ fun play_game(w: *Worker) i64 {
         }
         if (m == mv.NONE) {
             w.failed = true;
-            ret 0;
+            ret;
         }
+
+        if (TAKEBACK_N > 0 && !GATE && w.nbranch < 64 && magnitude < SHARP_AT && plies >= 2 && !checked) {
+            if (rng.below(?w.r, 1000) < 300) {
+                val alt: Move = check_alternative(w);
+                if (alt != mv.NONE && alt != m) {
+                    w.branch_ply[w.nbranch] = plies;
+                    w.branch_alt[w.nbranch] = alt;
+                    w.nbranch               = w.nbranch + 1;
+                }
+            }
+        }
+
+        if (w.trunk_len < 320) {
+            w.trunk_moves[w.trunk_len] = m;
+            w.trunk_len                = w.trunk_len + 1;
+        }
+
         # python-chess's ep_square: set after a double pawn push, cleared otherwise
         val from: i64 = mv.from(m);
         val to:   i64 = mv.to(m);
@@ -461,7 +688,21 @@ fun play_game(w: *Worker) i64 {
         push_move(w, m);
         plies = plies + 1;
     }
-    ret outcome;
+    flush_rows(w, outcome);
+
+    if (TAKEBACK_N > 0 && !GATE && w.nbranch > 0 && !w.failed) {
+        var ntake: i64 = TAKEBACK_N;
+        if (ntake > w.nbranch) { ntake = w.nbranch; }
+        var b: i64 = 0;
+        for (b < ntake && !w.failed && w.written < w.share) {
+            var pick_idx: i64 = b;
+            if (w.nbranch > ntake) {
+                pick_idx = rng.below(?w.r, w.nbranch::u64)::i64;
+            }
+            play_branch(w, pick_idx);
+            b = b + 1;
+        }
+    }
 }
 
 # a near-best move from a multi-line search: any of the teacher's lines within
@@ -506,7 +747,12 @@ fun variety(w: *Worker, fallback: Move) Move {
         }
         k = k + 1;
     }
-    if (n == 0) { ret fallback; }
+    # one move within the margin: the line is sharp, so the plies that
+    # follow stay on the best move even if a shallow search calls them close
+    if (n <= 1) {
+        w.sharp_hold = SHARP_HOLD;
+        ret fallback;
+    }
     ret near[rng.below(?w.r, n::u64)::i64];
 }
 
@@ -522,26 +768,7 @@ fun worker_entry(arg: *u8) {
         ret;
     }
     for (w.written < w.share && !w.failed) {
-        val outcome: i64 = play_game(w);
-        if (w.nrows == 0) { cnt; }
-        var i: i64 = 0;
-        for (i < w.nrows) {
-            var result: u8 = 1;
-            if (outcome != 0) {
-                val white_won: bool = outcome > 0;
-                val white_row: bool = w.turns[i] == pos.WHITE;
-                if (white_won == white_row) { result = 2; }
-                or                          { result = 0; }
-            }
-            w.rows[i * 70 + 68] = result;
-            i                   = i + 1;
-        }
-        if (!write_all(w.out, ?w.rows[0], w.nrows * 70)) {
-            w.failed = true;
-            brk;
-        }
-        w.written = w.written + w.nrows;
-        val total: i64 = atomic.fetch_add(?TOTAL, w.nrows) + w.nrows;
+        play_game(w);
     }
     uci.stop(?w.engine);
 }
@@ -604,7 +831,17 @@ fun main(argc: i64, argv: **u8) i64 {
     NODES = int_arg(argv[5], 1500);
     var workers: i64 = int_arg(argv[6], 1);
     val seed:    i64 = int_arg(argv[7], 1);
-    GATE = argc >= 9 && str_equals(argv[8], "gate");
+    var a: i64 = 8;
+    for (a < argc) {
+        if (str_equals(argv[a], "gate")) { GATE = true; }
+        if (str_equals(argv[a], "odds")) { OPENING_BALANCE = 700; }
+        if (str_equals(argv[a], "takeback") && a + 1 < argc) {
+            TAKEBACK_N = int_arg(argv[a + 1], 0);
+            a          = a + 1;
+        }
+        a = a + 1;
+    }
+    if (GATE) { TAKEBACK_N = 0; }
     if (workers < 1)           { workers = 1; }
     if (workers > MAX_WORKERS) { workers = MAX_WORKERS; }
     if (!load_book(argv[2])) {

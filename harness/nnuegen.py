@@ -21,6 +21,7 @@ vextracti128. Registers: xmm/ymm 0-5 only, all volatile under Win64.
 import argparse
 
 RDX, RCX, RAX = 2, 1, 0
+R8, R9 = 8, 9
 
 
 def d32(d):
@@ -55,6 +56,16 @@ def vop_mem(op, dst, src1, base, d):
 
 def vop_reg(op, dst, src1, src2):
     return c5(src1, 1, 1) + [op, modrm_reg(dst, src2)]
+
+
+def vex256_mem(opcode, pp, reg, src, base, disp):
+    """256-bit VEX op with a base that may be r8/r9. pp is the VEX prefix field."""
+    R = 0 if reg >= 8 else 1
+    B = 0 if base >= 8 else 1
+    byte2 = (R << 7) | (1 << 6) | (B << 5) | 0x01
+    byte3 = ((~src & 15) << 3) | (1 << 2) | pp
+    modrm = 0x80 | ((reg & 7) << 3) | (base & 7)
+    return [0xC4, byte2, byte3, opcode, modrm] + d32(disp)
 
 
 VZEROUPPER = [0xC5, 0xF8, 0x77]
@@ -137,21 +148,56 @@ def accumulate_avx2(hidden):
 
 def column(op, name, verb, hidden):
     body = []
-    for k in range(hidden // 16):
-        n = k % 4
-        body += [line(vload(n, RDX, 32 * k), ["xmm%d" % n]),
-                 line(vop_mem(op, n, n, RCX, 32 * k), ["xmm%d" % n]),
-                 line(vstore(n, RDX, 32 * k))]
+    # four independent chains: load them all, then operate, then store.
+    # one chain at a time waits on its own load before the next starts.
+    k = 0
+    chunks = hidden // 16
+    while k < chunks:
+        group = min(4, chunks - k)
+        for n in range(group):
+            body.append(line(vload(n, RDX, 32 * (k + n)), ["xmm%d" % n]))
+        for n in range(group):
+            body.append(line(vop_mem(op, n, n, RCX, 32 * (k + n)), ["xmm%d" % n]))
+        for n in range(group):
+            body.append(line(vstore(n, RDX, 32 * (k + n))))
+        k += group
     body.append(line(VZEROUPPER))
     return ["# %s one weight column: into %s= row, %d lanes" % (verb, "+" if op == PADDW else "-", hidden),
             "pub fun %s(into: *i16, row: *i16) {" % name] + x86(body, [("rdx", "into"), ("rcx", "row")]) + ["}"]
 
 
+def apply2(hidden, name, second_op, comment):
+    """dst = src - minus, then `second_op` with the plus row, one pass."""
+    body = []
+    chunks = hidden // 16
+    k = 0
+    while k < chunks:
+        for n in (0, 1):
+            body.append(line(vex256_mem(0x6F, 2, n, 0, RCX, 32 * (k + n)), ["xmm%d" % n]))
+        for n in (0, 1):
+            body.append(line(vex256_mem(PSUBW, 1, n, n, R8, 32 * (k + n)), ["xmm%d" % n]))
+        for n in (0, 1):
+            body.append(line(vex256_mem(second_op, 1, n, n, R9, 32 * (k + n)), ["xmm%d" % n]))
+        for n in (0, 1):
+            body.append(line(vex256_mem(0x7F, 2, n, 0, RDX, 32 * (k + n))))
+        k += 2
+    body.append(line(VZEROUPPER))
+    return ["# %s" % comment,
+            "pub fun %s(dst: *i16, src: *i16, minus: *i16, plus: *i16) {" % name] + \
+        x86(body, [("rdx", "dst"), ("rcx", "src"), ("r8", "minus"), ("r9", "plus")]) + ["}"]
+
+
 def copy(hidden):
     body = []
-    for k in range(hidden // 16):
-        n = k % 4
-        body += [line(vload(n, RCX, 32 * k), ["xmm%d" % n]), line(vstore(n, RDX, 32 * k))]
+    k = 0
+    chunks = hidden // 16
+    while k < chunks:
+        group = min(4, chunks - k)
+        for n in range(group):
+            body.append(line(vload(n, RCX, 32 * (k + n)), ["xmm%d" % n]))
+        for n in range(group):
+            body.append(line(vstore(n, RDX, 32 * (k + n))))
+        k += group
     body.append(line(VZEROUPPER))
     return ["# copy a half: to = from, %d lanes" % hidden,
             "pub fun copy_half_avx2(to: *i16, from: *i16) {"] + x86(body, [("rdx", "to"), ("rcx", "from")]) + ["}"]
@@ -216,7 +262,12 @@ def main():
            "pub val KERNEL_HIDDEN: i64 = %d;" % h,
            "", DETECT, ""]
     for block in (accumulate_sse2(h), accumulate_avx2(h), column(PADDW, "add_column_avx2", "add", h),
-                  column(PSUBW, "sub_column_avx2", "subtract", h), copy(h)):
+                  column(PSUBW, "sub_column_avx2", "subtract", h),
+                  apply2(h, "apply_sub_add_avx2", PADDW,
+                         "one pass: dst = src - minus + plus. a quiet move's half"),
+                  apply2(h, "apply_sub_sub_avx2", PSUBW,
+                         "one pass: dst = src - minus - plus. a capture's two removals"),
+                  copy(h)):
         out += block + [""]
     # LF on every host, as .gitattributes wants; print() would write CRLF on Windows
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:

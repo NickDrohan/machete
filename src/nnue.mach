@@ -252,6 +252,13 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
             var at: i64 = first + 1;
             for (at <= top) {
                 val a: *Acc = ?accs[at];
+                # the usual move is one slot above a half that is already
+                # built: fold the copy and the column updates into one read
+                # of that half. anything else keeps the general path.
+                if (at == top && first == top - 1 && fast_half(a, ?accs[first], side)) {
+                    at = at + 1;
+                    cnt;
+                }
                 carry_side(a, ?accs[at - 1], side);
                 var c: i64 = 0;
                 for (c < a.count) {
@@ -357,6 +364,32 @@ fun sub_side(a: *Acc, side: i64, pc: u8, sq: i64) {
         store8(into, i, load8(into, i) - load8(?FEATURE_WEIGHTS[base], i));
         i = i + 8;
     }
+}
+
+# quiet moves record a removal then an addition; captures record two
+# removals then an addition. Both are one pass over the parent's half
+# instead of a copy followed by a pass per piece.
+fun fast_half(a: *Acc, parent: *Acc, side: i64) bool {
+    if (!AVX2) { ret false; }
+    val king: i64 = parent.king[side];
+    if (a.count == 2 && a.plus[0] == 0 && a.plus[1] != 0) {
+        val sub: i64 = index(side, king, a.piece[0], a.square[0]) * HIDDEN;
+        val add: i64 = index(side, king, a.piece[1], a.square[1]) * HIDDEN;
+        a.king[side] = king;
+        kernels.apply_sub_add_avx2(?a.v[side][0], ?parent.v[side][0], ?FEATURE_WEIGHTS[sub], ?FEATURE_WEIGHTS[add]);
+        a.ready[side] = 1;
+        ret true;
+    }
+    if (a.count == 3 && a.plus[0] == 0 && a.plus[1] == 0 && a.plus[2] != 0) {
+        val s0: i64 = index(side, king, a.piece[0], a.square[0]) * HIDDEN;
+        val s1: i64 = index(side, king, a.piece[1], a.square[1]) * HIDDEN;
+        a.king[side] = king;
+        kernels.apply_sub_sub_avx2(?a.v[side][0], ?parent.v[side][0], ?FEATURE_WEIGHTS[s0], ?FEATURE_WEIGHTS[s1]);
+        add_side(a, side, a.piece[2], a.square[2]);
+        a.ready[side] = 1;
+        ret true;
+    }
+    ret false;
 }
 
 # a child position's half starts from its parent's and is then patched
@@ -577,6 +610,27 @@ test avx2_kernels_match_the_sse2_loops {
         i = 0;
         for (i < HIDDEN) {
             if (a[i] != b[i]) { ret 2; }
+            i = i + 1;
+        }
+        var row2: [HIDDEN]i16;
+        var got:  [HIDDEN]i16;
+        i = 0;
+        for (i < HIDDEN) {
+            row2[i] = (rng.below(?r, 65536)::i64 - 32768)::i16;
+            i       = i + 1;
+        }
+        kernels.apply_sub_add_avx2(?got[0], ?a[0], ?row[0], ?row2[0]);
+        i = 0;
+        for (i < HIDDEN) {
+            val expect: i16 = (a[i]::i64 - row[i]::i64 + row2[i]::i64)::i16;
+            if (got[i] != expect) { ret 4; }
+            i = i + 1;
+        }
+        kernels.apply_sub_sub_avx2(?got[0], ?a[0], ?row[0], ?row2[0]);
+        i = 0;
+        for (i < HIDDEN) {
+            val expect2: i16 = (a[i]::i64 - row[i]::i64 - row2[i]::i64)::i16;
+            if (got[i] != expect2) { ret 5; }
             i = i + 1;
         }
         kernels.copy_half_avx2(?b[0], ?row[0]);

@@ -1,5 +1,272 @@
 # Handing off machete
 
+## 2026-10-04: LeelaKnightOdds path — 100% handicap Chess960
+
+**Owner direction.** The 0.7 net is trained only on Fischer-random starts
+with one side about a knight down (exactly the LeelaKnightOdds shape). Equal
+material and classical C33 data stay out of that net. Labels should come from
+a panel of top engines with Stockfish 19, and when they diverge a deeper
+search resolves the vote.
+
+**Panel tool (CONSENSUS-SMOKE).** `harness/nnue/consensus_label.py` scores
+each position with Stockfish, PlentyChess, Reckless, Obsidian and Caissa
+(LABEL-01 / D-07 panel — Berserk and Alexandria left out). Scores are pooled
+in win-probability space; if the WP range exceeds a 50 cp gap around equality,
+Stockfish searches at 16k then 48k nodes and, if still alone, its deep score
+is the adjudicating vote. Engine id 12. Smoke on 400 X1 rows: 11.8% deepened,
+about 15 positions/s with 2 workers.
+
+**GPU tonight.** Done:
+- `net_odds_sf.nnue` — full 30,000,851 X1, val loss 0.00902
+  (NET-ODDS-SF). Packaged `E:/machete/candidates/odds_sf/`.
+- Panel slice `x1_panel_2m.bin` — 2M rows, 23.5% deepened
+  (PANEL-2M). `net_odds_panel2m.nnue` val loss 0.01480
+  (NET-ODDS-PANEL2M). Packaged `E:/machete/candidates/odds_panel2m/`.
+
+**Stage 1 result (SPRT-ODDS-SF).** Predicted **−25 Elo**. Actual: **+203 ± 72**
+in 131 games at 10+0.1 (94–12–25), H1 accepted (LLR +3.06). Nets verified
+distinct (sha256 odds_sf `b50a566f…`, x0 `25ac4c63…`); each side loaded its
+folder's `machete.nnue`.
+
+**That +203 does not mean the odds net is strong.** Diagnostics 2026-10-05
+(80/60 games at 300 ms, balanced book, folder-loaded nets):
+- odds_sf vs released 0.3.6 / C33: **0–1–79**, about −880 Elo
+- net_x0 vs released 0.3.6 / C33: **0–0–80** (shut out; DIAG-X0-C33)
+- odds_sf vs net_x0: **47–4–9**, about +260 Elo (reproduces SPRT-ODDS-SF)
+
+So X1 (the Fischer / piece-down set) is intact and trains a net that beats
+our 30M C33 *retrain*, but that retrain is itself far below real C33. The
+odds net's eval on normal-chess positions is nearly uncorrelated with C33
+(corr ~0.07 at 150k nodes). Live SPRT-ODDS-VS036 shows the same stomping
+(0.3.6 winning almost every game); LLR stuck at 0 because the SPRT code
+returns no evidence while wins=0.
+
+**What we still have on disk**
+- X1: `E:/machete/corpora/x1_handicap960_tb.bin` — **30,000,851** handicap960+TB
+- Panel slice: `x1_panel_2m.bin` — 2M consensus labels (23.5% deepened)
+- Nets: `net_odds_sf.nnue`, `net_odds_panel2m.nnue`, `net_x0.nnue`
+- X2 done on pi-01 (CORPUS-X2): `…/pi-01/x2_handicap960.bin` — **20,000,129**, no takeback
+- pi-01 now on `gap960_10m` (same book as CORPUS-GAP960, takeback 4, no odds)
+- pi-02 still on X3 equal960+TB (~14.7M / 20M at ~150/s)
+
+Next real test: not vs net_x0. Either mix odds data into a C33-scale corpus,
+or measure odds-trained nets only as an *additive* slice on top of C33.
+
+**Why odds_sf loses (ODDS-LOSSES, ODDS-MATERIAL-PROBE).** Stockfish 19 at
+150k nodes graded every odds_sf move in its 89 lost games
+(`harness/nnue/odds_losses.py`, `E:/machete/claude/odds_losses.json`):
+- 85/89 games have a ≥150 cp blunder; 112 of 147 blunders at even material,
+  mostly middlegame (median ply 38). 60% of games were already below −100
+  before the first big blunder: slow drift out of the opening.
+- Refutations: material tactic 59, quiet/strategic 51, king attack 37.
+- It castled in 22 of 40 games with rights; 0.3.6 in 33 of 37. X1 had
+  castling removed, so the net never saw a castled king.
+- Piece values are flattened. Static eval of the start minus one black
+  piece: knight +789, rook +905, queen +1034 (C33 +456 / +607 / +1200).
+  In X1, a minor up labels 0.923 WP and a queen up 0.995. 51% of labels sit
+  beyond 0.97/0.03, so sigmoid(cp/150) gives almost no gradient between them.
+
+**Retrain in progress (TRAIN-C33HX2 / PREDICT-C33HX).** C33 recipe (364M) + X1 30M + X2 20M = **413,696,473** positions; 14 epochs, scale 150, blend 1.0, seed 7, window 120M. Output E:/machete/claude/nets/c33hx.nnue. Predicted **+15** vs 0.3.6. SPRT after train finishes and the net is packaged.
+
+**Targeted data: CORPUS-GAP960** (Windows done: 10,000,727 records in 208 min at ~800/s; pi-01 twin still generating).1M/10M at ~877/s; pi-01 also
+making a 10M twin). Still 100% Chess960 with a side a piece down, but the
+other side pays for it, so labels stay in the sloped part of the sigmoid:
+`harness/nnue/gap960_book.py` → `E:/machete/books/gap960.epd` (GAP960-BOOK):
+minor-for-pawns, exchange, queen-for-R+minor/RR, rook-for-two-minors,
+knight-for-bishop. Half use the 18 back ranks with the king on e and rooks on a/h,
+with KQkq rights (the engine has no 960 castling). No `odds` flag: the
+generator gate (|eval| ≤ 150) keeps the balanced starts (34% pass).
+Smoke audit (GAP960-SMOKE-AUDIT): saturated labels 23% vs X1 51%, even
+material 53% vs 22%, draws 34% vs 18%. Output
+`E:/machete/corpora/gap960_10m.bin`. Training is not queued yet: the final
+file appears during the merge, so a `--requires` chain could start on a
+partial file. Train after the job shows done. Plan: X1 + GAP960 (40M),
+same recipe, then compare against odds_sf and 0.3.6.
+
+## 2026-10-04: the 0.7 corpus experiment, handicap Chess960 with take-backs
+
+**The bet.** Training on handicap Chess960 games builds a stronger net for
+normal chess than the same number of C33 positions. The take-back branches
+make it denser.
+- The starts are Chess960 with castling removed, 2 random plies, then one
+  random side is about a knight down. The handicap is a knight, a bishop,
+  3 non-centre pawns, or 2 pawns including a d/e pawn.
+- Take-back works like a parent letting a child take a move back. At
+  MultiPV-4 points where a second move is within 50 cp, the game is
+  replayed from there with that move. Each tree is deduplicated.
+
+Books and tools:
+- Books (HANDICAP960-BOOK): `E:/machete/books/handicap960.epd` and
+  `equal960.epd`, 20,000 positions each, from
+  `harness/nnue/handicap960_book.py`.
+- Generator flag: `takeback N` in `src/tools/gen.mach` and `gen.py`
+  (GEN-TAKEBACK). Gate mode turns it off, and gate parity is still
+  byte-identical.
+- Known gap: `play_branch` does not recompute `ep_pot` while it replays the
+  trunk.
+
+Corpora (all 1,500-node Stockfish 19 labels):
+- X0 control (CORPUS-X0): `E:/machete/corpora/x0_control_30m.bin`. A 30M
+  uniform sample of the 18 C33 sources. Its net is
+  `E:/machete/claude/nets/net_x0.nnue` (NET-X0): val loss 0.00382, 15/35 on
+  the takeover suite.
+- X1 = handicap960 + `takeback 4`, on the PC.
+  - 20 workers, seed 71001, target 30M, about 1,130 positions a second.
+  - Shards: `E:/machete/corpora/x1_handicap960_tb.bin.NN.part`.
+  - **Done:** `E:/machete/corpora/x1_handicap960_tb.bin`, 30,000,851 records
+    (finished ~00:53 on 10-05). Shard parts removed after merge.
+  - `wait_train_x1.py` got stuck overnight (parts gone → it saw 0 rows).
+    Restarted by hand 2026-10-05 ~09:48:
+    - GPU: training `net_odds_sf.nnue` on the full 30M (SF labels).
+    - CPU: panel-relabeling first 2M → `x1_panel_2m.bin`, then
+      `net_odds_panel2m.nnue`.
+- X2 = handicap960 without take-backs, on pi-01: `x2_handicap960.bin`,
+  seed 72001, 3.46M of 20M at about 208 positions a second (~22 h left).
+- X3 = equal960 + `takeback 4`, on pi-02: `x3_equal960_tb.bin`, seed 73001,
+  2.50M of 20M at about 150 positions a second (~32 h left).
+- pi-01's `stomp1` was stopped at about 3.87M. Its partial shards are still
+  on the Pi.
+
+Pilot (PILOT-X0X1): 3M-position nets from X0 and from the live X1 shards.
+- Both train and quantize cleanly.
+- Both search all 200 `balanced_200` positions without error.
+- On the takeover suite X0 scores 15/35 (quiet 8/24) and X1 scores 13/35
+  (quiet 5/24). That is noise. Only games will settle this.
+
+Next steps:
+- Stage 1: when X1 reaches 30M, train it with X0's recipe. Write a
+  prediction, then SPRT X1 vs X0 at 10+0.1 on the balanced book through
+  `harness/jobqueue.py`.
+- Stage 2 (X2 vs X1, X3 vs X1) runs only if X1 is at least level.
+
+## 2026-10-04: the stomp games, as a generation book
+
+`2026_Machete3.6_Stomp.pgn`, 44 games at 180+3. Machete won none: 31 losses,
+13 draws (STOMP-SEED). The other engine is already +80 centipawns, from its
+own eval, at median ply 54. Machete's own eval does not drop hard until
+median ply 125. The losses sit in the systems it chooses: the Catalan, the
+Marshall (C89), the Vienna, the English, the Bogo-Indian.
+
+`E:/machete/books/stomp_seed.epd` is the seed, 368 positions, written by
+`harness/nnue/stomp_seed.py`. 231 are attack: the crusher to move as its
+advantage crosses +80, +150 and +300. 137 are defend: machete to move on
+the ply before that advantage appears, and on the later ply where its own
+eval finally falls. One FEN each, and every line loads. A teacher playing
+both sides from that book is the training set: the win, and the defense
+against it. The comments in the PGN are not labels. Machete's scores are
+the thing that was wrong.
+
+Production: two runs of the same book, both with the sharp-stretch
+generator. pi-01 `stomp1` is Stockfish 19 at 1,500 nodes, 3 workers,
+seed 61005, target 8,000,000, about 140 positions a second. The PC,
+after the Arena tournament was canceled, is `stomp_pc` at
+`E:/machete/corpora/stomp_pc.bin`: the same teacher and node budget, 16
+workers, seed 61006, the same 8,000,000 target, about 600 positions a
+second. A leftover machete process was still searching and was stopped
+so the cores were free. pi-01's Sveshnikov file `sv1.bin` is full
+(20,000,115 records) and does not go into the next network. pi-02 was
+stopped on its Sveshnikov run and moved to the odds book. The watchdog
+log has not moved since 10-03 19:35.
+
+The takeover suite (`E:/machete/books/stomp_takeover.epd`, 35 positions,
+STOMP-MOVES): the current engine finds the move that first reached +80 in
+19 of 35, and 12 of 24 when that move is quiet. Ten times the nodes flips
+h3 and Qb6 onto the crusher's move. Qc7, Rc6, Rd8, g4 and Be4 stay wrong,
+and Be4's score for the other move goes up. Those are the network. The
+clock in this 180+3 event is not the hole: both sides spend a median of
+3 seconds, and machete spends slightly more in the moves before +80 than
+after.
+
+LeelaKnightOdds and LeelaRookOdds play only from a start with that piece
+missing, on a network built for that position. The rating is the rating of
+those games. pi-02 was taken off the Sveshnikov run and is generating
+`odds1` from `E:/machete/books/odds_kn.epd` (eight knight and rook starts),
+Stockfish at 1,500 nodes, target 2,000,000. The opening gate is 700 for
+that run, so a missing knight or rook is kept and a missing queen is still
+skipped. This file is not mixed into the candidate until it has been
+measured against C33. The stomp runs remain the equal-material games.
+
+Candidate training started 2026-10-04: C36 is C33's recipe and C33's
+files plus `stomp_pc.bin` (8,000,907 positions), one copy. 371,696,400
+positions, hidden 768, 14 epochs, scale 150, blend 1.0, seed 7, window
+120,000,000. Output `E:/machete/claude/nets/c36.nnue`. Finished 16:54, no error.
+The odds file is not in it. The packaged candidate is
+`E:/machete/candidates/c36/`: `machete.exe` and `machete.nnue`. It
+answers `uci` as machete 0.3.6 and loads that network from its own
+folder.
+
+Prediction, written before any C36 game (PREDICT-C36). Against released
+0.3.6 at 10+0.1, one thread, 128 MB: **+6 Elo**, a score of 50.9%. The
+range I still expect to believe afterward is −12 to +20. Under about
+2,000 games the match cannot tell +6 from zero. The speed is worth
+about +3. The 8 million stomp positions are 2% of the file; a narrow
+slice of that size has come out between −5 and +10 before, and the seed
+noise of one training is ±6. Exploit mode adds about nothing in
+self-play, because a jump of 80 centipawns is rare between equals. At
+180+3 the same guess is +8, because the extra data is positions from
+that kind of game and the speed matters less.
+
+## 2026-10-04: one evaluation pass instead of a copy plus a pass per piece
+
+On `feat/corpus-3000`. A quiet move used to copy a 768-wide half and then
+add and subtract a column each. Those are one kernel now
+(`apply_sub_add_avx2`), and a capture's two removals are
+`apply_sub_sub_avx2` plus the arrival. The column kernels also issue four
+independent AVX2 chains before they store. Integer results match the old
+loops (the nnue test). Bench is still **154,921** nodes: the tree did not
+change. On one middlegame, 8 interleaved runs, both sides searched
+1,999,098 nodes; the paired nps ratio's median is **+4.3%** (SPEED-ACC).
+That is the whole claim. A few percent of speed is a few Elo, not the
+gap to 3000.
+
+## 2026-10-03: 2760 to 3000 is not a rebuild of C33's corpus
+
+Work on `feat/corpus-3000` (`D:/Dev/Claude/machete-corpus`), off the other
+agent's checkout. Lichess is about 2760 on 0.3.6 / C33. +240 Elo is an 80%
+score against the current engine. Nothing since C30 has moved more than +24,
+and the last three data ideas are zero: more of the same games (C34, −3 ± 17),
+attack games mixed in (C31, −18 ± 27), a Kalashnikov slice (C35, +1 ± 14).
+One training's luck is about ±6 (C33S8).
+
+Two measurements, before any retrain:
+
+- **CORPUS-DUP.** The first 2M rows of every source C33 trained on: 35.4M
+  rows, 1.72% duplicates, 0.16% of positions with labels more than 50 cp
+  apart. Deduplicating this pile does not create a new corpus.
+- **LABEL-DEPTH.** Stockfish 19 at 16,000 nodes versus 1,500, on 400
+  `pi_gen4` positions inside ±400 cp: mean absolute gap **30.9 cp**, median
+  16, correlation 0.945. Six percent move by more than 100 cp. C33 itself
+  sits 69 cp from the longer search (correlation 0.764): that is the residual
+  the 768-wide net already fits, and C34 showed more of these labels do not
+  shrink it. Width 1024 on the same kind of data lost 17 Elo at equal time
+  (SPRT-WIDTH-1024), so a bigger net without a faster evaluation is not free.
+
+A careful retrain of the existing files, deeper labels on the same positions,
+or another broad-book generation would repeat a result we already have.
+
+What can still move the rating, in the order the games support. The 80
+lichess draws and losses split 36 evaluation, 22 search or time, and the
+clock is 15–20 points behind from move 10. Each of these is tens of Elo if
+it works, not 240, and they have to be measured one at a time:
+
+1. **Speed, then width.** 512 → 768 was +13 at equal time; 768 → 1024 was
+   −17 because the evaluation got slower. 256-bit kernels are the thing that
+   makes the width experiment real. A faster evaluation also buys the depth
+   the 22 search errors missed.
+2. **Search after a mistake** (`plans/attack-plan.md`). Yardstick: the
+   3,114-position attack suite, where quiet moves and sacrifices are the miss.
+3. **The clock against a booked opponent.** The opening discount was nothing
+   in self-play, where both sides think in the opening. Lichess opponents
+   play the first ten moves instantly.
+4. **New data only after a net that can use it.** The untested corpus is not
+   more games from the same book. It is positions the current net is wrong
+   about, one copy, a second seed, then an SPRT and a packaged match. That
+   waits on (1): mining hard positions for a net that is already at its
+   capacity just reweights C33.
+
+Openings stay as they are. No Sicilian beat the Marshall against full
+Stockfish, and 0.3.7 lost on the bot.
+
 ## 2026-10-03: working from a clone
 
 Everything needed to build, test and change the engine is in this repository
