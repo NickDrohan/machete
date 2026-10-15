@@ -264,9 +264,9 @@ fun exploiting(s: *Search) bool {
 fun draw_value(ply: i64) i64 {
     # a fresh mistake makes a draw the wrong result even against a stronger
     # opponent: the score just jumped, so settling is throwing the gain away
-    if (CONTEMPT <= 0)                                         { ret 0; }
-    if (RATING_ADV < 0 && atomic.load(?EXPLOIT_FLAG) == 0)     { ret 0; }
-    if (ply % 2 == 0)                                          { ret 0 - CONTEMPT; }
+    if (CONTEMPT <= 0)                                     { ret 0; }
+    if (RATING_ADV < 0 && atomic.load(?EXPLOIT_FLAG) == 0) { ret 0; }
+    if (ply % 2 == 0)                                      { ret 0 - CONTEMPT; }
     ret CONTEMPT;
 }
 
@@ -1250,9 +1250,9 @@ pub fun ponderhit(s: *Search, b: *Budget) {
 pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     init_tables();
     val start: i64 = clock.now_ms();
-    s.nodes         = 0;
-    s.stop          = 0;
-    s.started       = start;
+    s.nodes   = 0;
+    s.stop    = 0;
+    s.started = start;
     # helpers leave the flag to the main search; clearing it here would
     # turn the mode off under the thread that just turned it on
     if (s.thread_id == 0) {
@@ -1561,7 +1561,7 @@ test exploit_after_a_score_jump_changes_the_tree {
     pos.init();
     var p: Position;
     if (!pos.set_fen(?p, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")) { ret 1; }
-    var s: Search;
+    var s:      Search;
     var limits: Limits;
     limits.depth = 5;
     tt.clear();
@@ -1575,8 +1575,8 @@ test exploit_after_a_score_jump_changes_the_tree {
     s.prior_ok    = 1;
     s.prior_score = 0 - 800;
     think(?s, ?p, ?limits);
-    if (s.exploit == 0)    { ret 2; }
-    if (s.nodes == plain)  { ret 3; }
+    if (s.exploit == 0)   { ret 2; }
+    if (s.nodes == plain) { ret 3; }
     atomic.store(?EXPLOIT_FLAG, 0);
     ret 0;
 }

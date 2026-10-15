@@ -1,6 +1,6 @@
 # machete.tools.gen: generate labelled training positions, in Mach
 #
-#   gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate]
+#   gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N]
 #
 # the Mach counterpart of harness/nnue/gen.py, and held to it: the teacher
 # engine plays itself from book positions and every position it passes
@@ -54,9 +54,9 @@ val EXIT_USAGE: i64 = 1;
 val EXIT_FAIL:  i64 = 2;
 
 # gen.py's constants
-val CLAMP:                i64 = 10000;
-val VARIETY_PER_MILLE:    u64 = 50; # VARIETY_CHANCE 0.05
-val VARIETY_MARGIN:       i64 = 50;
+val CLAMP:             i64 = 10000;
+val VARIETY_PER_MILLE: u64 = 50; # VARIETY_CHANCE 0.05
+val VARIETY_MARGIN:    i64 = 50;
 # a position this far from equal has one move that keeps the advantage.
 # variety is off there, and for the next SHARP_HOLD plies, so a forced
 # stretch is not broken by a sidestep the shallow search calls close.
@@ -72,10 +72,15 @@ val MAX_PLIES:            i64 = 300;
 # 150 skips a start that is already decided. An odds book passes "odds"
 # and raises this to 700, so a missing knight or rook is played and a
 # missing queen is still refused.
-var OPENING_BALANCE:      i64 = 150;
-val ADJUDICATE_AT:        i64 = 1500;
-val ADJUDICATE_PLIES:     i64 = 6;
-val HASH_MB:              i64 = 32;
+var OPENING_BALANCE: i64 = 150;
+# a game is stopped once the teacher calls it decided for ADJUDICATE_PLIES
+# plies. "convert" turns that off: the game is played to mate, the fifty-move
+# rule or MAX_PLIES, so the sequences that turn a won ending into a win are in
+# the data. Without it they never are (ASSUMPTIONS.md, "won endgames are not
+# reliably converted").
+var ADJUDICATE_AT:    i64 = 1500;
+val ADJUDICATE_PLIES: i64 = 6;
+val HASH_MB:          i64 = 32;
 
 val MAX_WORKERS: i64 = 32;
 val ROWS_CAP:    i64 = 320;
@@ -109,10 +114,10 @@ rec Worker {
     nrows:     i64;
     ep_pot:    i64;
     # plies left to play only the teacher's best move
-    sharp_hold: i64;
-    start_fen:  [256]u8;
-    tree_keys:  [4096]u64;
-    ntree_keys: i64;
+    sharp_hold:  i64;
+    start_fen:   [256]u8;
+    tree_keys:   [4096]u64;
+    ntree_keys:  i64;
     trunk_moves: [320]Move;
     trunk_len:   i64;
     branch_ply:  [64]i64;
@@ -134,7 +139,7 @@ var TAKEBACK_N: i64  = 0;
 var TOTAL:      i64  = 0;
 
 fun usage() i64 {
-    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate]");
+    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N]");
     ret EXIT_USAGE;
 }
 
@@ -479,8 +484,8 @@ fun play_branch(w: *Worker, branch_idx: i64) {
             brk;
         }
         if (w.p.halfmove >= 100 || insufficient(?w.p)) { brk; }
-        val key:     u64  = position_key(w);
-        val seen:    i64  = seen_count(w, key);
+        val key:  u64 = position_key(w);
+        val seen: i64 = seen_count(w, key);
         if (seen >= 3) { brk; }
         val in_tree: bool = tree_seen(w, key);
         val pieces:  i64  = popcount(w.p.occ[0] | w.p.occ[1]);
@@ -517,7 +522,7 @@ fun play_branch(w: *Worker, branch_idx: i64) {
         }
         var m:         Move = movegen.parse_uci(?w.p, ?report.pv[0]);
         var magnitude: i64  = score;
-        if (magnitude < 0) { magnitude = 0 - magnitude; }
+        if (magnitude < 0)         { magnitude = 0 - magnitude; }
         if (magnitude >= SHARP_AT) { w.sharp_hold = SHARP_HOLD; }
         if (w.sharp_hold > 0) {
             w.sharp_hold = w.sharp_hold - 1;
@@ -607,8 +612,8 @@ fun play_game(w: *Worker) {
             brk;
         }
         if (w.p.halfmove >= 100 || insufficient(?w.p)) { brk; }
-        val key:     u64  = position_key(w);
-        val seen:    i64  = seen_count(w, key);
+        val key:  u64 = position_key(w);
+        val seen: i64 = seen_count(w, key);
         if (seen >= 3) { brk; }
         val in_tree: bool = tree_seen(w, key);
         val pieces:  i64  = popcount(w.p.occ[0] | w.p.occ[1]);
@@ -645,7 +650,7 @@ fun play_game(w: *Worker) {
         }
         var m:         Move = movegen.parse_uci(?w.p, ?report.pv[0]);
         var magnitude: i64  = score;
-        if (magnitude < 0) { magnitude = 0 - magnitude; }
+        if (magnitude < 0)         { magnitude = 0 - magnitude; }
         if (magnitude >= SHARP_AT) { w.sharp_hold = SHARP_HOLD; }
         if (w.sharp_hold > 0) {
             w.sharp_hold = w.sharp_hold - 1;
@@ -831,17 +836,18 @@ fun main(argc: i64, argv: **u8) i64 {
     NODES = int_arg(argv[5], 1500);
     var workers: i64 = int_arg(argv[6], 1);
     val seed:    i64 = int_arg(argv[7], 1);
-    var a: i64 = 8;
+    var a:       i64 = 8;
     for (a < argc) {
-        if (str_equals(argv[a], "gate")) { GATE = true; }
-        if (str_equals(argv[a], "odds")) { OPENING_BALANCE = 700; }
+        if (str_equals(argv[a], "gate"))    { GATE = true; }
+        if (str_equals(argv[a], "odds"))    { OPENING_BALANCE = 700; }
+        if (str_equals(argv[a], "convert")) { ADJUDICATE_AT = CLAMP + 1; }
         if (str_equals(argv[a], "takeback") && a + 1 < argc) {
             TAKEBACK_N = int_arg(argv[a + 1], 0);
             a          = a + 1;
         }
         a = a + 1;
     }
-    if (GATE) { TAKEBACK_N = 0; }
+    if (GATE)                  { TAKEBACK_N = 0; }
     if (workers < 1)           { workers = 1; }
     if (workers > MAX_WORKERS) { workers = MAX_WORKERS; }
     if (!load_book(argv[2])) {
