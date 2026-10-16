@@ -1,6 +1,7 @@
 # machete.tools.gen: generate labelled training positions, in Mach
 #
 #   gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N]
+#       [versus ENGINE] [versus-nodes N]
 #
 # the Mach counterpart of harness/nnue/gen.py, and held to it: the teacher
 # engine plays itself from book positions and every position it passes
@@ -146,15 +147,20 @@ var ENGINE_DIR: [1024]u8;
 # one): their centipawn scales differ, so a corpus made this way is relabelled
 # by one engine before training. Positions from engines playing each other are
 # the games machete itself plays, which neither self-play nor human games are.
-var VERSUS:     str  = nil;
-var VERSUS_DIR: [1024]u8;
-var NODES:      i64  = 1500;
-var GATE:       bool = false;
-var TAKEBACK_N: i64  = 0;
-var TOTAL:      i64  = 0;
+var VERSUS: str = nil;
+# "versus-nodes N": the versus engine's budget where the teacher's is NODES.
+# Engines count nodes differently: at 1,500 each Stockfish 19 won 91% of its
+# games against Berserk 14 and lost none, which is not a contest worth learning
+# from. 0 gives both the same.
+var VERSUS_NODES: i64  = 0;
+var VERSUS_DIR:   [1024]u8;
+var NODES:        i64  = 1500;
+var GATE:         bool = false;
+var TAKEBACK_N:   i64  = 0;
+var TOTAL:        i64  = 0;
 
 fun usage() i64 {
-    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N]");
+    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N] [versus ENGINE] [versus-nodes N]");
     ret EXIT_USAGE;
 }
 
@@ -376,12 +382,20 @@ fun seat(w: *Worker) {
     w.seated = want;
 }
 
+# a node budget for the engine now seated: the teacher's as given, the versus
+# engine's in proportion to VERSUS_NODES (the endgame boost scales with it)
+fun scaled(w: *Worker, nodes: i64) i64 {
+    if (w.seated == 0 || VERSUS_NODES <= 0) { ret nodes; }
+    ret nodes * VERSUS_NODES / NODES;
+}
+
 # search the current position to `nodes`; false if the engine failed
 fun analyse(w: *Worker, nodes: i64, report: *uci.Report) bool {
     seat(w);
+    val budget: i64 = scaled(w, nodes);
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret false; }
     var limit: [32]u8;
-    uci.fill(?limit[0], "nodes ", nodes);
+    uci.fill(?limit[0], "nodes ", budget);
     ret uci.go(?w.engine, ?limit[0], report);
 }
 
@@ -447,7 +461,7 @@ fun check_alternative(w: *Worker) Move {
     if (!uci.send(?w.engine, ?cmd[0]))   { ret mv.NONE; }
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret mv.NONE; }
     var limit: [32]u8;
-    uci.fill(?limit[0], "go nodes ", NODES);
+    uci.fill(?limit[0], "go nodes ", scaled(w, NODES));
     if (!uci.send(?w.engine, ?limit[0])) { ret mv.NONE; }
     var lines: [4]uci.Report;
     var k:     i64 = 0;
@@ -749,7 +763,7 @@ fun variety(w: *Worker, fallback: Move) Move {
     if (!uci.send(?w.engine, ?cmd[0]))   { ret fallback; }
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret fallback; }
     var limit: [32]u8;
-    uci.fill(?limit[0], "go nodes ", NODES);
+    uci.fill(?limit[0], "go nodes ", scaled(w, NODES));
     if (!uci.send(?w.engine, ?limit[0])) { ret fallback; }
     var lines: [4]uci.Report;
     var k:     i64 = 0;
@@ -902,6 +916,10 @@ fun main(argc: i64, argv: **u8) i64 {
         if (str_equals(argv[a], "gate"))    { GATE = true; }
         if (str_equals(argv[a], "odds"))    { OPENING_BALANCE = 700; }
         if (str_equals(argv[a], "convert")) { ADJUDICATE_AT = CLAMP + 1; }
+        if (str_equals(argv[a], "versus-nodes") && a + 1 < argc) {
+            VERSUS_NODES = int_arg(argv[a + 1], 0);
+            a            = a + 1;
+        }
         if (str_equals(argv[a], "versus") && a + 1 < argc) {
             VERSUS = argv[a + 1];
             directory_of(VERSUS, ?VERSUS_DIR[0]);
