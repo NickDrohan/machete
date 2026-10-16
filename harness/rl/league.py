@@ -67,6 +67,8 @@ REMOTE = "machete/rl"
 BOOK = os.path.join(HERE, "..", "books", "balanced_200.epd")
 PROMOTE_AT = 0.55
 MAX_PLIES = 300
+MAX_TRIES = 3      # a game that fails this often is given up and recorded in failed.jsonl
+MAX_FAILED = 0.02  # play stops when more than this share of games has been given up
 
 
 def ssh_options(pi):
@@ -193,18 +195,52 @@ def play(args, state):
         finished = {json.loads(l)["game"] for l in open(done_path, encoding="utf-8")}
     book = [l.strip() for l in open(args.book, encoding="utf-8") if l.strip() and not l.startswith("#")]
     rng = random.Random(1000 + state["generation"])
-    openings = rng.sample(book, min(len(book), (args.games + 1) // 2))
-    jobs = [(2 * i + side, fen, side == 0) for i, fen in enumerate(openings) for side in (0, 1)][:args.games]
+    if state["champion"] == state["challenger"]:
+        # one network on both sides: the two colour assignments are the same game, so each opening is played once
+        openings = rng.sample(book, min(len(book), args.games))
+        jobs = [(i, fen, i % 2 == 0) for i, fen in enumerate(openings)]
+    else:
+        openings = rng.sample(book, min(len(book), (args.games + 1) // 2))
+        jobs = [(2 * i + side, fen, side == 0) for i, fen in enumerate(openings) for side in (0, 1)][:args.games]
     jobs = [j for j in jobs if j[0] not in finished]
     print("generation %d: %s (pi-01) against %s (pi-02), %d games to play at %d nodes a move" % (
         state["generation"], state["champion"], state["challenger"], len(jobs), args.nodes), flush=True)
 
+    failed = []
+
+    def close(pair):
+        for e in pair:
+            try:
+                e.quit()
+            except Exception:
+                pass
+
     def worker(batch):
-        champion = open_remote("pi-01", state["champion"])
-        challenger = open_remote("pi-02", state["challenger"])
+        pair = []
         try:
             for number, fen, champion_white in batch:
-                rows, outcome, game, moves = play_game(champion, challenger, fen, champion_white, args.nodes, rng)
+                # a dropped ssh link or a dead engine: reconnect both and play the opening again from the start.
+                # Connecting is inside the try: on 2026-10-07 the reconnect itself failed and took the worker with it.
+                for attempt in range(MAX_TRIES):
+                    try:
+                        if not pair:
+                            pair[:] = [open_remote("pi-01", state["champion"]), open_remote("pi-02", state["challenger"])]
+                        rows, outcome, game, moves = play_game(pair[0], pair[1], fen, champion_white, args.nodes, rng)
+                        break
+                    except Exception as error:
+                        print("  game %d, try %d: %s: %s" % (number, attempt + 1, type(error).__name__, error), flush=True)
+                        close(pair)
+                        del pair[:]
+                        time.sleep(60 * (attempt + 1))
+                else:
+                    with lock:
+                        failed.append(number)
+                        with open(os.path.join(folder, "failed.jsonl"), "a", encoding="utf-8") as f:
+                            f.write(json.dumps(dict(game=number, fen=fen)) + "\n")
+                        played = sum(1 for _ in open(done_path, encoding="utf-8")) if os.path.exists(done_path) else 0
+                        if len(failed) >= 5 and len(failed) > MAX_FAILED * (played + len(failed)):
+                            raise SystemExit("%d of %d games failed %d times each: stopping" % (len(failed), played + len(failed), MAX_TRIES))
+                    continue
                 with lock:
                     with open(os.path.join(folder, "chunk.bin"), "ab") as f:
                         f.write(np.array(rows, dtype=gen.RECORD).tobytes())
@@ -218,11 +254,7 @@ def play(args, state):
                         f.write(json.dumps(dict(game=number, result=outcome, challenger=points, plies=len(moves), positions=len(rows))) + "\n")
                     print("  game %3d: %s in %d plies (challenger %.1f)" % (number, outcome, len(moves), points), flush=True)
         finally:
-            for e in (champion, challenger):
-                try:
-                    e.quit()
-                except Exception:
-                    pass
+            close(pair)
 
     import threading
     lock = threading.Lock()

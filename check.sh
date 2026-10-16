@@ -70,6 +70,15 @@ if [[ -n "$python" ]]; then
         "$python" "$here/harness/nnue/agree.py" "$release" "$work/random.nnue" --positions 150
 fi
 
+# The network's inner loops are assembly in two widths, and one binary carries
+# both. Unit tests hold each kernel to its portable loop; this holds the two
+# paths to each other from outside: the same positions searched to the same
+# depth with Avx2 on and off must give the same node count, score and move.
+# It is the gate to watch when a compiler upgrade rewrites inline assembly.
+if [[ -n "$python" ]]; then
+    gate "SSE2 and AVX2 kernels search the same tree" 0 "$python" "$here/harness/kernel_paths.py" "$release" "$here/net/machete.nnue" --depth 12
+fi
+
 # The output reconstruction multiplies a dot product by the centipawn scale,
 # and at the quantization limits that product exceeds int32 by 16%: it is safe
 # only because the sum is widened to 64 bits first. Nothing else here would

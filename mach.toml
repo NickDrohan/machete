@@ -1,6 +1,6 @@
 [project]
 id = "machete"
-version = "0.4.0"
+version = "0.4.1"
 mach = "^6.10"
 src = "src"
 out = "out/{target.name}/{profile.name}"
@@ -100,4 +100,4 @@ float_reassoc = false
 
 [dep.std]
 git = "https://github.com/briar-systems/mach-std"
-version = "^9.4"
+version = "^9.5"
