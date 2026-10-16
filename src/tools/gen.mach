@@ -1,7 +1,7 @@
 # machete.tools.gen: generate labelled training positions, in Mach
 #
 #   gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N]
-#       [versus ENGINE] [versus-nodes N]
+#       [versus ENGINE] [movetime MS]
 #
 # the Mach counterpart of harness/nnue/gen.py, and held to it: the teacher
 # engine plays itself from book positions and every position it passes
@@ -148,19 +148,21 @@ var ENGINE_DIR: [1024]u8;
 # by one engine before training. Positions from engines playing each other are
 # the games machete itself plays, which neither self-play nor human games are.
 var VERSUS: str = nil;
-# "versus-nodes N": the versus engine's budget where the teacher's is NODES.
-# Engines count nodes differently: at 1,500 each Stockfish 19 won 91% of its
-# games against Berserk 14 and lost none, which is not a contest worth learning
-# from. 0 gives both the same.
-var VERSUS_NODES: i64  = 0;
-var VERSUS_DIR:   [1024]u8;
-var NODES:        i64  = 1500;
-var GATE:         bool = false;
-var TAKEBACK_N:   i64  = 0;
-var TOTAL:        i64  = 0;
+# "movetime MS": every search gets this many milliseconds instead of a node
+# count, so each engine plays at its own full speed. Engines count nodes so
+# differently that equal node counts are not an equal contest (at 1,500 each
+# Stockfish 19 beat Berserk 14 in 91% of games and lost none); equal time is
+# how engines meet in play. A position's endgame boost (ENDGAME_NODES_FACTOR)
+# multiplies the time as it would the nodes. 0 searches to NODES.
+var MOVETIME:   i64  = 0;
+var VERSUS_DIR: [1024]u8;
+var NODES:      i64  = 1500;
+var GATE:       bool = false;
+var TAKEBACK_N: i64  = 0;
+var TOTAL:      i64  = 0;
 
 fun usage() i64 {
-    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N] [versus ENGINE] [versus-nodes N]");
+    print.eprintln("usage: gen <out.bin> <book.epd> <engine.exe> <positions> <nodes> <workers> <seed> [gate] [odds] [convert] [takeback N] [versus ENGINE] [movetime MS]");
     ret EXIT_USAGE;
 }
 
@@ -382,20 +384,42 @@ fun seat(w: *Worker) {
     w.seated = want;
 }
 
-# a node budget for the engine now seated: the teacher's as given, the versus
-# engine's in proportion to VERSUS_NODES (the endgame boost scales with it)
-fun scaled(w: *Worker, nodes: i64) i64 {
-    if (w.seated == 0 || VERSUS_NODES <= 0) { ret nodes; }
-    ret nodes * VERSUS_NODES / NODES;
+# the search limit for `nodes` (NODES, or NODES boosted in an endgame), after
+# `prefix`: "nodes N", or with MOVETIME the same proportion of MOVETIME
+fun limit_for(nodes: i64, prefix: str, into: *u8) {
+    var text: [32]u8;
+    var n:    i64 = 0;
+    for (prefix[n] != 0) {
+        text[n] = prefix[n];
+        n       = n + 1;
+    }
+    if (MOVETIME > 0) {
+        val word: str = "movetime ";
+        var i:    i64 = 0;
+        for (word[i] != 0) {
+            text[n + i] = word[i];
+            i           = i + 1;
+        }
+        text[n + i] = 0;
+        uci.fill(into, ?text[0], MOVETIME * nodes / NODES);
+        ret;
+    }
+    val word: str = "nodes ";
+    var i:    i64 = 0;
+    for (word[i] != 0) {
+        text[n + i] = word[i];
+        i           = i + 1;
+    }
+    text[n + i] = 0;
+    uci.fill(into, ?text[0], nodes);
 }
 
 # search the current position to `nodes`; false if the engine failed
 fun analyse(w: *Worker, nodes: i64, report: *uci.Report) bool {
     seat(w);
-    val budget: i64 = scaled(w, nodes);
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret false; }
     var limit: [32]u8;
-    uci.fill(?limit[0], "nodes ", budget);
+    limit_for(nodes, "", ?limit[0]);
     ret uci.go(?w.engine, ?limit[0], report);
 }
 
@@ -461,7 +485,7 @@ fun check_alternative(w: *Worker) Move {
     if (!uci.send(?w.engine, ?cmd[0]))   { ret mv.NONE; }
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret mv.NONE; }
     var limit: [32]u8;
-    uci.fill(?limit[0], "go nodes ", scaled(w, NODES));
+    limit_for(NODES, "go ", ?limit[0]);
     if (!uci.send(?w.engine, ?limit[0])) { ret mv.NONE; }
     var lines: [4]uci.Report;
     var k:     i64 = 0;
@@ -763,7 +787,7 @@ fun variety(w: *Worker, fallback: Move) Move {
     if (!uci.send(?w.engine, ?cmd[0]))   { ret fallback; }
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret fallback; }
     var limit: [32]u8;
-    uci.fill(?limit[0], "go nodes ", scaled(w, NODES));
+    limit_for(NODES, "go ", ?limit[0]);
     if (!uci.send(?w.engine, ?limit[0])) { ret fallback; }
     var lines: [4]uci.Report;
     var k:     i64 = 0;
@@ -916,9 +940,9 @@ fun main(argc: i64, argv: **u8) i64 {
         if (str_equals(argv[a], "gate"))    { GATE = true; }
         if (str_equals(argv[a], "odds"))    { OPENING_BALANCE = 700; }
         if (str_equals(argv[a], "convert")) { ADJUDICATE_AT = CLAMP + 1; }
-        if (str_equals(argv[a], "versus-nodes") && a + 1 < argc) {
-            VERSUS_NODES = int_arg(argv[a + 1], 0);
-            a            = a + 1;
+        if (str_equals(argv[a], "movetime") && a + 1 < argc) {
+            MOVETIME = int_arg(argv[a + 1], 0);
+            a        = a + 1;
         }
         if (str_equals(argv[a], "versus") && a + 1 < argc) {
             VERSUS = argv[a + 1];
