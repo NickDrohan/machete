@@ -1,4 +1,4 @@
-machete 0.4.0
+machete 0.4.1
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,7 +21,7 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.4.0 reads 768-wide format 3 networks: every one since 0.3.2 loads,
+            0.4.1 reads 768-wide format 3 networks: every one since 0.3.2 loads,
             0.3.1's and earlier do not.
   Ponder    supported: go ponder, ponderhit and stop.
   Repertoire  0 to 100 (default 40): prefer the author's openings - White the
@@ -31,6 +31,17 @@ Options:
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.4.0
+------------------------
+One thing, in the search: thirteen of the fifteen constants that decide how
+hard it prunes and reduces, tuned by SPSA in self-play (about 31,000 games).
+They had been inherited from other engines when machete still evaluated by
+hand. Against 0.4.0's search with the same network: +31 +/- 18 Elo at 10+0.1
+over 1,500 games, +14 +/- 28 at 60+0.6 over 600. Against Koivisto 9.0 over
+1,200 games at 10+0.1: 0.4.0 -308 +/- 28, 0.4.1 -291 +/- 27. The network is
+0.4.0's. Every constant is still a UCI option (RfpMargin, LmrDiv and so on).
 
 
 What changed since 0.3.6

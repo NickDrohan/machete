@@ -92,35 +92,35 @@ fun ln_f64(x: f64) f64 {
 # setoption moves one, clamped to a range that keeps the search sane.
 # SPSA tunes them together; a tuned set is written back here as defaults.
 # reverse futility margin per ply
-pub var RFP_MARGIN: i64 = 85;
+pub var RFP_MARGIN: i64 = 57;
 # futility margin at depth 0
-pub var FUT_BASE: i64 = 120;
+pub var FUT_BASE: i64 = 115;
 # futility margin per ply
-pub var FUT_MUL: i64 = 110;
+pub var FUT_MUL: i64 = 99;
 # late move pruning: quiet moves tried before depth^2 more
-pub var LMP_BASE: i64 = 6;
+pub var LMP_BASE: i64 = 7;
 # null move reduction, fixed part
-pub var NMP_BASE: i64 = 3;
+pub var NMP_BASE: i64 = 2;
 # null move reduction: a ply more per this many of depth
 pub var NMP_DIV: i64 = 3;
 # null move reduction: a ply more per this many cp above beta
-pub var NMP_EVAL_DIV: i64 = 200;
+pub var NMP_EVAL_DIV: i64 = 181;
 # late move reduction table, constant term, in hundredths
-pub var LMR_BASE: i64 = 75;
+pub var LMR_BASE: i64 = 86;
 # late move reduction table, divisor of ln(d) ln(m), in hundredths
-pub var LMR_DIV: i64 = 225;
+pub var LMR_DIV: i64 = 213;
 # quiet history worth one ply of reduction
-pub var LMR_HIST_DIV: i64 = 4096;
+pub var LMR_HIST_DIV: i64 = 3849;
 # shallowest node that tries a singular extension
-pub var SE_DEPTH: i64 = 8;
+pub var SE_DEPTH: i64 = 6;
 # singular bar: table score less this per ply
 pub var SE_MARGIN: i64 = 2;
 # aspiration window half-width
-pub var ASP_WINDOW: i64 = 25;
+pub var ASP_WINDOW: i64 = 19;
 # quiescence delta pruning margin
-pub var QS_DELTA: i64 = 200;
+pub var QS_DELTA: i64 = 203;
 # internal iterative reduction from this depth
-pub var IIR_DEPTH: i64 = 6;
+pub var IIR_DEPTH: i64 = 5;
 
 fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
     if (!str_equals(name, want)) { ret false; }
@@ -1485,9 +1485,13 @@ test unsettled_move_gets_more_time_than_settled_one {
 
 test tunables_set_clamp_and_reach_the_search {
     if (set_tunable("NoSuchOption", 1)) { ret 1; }
+    # whatever the defaults are, put back afterwards: the test must not
+    # assume them (the 0.4.1 tune moved both)
+    val lmr_div: i64 = LMR_DIV;
+    val rfp:     i64 = RFP_MARGIN;
     # clamped into range, and a table-backed one rebuilds its table
-    if (!set_tunable("LmrDiv", 99999) || LMR_DIV != 400) { ret 2; }
-    if (!set_tunable("LmrDiv", 225) || LMR_DIV != 225)   { ret 3; }
+    if (!set_tunable("LmrDiv", 99999) || LMR_DIV != 400)       { ret 2; }
+    if (!set_tunable("LmrDiv", lmr_div) || LMR_DIV != lmr_div) { ret 3; }
     # a changed margin changes the tree; restoring it restores the tree (each
     # search from an empty table, so none inherits another's entries)
     var p: Position;
@@ -1498,7 +1502,7 @@ test tunables_set_clamp_and_reach_the_search {
     if (!set_tunable("RfpMargin", 40)) { ret 5; }
     tt.clear();
     val moved: i64 = search_depth(?p, 7, ?s);
-    if (!set_tunable("RfpMargin", 85)) { ret 6; }
+    if (!set_tunable("RfpMargin", rfp)) { ret 6; }
     tt.clear();
     val again: i64 = search_depth(?p, 7, ?s);
     if (moved == base) { ret 7; }

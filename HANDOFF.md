@@ -1,5 +1,9 @@
 # Handing off machete
 
+## 2026-10-15: 0.4.1
+
+**0.4.1 is released and on the lichess bot.** One change from 0.4.0: thirteen search constants, tuned by SPSA (5,746 steps on 0.3.0, continued on 0.4.0 to 15,457; `harness/spsa.py`, state `E:/machete/claude/r3/spsa040.json`). Against 0.4.0's search with its network: +31 +/- 18 at 10+0.1 (1,500 games, no early stop), +14 +/- 28 at 60+0.6 (600). Against Koivisto 9.0, 1,200 games each at 10+0.1: 0.4.0 -308 +/- 28, 0.4.1 -291 +/- 27. The packaged build searches the same tree as 0.4.0 with the tuned values as options (635,361 nodes to depth 14 both ways). Bench 197,209. `release/notes-0.4.1.md` has the account. The one test that assumed the old defaults (`tunables_set_clamp_and_reach_the_search`) now restores whatever the defaults are.
+
 ## 2026-10-10: 0.4.0
 
 **0.4.0 is released and on the lichess bot.** One change from 0.3.6: the network, C33F140, which is C33's recipe (364M) plus 140M Fischer Random positions - six 20M chunks played from starts where one side is really but not decisively worse (`harness/nnue/deficit960_book.py`, on the `feat/deficit960` branch) and 20M from compensated trades. Against C33 on 0.3.6's executable: +27 +/- 28 at 40,000 nodes (600 games), +20 +/- 22 at 10+0.1 (988, SPRT [0, 10] accepted), +32 +/- 34 at 60+0.6 (409, accepted). 0.4.0 as packaged against 0.3.6 as released: +22 +/- 23 (853, accepted). `check.sh` 35 of 35. `release/notes-0.4.0.md` has the account.
