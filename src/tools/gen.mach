@@ -94,25 +94,32 @@ val ROWS_CAP:    i64 = 320;
 # keys:   repetition keys of the positions so far, and how many times each was seen
 # rows:   the game's records, results filled in at the end
 rec Worker {
-    engine:    uci.Engine;
-    p:         Position;
-    r:         rng.Rng;
-    index:     i64;
-    written:   i64;
-    share:     i64;
-    next_book: i64;
-    out:       fs.File;
-    failed:    bool;
-    cmd:       [8192]u8;
-    cmdlen:    i64;
-    movelen:   i64;
-    keys:      [320]u64;
-    counts:    [320]i64;
-    nkeys:     i64;
-    rows:      [22400]u8;
-    turns:     [320]u8;
-    nrows:     i64;
-    ep_pot:    i64;
+    # the engine with the move. With "versus" the other one waits in `other`,
+    # and seat() swaps them when the side to move belongs to it
+    engine: uci.Engine;
+    other:  uci.Engine;
+    # which engine is in `engine`: 0 the teacher (argv 3), 1 the versus engine
+    seated: i64;
+    # 0 when the teacher has White in this game, 1 when the versus engine has
+    first_seat: i64;
+    p:          Position;
+    r:          rng.Rng;
+    index:      i64;
+    written:    i64;
+    share:      i64;
+    next_book:  i64;
+    out:        fs.File;
+    failed:     bool;
+    cmd:        [8192]u8;
+    cmdlen:     i64;
+    movelen:    i64;
+    keys:       [320]u64;
+    counts:     [320]i64;
+    nkeys:      i64;
+    rows:       [22400]u8;
+    turns:      [320]u8;
+    nrows:      i64;
+    ep_pot:     i64;
     # plies left to play only the teacher's best move
     sharp_hold:  i64;
     start_fen:   [256]u8;
@@ -133,6 +140,14 @@ var LINES:      *i64 = nil; # the start of each book line in BOOK
 var NLINES:     i64  = 0;
 var ENGINE:     str  = nil;
 var ENGINE_DIR: [1024]u8;
+# "versus <engine>": games between two engines, colours alternating game by
+# game. Each move is searched, and its position scored, by the engine whose
+# move it is, and the record's engine byte says which (0 the teacher, 1 this
+# one): their centipawn scales differ, so a corpus made this way is relabelled
+# by one engine before training. Positions from engines playing each other are
+# the games machete itself plays, which neither self-play nor human games are.
+var VERSUS:     str  = nil;
+var VERSUS_DIR: [1024]u8;
 var NODES:      i64  = 1500;
 var GATE:       bool = false;
 var TAKEBACK_N: i64  = 0;
@@ -349,8 +364,21 @@ fun push_move(w: *Worker, m: Move) {
     w.movelen = w.movelen + 1;
 }
 
+# put the engine whose move it is into w.engine (a no-op without "versus")
+fun seat(w: *Worker) {
+    if (VERSUS == nil) { ret; }
+    var want: i64 = w.first_seat;
+    if (w.p.side != pos.WHITE) { want = 1 - w.first_seat; }
+    if (want == w.seated)      { ret; }
+    val held: uci.Engine = w.engine;
+    w.engine = w.other;
+    w.other  = held;
+    w.seated = want;
+}
+
 # search the current position to `nodes`; false if the engine failed
 fun analyse(w: *Worker, nodes: i64, report: *uci.Report) bool {
+    seat(w);
     if (!uci.send(?w.engine, ?w.cmd[0])) { ret false; }
     var limit: [32]u8;
     uci.fill(?limit[0], "nodes ", nodes);
@@ -413,6 +441,7 @@ fun flush_rows(w: *Worker, outcome: i64) bool {
 }
 
 fun check_alternative(w: *Worker) Move {
+    seat(w);
     var cmd: [64]u8;
     uci.fill(?cmd[0], "setoption name MultiPV value ", VARIETY_LINES);
     if (!uci.send(?w.engine, ?cmd[0]))   { ret mv.NONE; }
@@ -501,7 +530,7 @@ fun play_branch(w: *Worker, branch_idx: i64) {
             var label: i64 = score;
             if (ending) { label = ending_label(?report); }
             binpack.write_record(?w.p, label, 0, ?w.rows[w.nrows * 70]);
-            w.rows[w.nrows * 70 + 69] = 0;
+            w.rows[w.nrows * 70 + 69] = w.seated::u8;
             w.turns[w.nrows]          = w.p.side;
             w.nrows                   = w.nrows + 1;
         }
@@ -551,6 +580,7 @@ fun play_branch(w: *Worker, branch_idx: i64) {
 }
 
 fun play_game(w: *Worker) {
+    if (VERSUS != nil) { w.first_seat = 1 - w.first_seat; }
     w.nrows      = 0;
     w.nkeys      = 0;
     w.ntree_keys = 0;
@@ -629,7 +659,7 @@ fun play_game(w: *Worker) {
             var label: i64 = score;
             if (ending) { label = ending_label(?report); }
             binpack.write_record(?w.p, label, 0, ?w.rows[w.nrows * 70]);
-            w.rows[w.nrows * 70 + 69] = 0; # the engine: gen.py's worker index % teachers, one teacher here
+            w.rows[w.nrows * 70 + 69] = w.seated::u8; # the engine that scored it: 0 the teacher, 1 the versus engine
             w.turns[w.nrows]          = w.p.side;
             w.nrows                   = w.nrows + 1;
         }
@@ -713,6 +743,7 @@ fun play_game(w: *Worker) {
 # a near-best move from a multi-line search: any of the teacher's lines within
 # VARIETY_MARGIN of its best, at random (gen.py's variety)
 fun variety(w: *Worker, fallback: Move) Move {
+    seat(w);
     var cmd: [64]u8;
     uci.fill(?cmd[0], "setoption name MultiPV value ", VARIETY_LINES);
     if (!uci.send(?w.engine, ?cmd[0]))   { ret fallback; }
@@ -772,10 +803,23 @@ fun worker_entry(arg: *u8) {
         w.failed = true;
         ret;
     }
+    w.seated     = 0;
+    w.first_seat = w.index % 2;
+    if (VERSUS != nil) {
+        var vdir: str = nil;
+        if (VERSUS_DIR[0] != 0) { vdir = ?VERSUS_DIR[0]; }
+        if (!uci.start(?w.other, VERSUS, vdir) || !uci.init(?w.other, 1, HASH_MB)) {
+            print.eprintlnf("worker {}: cannot start the versus engine", w.index);
+            uci.stop(?w.engine);
+            w.failed = true;
+            ret;
+        }
+    }
     for (w.written < w.share && !w.failed) {
         play_game(w);
     }
     uci.stop(?w.engine);
+    if (VERSUS != nil) { uci.stop(?w.other); }
 }
 
 fun shard_name(out: str, index: i64, name: *u8) {
@@ -827,6 +871,23 @@ fun join_shards(out: str, workers: i64) i64 {
     ret total / 70;
 }
 
+# the folder an engine runs in, as panel.open_engine starts it: the one its
+# path names, or nothing (where gen was started) for a relative path, which is
+# relative to here and not to the engine's folder
+fun directory_of(engine: str, dir: *u8) {
+    var cut: i64 = 0 - 1;
+    var i:   i64 = 0;
+    for (engine[i] != 0 && i < 1023) {
+        dir[i] = engine[i];
+        if (engine[i] == '/' || engine[i] == '\\') { cut = i; }
+        i = i + 1;
+    }
+    if (cut > 0) { dir[cut] = 0; }
+    or           { dir[0] = 0; }
+    val absolute: bool = engine[0] == '/' || engine[0] == '\\' || (engine[0] != 0 && engine[1] == ':');
+    if (!absolute) { dir[0] = 0; }
+}
+
 #[symbol("main")]
 fun main(argc: i64, argv: **u8) i64 {
     pos.init();
@@ -841,6 +902,11 @@ fun main(argc: i64, argv: **u8) i64 {
         if (str_equals(argv[a], "gate"))    { GATE = true; }
         if (str_equals(argv[a], "odds"))    { OPENING_BALANCE = 700; }
         if (str_equals(argv[a], "convert")) { ADJUDICATE_AT = CLAMP + 1; }
+        if (str_equals(argv[a], "versus") && a + 1 < argc) {
+            VERSUS = argv[a + 1];
+            directory_of(VERSUS, ?VERSUS_DIR[0]);
+            a = a + 1;
+        }
         if (str_equals(argv[a], "takeback") && a + 1 < argc) {
             TAKEBACK_N = int_arg(argv[a + 1], 0);
             a          = a + 1;
@@ -855,23 +921,11 @@ fun main(argc: i64, argv: **u8) i64 {
         ret EXIT_FAIL;
     }
     ENGINE = argv[3];
-    # the teacher runs in its own folder, as panel.open_engine starts it
-    var cut: i64 = 0 - 1;
-    var i:   i64 = 0;
-    for (ENGINE[i] != 0 && i < 1023) {
-        ENGINE_DIR[i] = ENGINE[i];
-        if (ENGINE[i] == '/' || ENGINE[i] == '\\') { cut = i; }
-        i = i + 1;
-    }
-    if (cut > 0) { ENGINE_DIR[cut] = 0; }
-    or           { ENGINE_DIR[0] = 0; }
-    # a relative path is relative to where gen was started, not to the
-    # engine's folder: start such an engine where we are
-    val absolute: bool = ENGINE[0] == '/' || ENGINE[0] == '\\' || (ENGINE[0] != 0 && ENGINE[1] == ':');
-    if (!absolute) { ENGINE_DIR[0] = 0; }
+    directory_of(ENGINE, ?ENGINE_DIR[0]);
     print.printlnf("{} book positions, {} workers, {} nodes, teacher {}", NLINES, workers, NODES, ENGINE);
+    if (VERSUS != nil) { print.printlnf("versus {}, colours alternating game by game", VERSUS); }
     atomic.store(?TOTAL, 0);
-    i = 0;
+    var i: i64 = 0;
     for (i < workers) {
         val w: *Worker = ?WORKERS[i];
         w.index     = i;
