@@ -1,11 +1,12 @@
-# machete health, 2026-10-17 00:01
+# machete health, 2026-10-17 08:49
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
+- ALERT: the bot has started no game in 9.6 h
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
-- processes: all running
-- gpu: running TRAIN-C33F280P3S8
-- laneA: running GEN-EQ-ALEXANDRIA-PLENTY
+- processes: DOWN: GPU queue runner, lane A runner
+- ran recover.ps1 for: GPU queue runner, lane A runner
+- gpu: running nothing
+- laneA: running nothing
 - laneB: running GEN-EQ-SF-RECKLESS
-- bot: last new game 0.8 h ago
-- bot: lichess's daily limit on games against bots holds it until 05:15
+- bot: last new game 9.6 h ago
