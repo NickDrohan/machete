@@ -866,6 +866,16 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (static_eval - margin >= beta && static_eval < MATE_FOUND) { ret static_eval - margin; }
     }
 
+    # razoring, the mirror image: in the last two plies, a position so far
+    # below alpha that a piece would not lift it is checked by the capture
+    # search alone, and given up if that agrees. Not in a singular check,
+    # whose bar is not a real alpha. (From team cursor's battle-stack,
+    # cursor2/battle-stack 5443518, measured there only in a bundle.)
+    if (!is_pv && !in_check && excluded == mv.NONE && depth <= 2 && static_eval < MATE_FOUND && static_eval + 200 + 150 * depth <= alpha) {
+        val razor: i64 = quiesce(s, p, alpha, beta, ply);
+        if (razor <= alpha) { ret razor; }
+    }
+
     # internal iterative reduction, but never in a principal variation node:
     # losing a ply where the move actually gets chosen is not worth the
     # ordering it saves
