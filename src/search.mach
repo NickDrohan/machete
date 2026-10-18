@@ -919,7 +919,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             i = i + 1;
             cnt;
         }
-        val test: bool = pos.needs_test(p, m, pins, in_check);
+        # read before the move is made: what kind of move it is on this board
+        # (the recapture and pawn extensions below, from team cursor's
+        # battle-stack, cursor2/battle-stack eeab99b)
+        val recapture: bool = is_recapture(s, m, ply);
+        val pawn_rank: i64  = pawn_to_rank(p, m);
+        val seventh:   bool = pawn_rank == 6 && !mv.is_promotion(m);
+        val far_push:  bool = pawn_rank >= 5 && !mv.is_capture(m) && !mv.is_promotion(m);
+        val test:      bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
         if (test && pos.left_in_check(p)) {
             pos.unmake(p);
@@ -964,6 +971,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (legal == 1) {
             var grow: i64 = 0;
             if (m == tt_move) { grow = extension; }
+            # the first move a ply deeper when it recaptures near the horizon,
+            # or puts a pawn on the seventh: both are where a shallow search
+            # misjudges an exchange or a promotion race. Two plies at most,
+            # and none past twice the iteration's depth.
+            if (recapture && depth <= 5) { grow = grow + 1; }
+            if (seventh && depth <= 4)   { grow = grow + 1; }
+            if (grow > 2)                { grow = 2; }
+            if (ply >= 2 * s.root_depth) { grow = 0; }
             s.known_check[ply + 1] = 1 + gives::i64;
             score                  = 0 - search_node(s, p, depth - 1 + grow, 0 - hi, 0 - lo, ply + 1, true);
         }
@@ -983,7 +998,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             # that plays better, so the exclusions are not here.
             var reduction: i64  = 0;
             val quiet:     bool = !mv.is_capture(m) && !mv.is_promotion(m);
-            if (depth >= 3 && legal > 3 && !in_check && quiet) {
+            # a pawn pushed to the sixth rank or beyond is never reduced
+            if (depth >= 3 && legal > 3 && !in_check && quiet && !far_push) {
                 var d: i64 = depth;
                 if (d > 63) { d = 63; }
                 var n: i64 = legal;
@@ -1082,6 +1098,22 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
 fun has_pieces(p: *Position, color: u8) bool {
     ret (p.pieces[pos.code(color, pos.KNIGHT)] | p.pieces[pos.code(color, pos.BISHOP)]
         | p.pieces[pos.code(color, pos.ROOK)] | p.pieces[pos.code(color, pos.QUEEN)]) != 0;
+}
+
+# whether `m` takes back on the square the opponent's last move captured on
+fun is_recapture(s: *Search, m: Move, ply: i64) bool {
+    if (ply <= 0 || !mv.is_capture(m)) { ret false; }
+    val previous: Move = s.played[ply - 1];
+    ret previous != mv.NONE && mv.is_capture(previous) && mv.to(previous) == mv.to(m);
+}
+
+# the rank a pawn move lands on, counted from the mover's side (6 is the
+# seventh); 0 for a move by anything else
+fun pawn_to_rank(p: *Position, m: Move) i64 {
+    if (pos.kind_of(p.board[mv.from(m)]) != pos.PAWN) { ret 0; }
+    val rank: i64 = mv.to(m) >> 3;
+    if (p.side == pos.WHITE) { ret rank; }
+    ret 7 - rank;
 }
 
 fun copy_pv(s: *Search, m: Move, ply: i64) {
