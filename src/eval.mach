@@ -226,9 +226,58 @@ fun side_score(p: *Position, color: u8, phase: i64) i64 {
 pub fun evaluate(p: *Position) i64 {
     if (nn.loaded && p.accs != nil) {
         nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(p, pos.WHITE), pos.king_square(p, pos.BLACK));
-        ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])) + mop_up(p);
+        ret drawish(p, nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])) + mop_up(p));
     }
-    ret classical(p) + mop_up(p);
+    ret drawish(p, classical(p) + mop_up(p));
+}
+
+# Material the network still scores as winning though it seldom or never is,
+# scaled toward 0 so the search stops steering into it (a dead ending pushed
+# until the fifty-move rule, or a trade into one): two knights against a bare
+# king, which cannot force mate (an eighth); bishops of opposite colours and
+# nothing else but pawns (a half); a bishop with only rook pawns whose
+# promotion square is the other colour, against a bare king (an eighth). From
+# team cursor's battle-stack (cursor2/battle-stack eeab99b), measured there
+# only as part of a bundle.
+fun drawish(p: *Position, score: i64) i64 {
+    if ((p.pieces[pos.code(pos.WHITE, pos.QUEEN)] | p.pieces[pos.code(pos.BLACK, pos.QUEEN)]) != 0) { ret score; }
+    if ((p.pieces[pos.code(pos.WHITE, pos.ROOK)] | p.pieces[pos.code(pos.BLACK, pos.ROOK)]) != 0)   { ret score; }
+    val wn:    i64 = bb.count(p.pieces[pos.code(pos.WHITE, pos.KNIGHT)]);
+    val bn:    i64 = bb.count(p.pieces[pos.code(pos.BLACK, pos.KNIGHT)]);
+    val wb:    i64 = bb.count(p.pieces[pos.code(pos.WHITE, pos.BISHOP)]);
+    val bs:    i64 = bb.count(p.pieces[pos.code(pos.BLACK, pos.BISHOP)]);
+    val pawns: u64 = p.pieces[pos.code(pos.WHITE, pos.PAWN)] | p.pieces[pos.code(pos.BLACK, pos.PAWN)];
+    # two knights cannot force mate against a bare king
+    if (pawns == 0 && wb == 0 && bs == 0 && ((wn == 2 && bn == 0) || (bn == 2 && wn == 0))) { ret score / 8; }
+    # bishops of opposite colours, nothing else but pawns
+    if (wn == 0 && bn == 0 && wb == 1 && bs == 1) {
+        val white: i64 = bb.lsb(p.pieces[pos.code(pos.WHITE, pos.BISHOP)]);
+        val black: i64 = bb.lsb(p.pieces[pos.code(pos.BLACK, pos.BISHOP)]);
+        if (square_colour(white) != square_colour(black)) { ret score / 2; }
+    }
+    # the wrong bishop: rook pawns only, promotion square the bishop cannot cover
+    if (wn == 0 && bn == 0 && wb + bs == 1) {
+        var strong: u8 = pos.WHITE;
+        if (wb == 0) { strong = pos.BLACK; }
+        val weak: u8  = strong ^ 1;
+        val mine: u64 = p.pieces[pos.code(strong, pos.PAWN)];
+        if (bb.count(p.occ[weak]) == 1 && mine != 0) {
+            var file: i64 = 0 - 1;
+            if ((mine & ~bb.FILE_A) == 0) { file = 0; }
+            if ((mine & ~bb.FILE_H) == 0) { file = 7; }
+            if (file >= 0) {
+                var promotion: i64 = file;
+                if (strong == pos.WHITE)                                                                       { promotion = file + 56; }
+                if (square_colour(bb.lsb(p.pieces[pos.code(strong, pos.BISHOP)])) != square_colour(promotion)) { ret score / 8; }
+            }
+        }
+    }
+    ret score;
+}
+
+# 0 for a dark square, 1 for a light one
+fun square_colour(sq: i64) i64 {
+    ret ((sq & 7) + (sq >> 3)) % 2;
 }
 
 # Mop-up: against a bare king, what wins is driving it to the edge and
@@ -361,6 +410,30 @@ test passed_isolated_pawns_recognised {
     # the same pawn with a black pawn directly in front: no longer passed
     if (!pos.set_fen(?p, "4k3/8/4P3/4p3/8/8/8/4K3 w - - 0 1")) { ret 2; }
     if (evaluate(?p) >= passed)                                { ret 3; }
+    ret 0;
+}
+
+test drawish_material_scaled_toward_zero {
+    var p: Position;
+    # opposite-coloured bishops with an extra pawn: half of what the same
+    # position scores with same-coloured bishops
+    if (!pos.set_fen(?p, "4k3/2b5/8/3P4/8/8/2P5/4KB2 w - - 0 1")) { ret 1; }
+    val raw: i64 = classical(?p) + mop_up(?p);
+    if (evaluate(?p) != drawish(?p, raw) || drawish(?p, raw) != raw / 2) { ret 2; }
+    # same-coloured bishops: untouched
+    if (!pos.set_fen(?p, "4k3/1b6/8/3P4/8/8/2P5/4KB2 w - - 0 1")) { ret 3; }
+    if (drawish(?p, 400) != 400)                                  { ret 4; }
+    # two knights against a bare king, and the wrong bishop with an h-pawn
+    if (!pos.set_fen(?p, "7k/8/8/8/8/8/8/1NN1K3 w - - 0 1")) { ret 5; }
+    if (drawish(?p, 800) != 100)                             { ret 6; }
+    if (!pos.set_fen(?p, "7k/8/8/8/8/8/7P/4KB2 w - - 0 1"))  { ret 7; }
+    if (drawish(?p, 400) != 50)                              { ret 8; }
+    # the right bishop for that pawn (dark-squared, h8 is dark): untouched
+    if (!pos.set_fen(?p, "7k/8/8/8/8/8/7P/2B1K3 w - - 0 1")) { ret 9; }
+    if (drawish(?p, 400) != 400)                             { ret 10; }
+    # anything with a rook or queen: untouched
+    if (!pos.set_fen(?p, "4k3/2b5/8/3P4/8/8/2P5/R3KB2 w - - 0 1")) { ret 11; }
+    if (drawish(?p, 400) != 400)                                   { ret 12; }
     ret 0;
 }
 
