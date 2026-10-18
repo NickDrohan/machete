@@ -378,6 +378,10 @@ pub rec Search {
     thread_id: i64;
     killers:   [64][2]Move;
     history:   [12][64]i64;
+    # the same for captures, by the capturing piece and the square taken on,
+    # added to their order among captures with the same exchange value (from
+    # team cursor's battle-stack, cursor2/battle-stack 8ddb88d)
+    cap_history: [12][64]i64;
     # the quiet move that refuted the same reply last time, indexed by the
     # piece the opponent just moved and where it landed
     counter: [12][64]Move;
@@ -406,9 +410,10 @@ pub fun reset(s: *Search) {
     for (pc < 12) {
         var sq: i64 = 0;
         for (sq < 64) {
-            s.history[pc][sq] = 0;
-            s.counter[pc][sq] = mv.NONE;
-            sq                = sq + 1;
+            s.history[pc][sq]     = 0;
+            s.cap_history[pc][sq] = 0;
+            s.counter[pc][sq]     = mv.NONE;
+            sq                    = sq + 1;
         }
         pc = pc + 1;
     }
@@ -451,8 +456,9 @@ pub fun next_search(s: *Search) {
     for (pc < 12) {
         var sq: i64 = 0;
         for (sq < 64) {
-            s.history[pc][sq] = s.history[pc][sq] / 2;
-            sq                = sq + 1;
+            s.history[pc][sq]     = s.history[pc][sq] / 2;
+            s.cap_history[pc][sq] = s.cap_history[pc][sq] / 2;
+            sq                    = sq + 1;
         }
         pc = pc + 1;
     }
@@ -507,15 +513,23 @@ fun correction_update(s: *Search, p: *Position, raw: i64, found: i64, depth: i64
 }
 
 fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
-    val piece: u8  = p.board[mv.from(m)];
-    val to:    i64 = mv.to(m);
+    reward(?s.history[p.board[mv.from(m)]][mv.to(m)], depth, good);
+}
+
+fun cap_history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
+    reward(?s.cap_history[p.board[mv.from(m)]][mv.to(m)], depth, good);
+}
+
+# one history entry moved toward +/-16384 by depth squared, in the gravity
+# form: the further it already is, the less a result moves it
+fun reward(entry: *i64, depth: i64, good: bool) {
     var bonus: i64 = depth * depth;
     if (bonus > 400) { bonus = 400; }
     if (!good)       { bonus = 0 - bonus; }
     var magnitude: i64 = bonus;
     if (magnitude < 0) { magnitude = 0 - magnitude; }
-    val current: i64 = s.history[piece][to];
-    s.history[piece][to] = current + bonus * 32 - current * magnitude / 512;
+    val current: i64 = @entry;
+    @entry = current + bonus * 32 - current * magnitude / 512;
 }
 
 # the counter-move slot for whatever the opponent just played
@@ -589,9 +603,10 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (mv.is_capture(m)) {
         # a capture that survives the recapture sequence is worth trying early;
         # one that loses material belongs below the quiet moves that might work
-        val gain: i64 = see.evaluate(p, m);
-        if (gain >= 0) { ret GOOD_CAPTURE + gain * 100 + capture_score(p, m); }
-        ret LOSING_CAPTURE + gain;
+        val gain:   i64 = see.evaluate(p, m);
+        val record: i64 = s.cap_history[p.board[mv.from(m)]][mv.to(m)];
+        if (gain >= 0) { ret GOOD_CAPTURE + gain * 100 + capture_score(p, m) + record; }
+        ret LOSING_CAPTURE + gain + record;
     }
     if (m == s.killers[ply][0])    { ret 700000000; }
     if (m == s.killers[ply][1])    { ret 600000000; }
@@ -890,6 +905,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var legal:     i64  = 0;
     var flag:      u8   = tt.UPPER;
     var quiets:    [64]Move;
+    var captures:  [64]Move;
+    var capture_n: i64  = 0;
     var quiet_n:   i64  = 0;
 
     # futility: near the horizon, a quiet move that cannot lift a losing
@@ -953,6 +970,10 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
             quiets[quiet_n] = m;
             quiet_n         = quiet_n + 1;
+        }
+        if (mv.is_capture(m) && capture_n < 64) {
+            captures[capture_n] = m;
+            capture_n           = capture_n + 1;
         }
         var score: i64 = 0;
         # the root's variety bonus (see root_bonus): the child is searched
@@ -1044,6 +1065,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                         for (q < quiet_n) {
                             if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false); }
                             q = q + 1;
+                        }
+                    }
+                    or (mv.is_capture(m)) {
+                        cap_history_update(s, p, m, depth, true);
+                        var c: i64 = 0;
+                        for (c < capture_n) {
+                            if (captures[c] != m) { cap_history_update(s, p, captures[c], depth, false); }
+                            c = c + 1;
                         }
                     }
                     flag = tt.LOWER;
