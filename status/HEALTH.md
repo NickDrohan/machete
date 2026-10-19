@@ -1,10 +1,11 @@
-# machete health, 2026-10-18 19:02
+# machete health, 2026-10-18 20:04
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
-- processes: all running
-- gpu: running TRAIN-C33F280P3R
-- laneA: running PORT-razor
-- laneB: running GEN-IMB-SF-OBSIDIAN-1
+- processes: DOWN: lane A runner
+- ran recover.ps1 for: lane A runner
+- gpu: running nothing
+- laneA: running nothing
+- laneB: running GEN-EQ-OBSIDIAN-RECKLESS
 - bot: last new game 0.2 h ago
