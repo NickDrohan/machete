@@ -578,10 +578,13 @@ fun capture_score(p: *Position, m: Move) i64 {
 }
 
 # a capture that survives the exchange scores about GOOD_CAPTURE; a losing
-# one scores LOSING_CAPTURE plus its (negative) exchange, under the quiet moves
-# that might work, and so below LOSING_CAPTURE
+# one scores LOSING_CAPTURE plus its (negative) exchange, so below LOSING_CAPTURE.
+# LOSING_CAPTURE is negative and further from zero than any history score can
+# reach (+/-16384), so a losing capture comes after every quiet move, however
+# badly its history reads. At +50,000,000 it had been ahead of all the quiet
+# moves but the killers and the counter move.
 val GOOD_CAPTURE:   i64 = 800000000;
-val LOSING_CAPTURE: i64 = 50000000;
+val LOSING_CAPTURE: i64 = 0 - 50000000;
 
 fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (m == tt_move)                                            { ret 1000000000; }
@@ -1377,6 +1380,18 @@ test finds_verified_mate_two {
 test finds_verified_mate_three {
     tt.clear();
     if (!finds_move("4Q3/2k3P1/8/2p5/2P5/2PK4/8/8 w - - 1 62", 6, "g7g8q")) { ret 1; }
+    ret 0;
+}
+
+test losing_capture_orders_after_every_quiet_move {
+    # the cheapest losing capture (a pawn's worth thrown away) against the
+    # quiet move with the worst history there can be
+    val losing: i64 = LOSING_CAPTURE - 100;
+    if (losing >= 0 - HISTORY_MAX) { ret 1; }
+    # and still below LOSING_CAPTURE, which quiescence reads to skip them
+    if (losing >= LOSING_CAPTURE)  { ret 2; }
+    # a winning capture still comes first
+    if (GOOD_CAPTURE <= HISTORY_MAX) { ret 3; }
     ret 0;
 }
 
