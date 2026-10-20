@@ -72,8 +72,9 @@ pub val ROLES: bool = false;
 #      on the d- or e-file), or neither; endgame where the side reading has a
 #      passed pawn, and where it has none
 # A capture or a pawn move can change the layer, so like ROLES this builds
-# every half through the refresh cache.
-pub val LAYERS:      i64 = 0;
+# every half through the refresh cache. Since 0.5.0 the release is built with
+# three (0 builds king zones again, KING_BUCKETS of them).
+pub val LAYERS:      i64 = 3;
 val     OPENING_MEN: i64 = 28;
 
 # a channel by kind: pawn, knight (and the second, one higher), bishop, rook
@@ -84,7 +85,8 @@ pub val HIDDEN:  i64    = 768;
 # king zones, per side, after mirroring the king onto files a-d:
 #   rank 1: a-b, c-d     rank 2: a-b, c-d
 #   ranks 3-4: a-b, c-d  ranks 5-8: a-b, c-d
-pub val KING_BUCKETS: i64 = 8;
+# (8 for king zones; with LAYERS it is the number of layers)
+pub val KING_BUCKETS: i64 = 3;
 
 # output layers, one per band of piece counts: an opening and a rook ending
 # want different things from the same hidden layer, and eight small output
