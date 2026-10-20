@@ -1,4 +1,4 @@
-# machete health, 2026-10-20 11:17
+# machete health, 2026-10-20 12:19
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
@@ -6,5 +6,5 @@ Checked every few minutes from D: by D:/machete-health/health.py.
 - processes: all running
 - gpu: running TRAIN-C33F280P3D15K
 - laneA: running GEN-ROOK11
-- laneB: running GEN-EQ-OBSIDIAN-RECKLESS
+- laneB: running GEN-IMB-SF-OBSIDIAN-1
 - bot: last new game 0.0 h ago
