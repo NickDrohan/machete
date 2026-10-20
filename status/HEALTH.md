@@ -1,10 +1,11 @@
-# machete health, 2026-10-20 16:10
+# machete health, 2026-10-20 16:53
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
+- ALERT: gpu has had nothing to run for 16 min and its backlog is empty
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: all running
-- gpu: running TRAIN-C33F280P3D15K
-- laneA: running RELEASE-050-041
+- gpu: running nothing
+- laneA: running PORT-badcap
 - laneB: running GEN-IMB-SF-OBSIDIAN-1
-- bot: last new game 0.2 h ago
+- bot: last new game 0.0 h ago
