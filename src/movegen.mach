@@ -262,7 +262,15 @@ test nnue_incremental_accumulator_matches_fresh_every_move {
     # this line means anything
     var twin: Position = p;
     pos.attach(?twin, nn.stack(1));
+    # attach leaves a half owing in a build with piece roles; building it is a no-op otherwise
+    nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
+    nn.materialise(twin.accs, twin.acc_top, ?twin.board[0], pos.king_square(?twin, pos.WHITE), pos.king_square(?twin, pos.BLACK));
     if (!accs_equal(?p.accs[0], ?twin.accs[0])) { ret 2; }
+
+    # an accumulator of the test's own, outside the engine's stacks: it has no
+    # refresh cache, so what is built on it is built from the bias and the
+    # board, the long way
+    var solo: [1]nn.Acc;
 
     # a random game: captures, promotions, castling and en passant all turn up.
     # generate_legal makes and unmakes every pseudo-legal move on the way, so
@@ -280,7 +288,8 @@ test nnue_incremental_accumulator_matches_fresh_every_move {
         # without ever being evaluated, which leaves a run of deferred slots
         # behind for a later move to build through.
         var fresh: Position = p;
-        pos.attach(?fresh, nn.stack(2));
+        pos.attach(?fresh, ?solo[0]);
+        nn.materialise(fresh.accs, fresh.acc_top, ?fresh.board[0], pos.king_square(?fresh, pos.WHITE), pos.king_square(?fresh, pos.BLACK));
         if (played % 2 == 0) {
             nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
             if (!accs_equal(?p.accs[p.acc_top], ?fresh.accs[0])) { ret 3; }
@@ -297,6 +306,7 @@ test nnue_incremental_accumulator_matches_fresh_every_move {
     var start: Position;
     if (!pos.set_fen(?start, pos.START_FEN)) { ret 5; }
     pos.attach(?start, nn.stack(1));
+    nn.materialise(start.accs, start.acc_top, ?start.board[0], pos.king_square(?start, pos.WHITE), pos.king_square(?start, pos.BLACK));
     nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
     if (!accs_equal(?p.accs[p.acc_top], ?start.accs[0])) { ret 6; }
     if (p.acc_top != 0)                                  { ret 7; }
