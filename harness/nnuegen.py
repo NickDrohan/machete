@@ -15,8 +15,11 @@ Kernels, all on 16-bit accumulator lanes:
                         four 32-bit lanes written to `out`
   add/sub_column_avx2   into += / -= one weight column
   copy_half_avx2        to = from
+  carry_add_sub(_sub)_avx2  to = from + add - sub (- sub2): a move's usual
+                        changes to a child's half in one pass
 Encodings: two-byte VEX (C5) where it suffices, three-byte (C4) for
-vextracti128. Registers: xmm/ymm 0-5 only, all volatile under Win64.
+vextracti128 and for memory operands based on r8 and r9. Registers: xmm/ymm
+0-5 and rax, rcx, rdx, r8, r9, all volatile under Win64.
 """
 import argparse
 
@@ -55,6 +58,13 @@ def vop_mem(op, dst, src1, base, d):
 
 def vop_reg(op, dst, src1, src2):
     return c5(src1, 1, 1) + [op, modrm_reg(dst, src2)]
+
+
+def vop_mem_r8(op, dst, src1, base, d):
+    """vop_mem with base r8-r15 (8-15), which needs the three-byte VEX for its B bit:
+    C4, then R X B inverted over map 0F (00001), then W vvvv L pp as in C5."""
+    assert 8 <= base < 16
+    return [0xC4, 0x80 | 0x40 | 0x01, ((~src1 & 15) << 3) | (1 << 2) | 1, op, modrm_mem(dst, base & 7)] + d32(d)
 
 
 VZEROUPPER = [0xC5, 0xF8, 0x77]
@@ -147,6 +157,35 @@ def column(op, name, verb, hidden):
             "pub fun %s(into: *i16, row: *i16) {" % name] + x86(body, [("rdx", "into"), ("rcx", "row")]) + ["}"]
 
 
+R8, R9 = 8, 9
+
+
+def carry(hidden, subtracts):
+    """A child's half in one pass: to = from + add - sub (- sub2). The move's usual
+    changes, done as a copy and then a pass per change, read and write the half
+    once for each; this reads the parent and each weight row once and writes the
+    child once. Lanes wrap like vpaddw/vpsubw anywhere else, so the order of the
+    additions does not change the result."""
+    params = [("rdx", "to"), ("rcx", "from"), ("rax", "add"), ("r8", "sub")]
+    name, sig = "carry_add_sub_avx2", "to: *i16, from: *i16, add: *i16, sub: *i16"
+    if subtracts == 2:
+        params.append(("r9", "sub2"))
+        name, sig = "carry_add_sub_sub_avx2", sig + ", sub2: *i16"
+    body = []
+    for k in range(hidden // 16):
+        n, d = k % 4, 32 * k
+        body += [line(vload(n, RCX, d), ["xmm%d" % n]),
+                 line(vop_mem(PADDW, n, n, RAX, d), ["xmm%d" % n]),
+                 line(vop_mem_r8(PSUBW, n, n, R8, d), ["xmm%d" % n])]
+        if subtracts == 2:
+            body.append(line(vop_mem_r8(PSUBW, n, n, R9, d), ["xmm%d" % n]))
+        body.append(line(vstore(n, RDX, d)))
+    body.append(line(VZEROUPPER))
+    what = "from + add - sub" + (" - sub2" if subtracts == 2 else "")
+    return ["# a child's half in one pass: to = %s, %d lanes" % (what, hidden),
+            "pub fun %s(%s) {" % (name, sig)] + x86(body, params) + ["}"]
+
+
 def copy(hidden):
     body = []
     for k in range(hidden // 16):
@@ -216,7 +255,7 @@ def main():
            "pub val KERNEL_HIDDEN: i64 = %d;" % h,
            "", DETECT, ""]
     for block in (accumulate_sse2(h), accumulate_avx2(h), column(PADDW, "add_column_avx2", "add", h),
-                  column(PSUBW, "sub_column_avx2", "subtract", h), copy(h)):
+                  column(PSUBW, "sub_column_avx2", "subtract", h), copy(h), carry(h, 1), carry(h, 2)):
         out += block + [""]
     # LF on every host, as .gitattributes wants; print() would write CRLF on Windows
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:

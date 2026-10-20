@@ -339,12 +339,14 @@ pub fun materialise(accs: *Acc, top: i64, board: *u8, white_king: i64, black_kin
             var at: i64 = first + 1;
             for (at <= top) {
                 val a: *Acc = ?accs[at];
-                carry_side(a, ?accs[at - 1], side);
-                var c: i64 = 0;
-                for (c < a.count) {
-                    if (a.plus[c] != 0) { add_side(a, side, a.piece[c], a.square[c]); }
-                    or                  { sub_side(a, side, a.piece[c], a.square[c]); }
-                    c = c + 1;
+                if (!carry_fused(a, ?accs[at - 1], side)) {
+                    carry_side(a, ?accs[at - 1], side);
+                    var c: i64 = 0;
+                    for (c < a.count) {
+                        if (a.plus[c] != 0) { add_side(a, side, a.piece[c], a.square[c]); }
+                        or                  { sub_side(a, side, a.piece[c], a.square[c]); }
+                        c = c + 1;
+                    }
                 }
                 a.ready[side] = 1;
                 at            = at + 1;
@@ -655,6 +657,40 @@ fun carry_side(child: *Acc, parent: *Acc, side: i64) {
     }
 }
 
+# A move's usual changes carried in one pass, where the AVX2 kernels run: a
+# quiet move or a promotion adds one feature and takes one away, a capture
+# adds one and takes two. Done as a copy and then a pass per change, the half
+# is read and written three or four times; here the parent's half and each
+# weight row are read once and the child's written once. The lanes wrap as
+# they do in add_side and sub_side, so the result is the same to the bit.
+# Anything else (castling moves two pieces) goes the long way.
+fun carry_fused(child: *Acc, parent: *Acc, side: i64) bool {
+    if (!AVX2 || (child.count != 2 && child.count != 3)) { ret false; }
+    var add:  i64 = 0 - 1;
+    var sub:  i64 = 0 - 1;
+    var sub2: i64 = 0 - 1;
+    var c:    i64 = 0;
+    for (c < child.count) {
+        val row: i64 = index(side, parent.king[side], child.piece[c], child.square[c]) * HIDDEN;
+        if (child.plus[c] != 0) {
+            if (add >= 0) { ret false; }
+            add = row;
+        }
+        or {
+            if (sub < 0) { sub = row; }
+            or           { sub2 = row; }
+        }
+        c = c + 1;
+    }
+    if (add < 0 || sub < 0) { ret false; }
+    child.king[side] = parent.king[side];
+    val to:   *i16 = ?child.v[side][0];
+    val from: *i16 = ?parent.v[side][0];
+    if (sub2 < 0) { kernels.carry_add_sub_avx2(to, from, ?FEATURE_WEIGHTS[add], ?FEATURE_WEIGHTS[sub]); }
+    or            { kernels.carry_add_sub_sub_avx2(to, from, ?FEATURE_WEIGHTS[add], ?FEATURE_WEIGHTS[sub], ?FEATURE_WEIGHTS[sub2]); }
+    ret true;
+}
+
 # one perspective's contribution to the output
 #
 # A clipped hidden value is 0..QA and an output weight is -127..127, so every
@@ -865,6 +901,49 @@ test avx2_kernels_match_the_sse2_loops {
         for (i < HIDDEN) {
             if (b[i] != row[i]) { ret 3; }
             i = i + 1;
+        }
+        round = round + 1;
+    }
+    ret 0;
+}
+
+test fused_carry_kernels_match_a_copy_and_a_pass_per_change {
+    if (!kernels.detect_avx2()) { ret 0; }
+    var r:     rng.Rng = rng.seeded(20261020);
+    var from:  [HIDDEN]i16;
+    var add:   [HIDDEN]i16;
+    var sub:   [HIDDEN]i16;
+    var sub2:  [HIDDEN]i16;
+    var fused: [HIDDEN]i16;
+    var slow:  [HIDDEN]i16;
+    var round: i64     = 0;
+    for (round < 200) {
+        var i: i64 = 0;
+        for (i < HIDDEN) {
+            # full-range values, so lanes wrap as they can in a real half
+            from[i]  = (rng.below(?r, 65536)::i64 - 32768)::i16;
+            add[i]   = (rng.below(?r, 65536)::i64 - 32768)::i16;
+            sub[i]   = (rng.below(?r, 65536)::i64 - 32768)::i16;
+            sub2[i]  = (rng.below(?r, 65536)::i64 - 32768)::i16;
+            fused[i] = 0;
+            i        = i + 1;
+        }
+        var two: i64 = 0;
+        for (two < 2) {
+            i = 0;
+            for (i < HIDDEN) {
+                store8(?slow[0], i, load8(?from[0], i) + load8(?add[0], i) - load8(?sub[0], i));
+                if (two == 1) { store8(?slow[0], i, load8(?slow[0], i) - load8(?sub2[0], i)); }
+                i = i + 8;
+            }
+            if (two == 0) { kernels.carry_add_sub_avx2(?fused[0], ?from[0], ?add[0], ?sub[0]); }
+            or            { kernels.carry_add_sub_sub_avx2(?fused[0], ?from[0], ?add[0], ?sub[0], ?sub2[0]); }
+            i = 0;
+            for (i < HIDDEN) {
+                if (fused[i] != slow[i]) { ret (1 + two)::i32; }
+                i = i + 1;
+            }
+            two = two + 1;
         }
         round = round + 1;
     }
