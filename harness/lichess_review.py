@@ -62,7 +62,8 @@ def fetch(config, since):
         result = "draw" if not g.get("winner") else ("win" if g["winner"] == me else "loss")
         games.append(dict(id=g["id"], me=me, result=result, status=g["status"], opp=p[op]["user"]["name"],
                           diff=(p[op].get("rating") or 0) - (p[me].get("rating") or 0),
-                          opening=g.get("opening", {}).get("name", "?"), moves=g["moves"].split()))
+                          opening=g.get("opening", {}).get("name", "?"), moves=g["moves"].split(),
+                          clocks=g.get("clocks") or [], created=g["createdAt"], speed=g.get("speed", "?")))
     return games
 
 

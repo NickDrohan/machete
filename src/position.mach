@@ -268,6 +268,12 @@ pub fun left_in_check(p: *Position) bool {
     ret attacked(p, king_square(p, mover), p.side);
 }
 
+# the layer `side` reads the board through (nn.LAYERS)
+fun layer(p: *Position, side: i64) i64 {
+    if (nn.LAYERS == 3) { ret nn.phase(bb.count(p.occ[0] | p.occ[1]), (p.pieces[4] | p.pieces[10]) != 0); }
+    ret nn.layer(side, ?p.board[0]);
+}
+
 # apply a pseudo-legal move and record how to take it back
 pub fun make(p: *Position, m: Move) {
     val u: *Undo = ?p.hist[p.ply];
@@ -288,6 +294,15 @@ pub fun make(p: *Position, m: Move) {
     val to:   i64 = mv.to(m);
     val flag: u32 = mv.flag(m);
     val pc:   u8  = p.board[from];
+
+    # nn.LAYERS: the layer a side reads through belongs to the board, and only
+    # these moves can change it (men and queens for three layers, pawns too for six)
+    var before: [2]i64;
+    val watch:  bool = p.accs != nil && nn.LAYERS != 0 && (mv.is_capture(m) != 0 || flag == mv.EP_CAPTURE || mv.is_promotion(m) != 0 || (nn.LAYERS == 6 && kind_of(pc) == PAWN));
+    if (watch) {
+        before[0] = layer(p, 0);
+        before[1] = layer(p, 1);
+    }
 
     p.halfmove = p.halfmove + 1;
     if (p.ep != NO_SQ) {
@@ -340,6 +355,10 @@ pub fun make(p: *Position, m: Move) {
     # is rebuilt from the board when a position at or above it is evaluated
     if (p.accs != nil && kind_of(pc) == KING && nn.orient(us::i64, from) != nn.orient(us::i64, to)) {
         nn.mark_refresh(?p.accs[p.acc_top], us::i64);
+    }
+    if (watch) {
+        if (layer(p, 0) != before[0]) { nn.mark_refresh(?p.accs[p.acc_top], 0); }
+        if (layer(p, 1) != before[1]) { nn.mark_refresh(?p.accs[p.acc_top], 1); }
     }
 }
 

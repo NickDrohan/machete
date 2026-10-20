@@ -39,13 +39,20 @@ import wall
 ALPHA, GAMMA = 0.602, 0.101
 R_END = 0.002
 
+# spin options that are not search constants: the table and threads, and how
+# the engine chooses among moves it already thinks about equal (Variety,
+# Repertoire, Contempt, a rating gap). A tune must not touch them, and the
+# games are played with the choosing ones off, as every match is.
+NOT_TUNED = ("Hash", "Threads", "MultiPV", "Variety", "VarietyMoves", "Repertoire", "Contempt", "UCI_RatingAdv")
+PLAIN = {"Repertoire": 0, "Variety": 0, "Contempt": 0}
+
 
 def spin_options(path, net):
     """{name: (default, low, high)} for every tunable spin option the engine offers."""
     engine = chess.engine.SimpleEngine.popen_uci(path, cwd=os.path.dirname(path))
     found = {}
     for name, option in engine.options.items():
-        if option.type == "spin" and name not in ("Hash", "Threads", "MultiPV"):
+        if option.type == "spin" and name not in NOT_TUNED:
             found[name] = (option.default, option.min, option.max)
     engine.quit()
     return found
@@ -55,8 +62,14 @@ class Tuner(object):
     def __init__(self, args, options):
         self.args = args
         self.lock = threading.Lock()
+        self.failed = 0
         if os.path.exists(args.state):
             self.state = json.load(open(args.state))
+            # a resumed tune goes on with the constants it started with
+            missing = sorted(set(self.state["theta"]) - set(options))
+            if missing:
+                raise SystemExit("the engine has no option for {}, which {} tunes".format(", ".join(missing), args.state))
+            options = {n: v for n, v in options.items() if n in self.state["theta"]}
         else:
             self.state = {"theta": {n: float(v[0]) for n, v in options.items()},
                           "start": {n: v[0] for n, v in options.items()},
@@ -116,7 +129,8 @@ def worker(slot, tuner, args, book, deadline, live, rng):
     plus = chess.engine.SimpleEngine.popen_uci(args.engine, cwd=os.path.dirname(args.engine))
     minus = chess.engine.SimpleEngine.popen_uci(args.engine, cwd=os.path.dirname(args.engine))
     for engine in (plus, minus):
-        engine.configure(dict({"Threads": 1}, **net))
+        plain = {n: v for n, v in PLAIN.items() if n in engine.options}
+        engine.configure(dict({"Threads": 1}, **dict(net, **plain)))
     base, inc = match.parse_tc(args.tc)
     clock = (base, inc, 100)
     try:
@@ -144,6 +158,10 @@ def worker(slot, tuner, args, book, deadline, live, rng):
                     wdl[2] += 1
                     points -= 1.0
             tuner.update(k, delta, ck, points, wdl)
+    except Exception:
+        with tuner.lock:
+            tuner.failed += 1
+        raise
     finally:
         for engine in (plus, minus):
             try:
@@ -182,6 +200,8 @@ def main():
     for t in threads:
         t.daemon = True
         t.start()
+    # a worker that dies has played its last pair; with none left the chunk
+    # has done nothing, and says so rather than finishing as if it had
     while any(t.is_alive() for t in threads):
         time.sleep(30)
         tuner.save()
@@ -195,6 +215,9 @@ def main():
         s["k"], s["planned"], 2 * s["k"], s["wins"], s["draws"], s["losses"]))
     for name in sorted(s["theta"]):
         print("  {:12} start {:>6}  now {:9.2f}".format(name, s["start"][name], s["theta"][name]))
+    if tuner.failed:
+        print("{} of {} workers failed".format(tuner.failed, args.concurrency))
+        return 1
     return 0
 
 

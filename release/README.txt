@@ -1,4 +1,4 @@
-machete 0.4.1
+machete 0.5.0
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -21,8 +21,8 @@ Options:
   Threads   1 to 32 (default 1). Lazy SMP.
   Hash      fixed at 128 MB in this version; the option is accepted and ignored.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
-            0.4.1 reads 768-wide format 3 networks: every one since 0.3.2 loads,
-            0.3.1's and earlier do not.
+            0.5.0 reads three-layer networks (768 wide, inputs chosen by the
+            phase of the game); 0.4.1's and earlier (king zones) do not load.
   Ponder    supported: go ponder, ponderhit and stop.
   Repertoire  0 to 100 (default 40): prefer the author's openings - White the
             Vienna, English and Catalan; Black the Marshall, Nimzo-Indian and
@@ -31,6 +31,24 @@ Options:
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.4.1
+------------------------
+One thing in play: the network. Each side's inputs are now chosen by the
+phase of the game - the opening (queens on, 28 or more men), the middlegame
+(queens on) and the endgame (queens off) - where 0.4.1 chose them by where
+its king stood, among eight zones. The network, C33F280P3, is 3.5 MB where
+0.4.1's was 9.4 MB, trained on 644 million positions: 0.4.0's recipe with
+280 million Fischer Random positions where it had 140 million. The search is
+0.4.1's. As packaged against 0.4.1 as released, +26 +/- 18 Elo at 10+0.1 over
+1,500 games (346 wins, 920 draws, 234 losses). The network
+against 0.4.1's on the same search: +19 +/- 18 at 10+0.1 (1,500 games),
++18 +/- 28 at 60+0.6 (600).
+
+It is also faster, playing the same moves: the smaller network stays in
+cache, and a move's changes to the network's sums are applied in one pass
+(two new AVX2 kernels). 1.24 times 0.4.1's nodes per second on one thread.
 
 
 What changed since 0.4.0
