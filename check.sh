@@ -63,7 +63,14 @@ same "bench matches the recorded node count" "$here/fixtures/bench.expected" "$w
 # compares it against a from-scratch recompute after every move of a game.
 # the test networks are generated at the width the engine is built for, which
 # src/nnue.mach fixes at compile time and a file of another width is refused
-hidden=$(sed -n 's/^pub val HIDDEN: i64 = \([0-9]*\);.*/\1/p' "$here/src/nnue.mach")
+hidden=$(sed -n 's/^pub val HIDDEN: *i64 *= *\([0-9]*\);.*/\1/p' "$here/src/nnue.mach")
+# and so does the layout, layers (3 or 6) in place of king zones; the reference
+# and the trainer read it from MACHETE_LAYERS, so they describe what was built
+layers=$(sed -n 's/^pub val LAYERS: *i64 *= *\([0-9]*\);.*/\1/p' "$here/src/nnue.mach")
+case "$layers" in
+    3) export MACHETE_LAYERS=phase3 ;;
+    6) export MACHETE_LAYERS=struct6 ;;
+esac
 if [[ -n "$python" ]]; then
     "$python" "$here/harness/nnue/reference.py" random "$work/random.nnue" --seed 1 --hidden "$hidden" >/dev/null
     gate "network evaluation matches the numpy reference exactly" 0 \

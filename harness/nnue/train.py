@@ -28,6 +28,13 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# reference.py sizes itself at import from MACHETE_KING_ZONES, so --king-zones is read off the command line first
+if "--king-zones" in sys.argv:
+    os.environ["MACHETE_KING_ZONES"] = sys.argv[sys.argv.index("--king-zones") + 1]
+if "--piece-roles" in sys.argv:
+    os.environ["MACHETE_PIECE_ROLES"] = "1"
+if "--layers" in sys.argv:
+    os.environ["MACHETE_LAYERS"] = sys.argv[sys.argv.index("--layers") + 1]
 import reference
 from reference import RECORD
 
@@ -44,9 +51,15 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 
 
 class Net(nn.Module):
-    def __init__(self, hidden):
+    def __init__(self, hidden, factorise=False):
         super(Net, self).__init__()
         self.features = nn.EmbeddingBag(PAD + 1, hidden, mode="sum", padding_idx=PAD)
+        # --factorise: one more table, shared by every king zone, added to each zone's own. A zone then learns
+        # only how it differs from the rest, and a zone the king seldom stands in (the far ranks) still has what
+        # every other zone learned about a knight on f3. Without it each of 32 zones is trained on its own
+        # thirty-second of the positions: on 504M positions 32 zones fitted the training set better than 8 and
+        # unseen positions no better (C33F140K32). The engine never sees the table: export adds it into every zone.
+        self.shared = nn.EmbeddingBag(INPUTS + 1, hidden, mode="sum", padding_idx=INPUTS) if factorise else None
         self.feature_bias = nn.Parameter(torch.zeros(hidden))
         # one output layer per band of piece counts (reference.bucket); all
         # are computed and the position's own is picked, which on a GPU costs
@@ -55,16 +68,39 @@ class Net(nn.Module):
         nn.init.uniform_(self.features.weight, -0.01, 0.01)
         with torch.no_grad():
             self.features.weight[PAD].zero_()
+            if factorise:
+                nn.init.uniform_(self.shared.weight, -0.01, 0.01)
+                self.shared.weight[INPUTS].zero_()
+
+    def half(self, index):
+        """One side's hidden values before the bias: its zone's rows, and the shared table's when there is one."""
+        total = self.features(index)
+        if self.shared is not None:
+            total = total + self.shared(torch.where(index == PAD, INPUTS, index % INPUTS))
+        return total
+
+    def zone_weights(self):
+        """The feature weights as the engine reads them: each zone's rows with the shared table added in."""
+        own = self.features.weight[:PAD]
+        if self.shared is None:
+            return own
+        return own + self.shared.weight[:INPUTS].repeat(KING_BUCKETS, 1)
 
     def forward(self, us, them, bucket):
-        ours = torch.clamp(self.features(us) + self.feature_bias, 0.0, 1.0)
-        theirs = torch.clamp(self.features(them) + self.feature_bias, 0.0, 1.0)
+        ours = torch.clamp(self.half(us) + self.feature_bias, 0.0, 1.0)
+        theirs = torch.clamp(self.half(them) + self.feature_bias, 0.0, 1.0)
         every = self.out(torch.cat([ours, theirs], dim=1))
         return every.gather(1, bucket[:, None]).squeeze(1)
 
     def clip_weights(self):
         with torch.no_grad():
-            self.features.weight.clamp_(-CLIP, CLIP)
+            if self.shared is None:
+                self.features.weight.clamp_(-CLIP, CLIP)
+            else:
+                # the bound is on what the engine reads, a zone's row plus the shared one
+                shared = self.shared.weight[:INPUTS].repeat(KING_BUCKETS, 1)
+                own = self.features.weight[:PAD]
+                own.copy_(torch.minimum(torch.maximum(own, -CLIP - shared), CLIP - shared))
             self.feature_bias.clamp_(-CLIP, CLIP)
             self.out.weight.clamp_(-CLIP, CLIP)
             self.features.weight[PAD].zero_()
@@ -126,6 +162,10 @@ class Corpus(object):
         self.squares = torch.arange(64, device=device)[None, :]
         self.slots = torch.arange(32, device=device)[None, :]
         self.orient = torch.from_numpy(reference.ORIENT).to(device)
+        self.channel = torch.tensor(reference.CHANNEL, device=device)
+        # bitboards as int64: the top bit is the sign, which and/or/shift do not mind
+        self.front = torch.from_numpy(reference.FRONT.astype(np.int64)).to(device)
+        self.centre_files = torch.tensor(int(np.int64(reference.CENTRE_FILES)), device=device)
         # the device-side columns a batch gathers from: the corpus itself
         # without a window, otherwise the window loaded last
         self.live = {name: getattr(self, name) for name in COLUMNS}
@@ -157,6 +197,8 @@ class Corpus(object):
             setattr(held, name, getattr(self, name)[picked].to(self.device))
         held.live = {name: getattr(held, name) for name in COLUMNS}
         held.squares, held.slots, held.orient = self.squares, self.slots, self.orient
+        held.channel = self.channel
+        held.front, held.centre_files = self.front, self.centre_files
         return held
 
     def features(self, index):
@@ -178,13 +220,55 @@ class Corpus(object):
             kings.append(squares.gather(1, slot[:, None])[:, 0])
         ow = self.orient[0][kings[0]][:, None]
         ob = self.orient[1][kings[1]][:, None]
-        white = (ow >> 1) * INPUTS + pieces * 64 + (squares ^ ((ow & 1) * 7))
-        black = (ob >> 1) * INPUTS + ((pieces + 6) % 12) * 64 + (squares ^ 56 ^ ((ob & 1) * 7))
+        if reference.LAYERS:
+            lw, lb = self.layers(pieces, squares, live, count)
+            ow = lw[:, None] * 2 + (ow & 1)
+            ob = lb[:, None] * 2 + (ob & 1)
+        white_squares = squares ^ ((ow & 1) * 7)
+        black_squares = squares ^ 56 ^ ((ob & 1) * 7)
+        white_rows, black_rows = pieces, (pieces + 6) % 12
+        if reference.ROLES:
+            # reference.feature_indices' piece roles: a side's second knight and second rook have channels of their own
+            rows_of = []
+            for seen, mine in ((white_squares, pieces < 6), (black_squares, pieces >= 6)):
+                key = (seen & 7) * 8 + (seen >> 3)
+                second = torch.zeros_like(pieces, dtype=torch.bool)
+                for code in (1, 3, 7, 9):
+                    group = live & (pieces == code)
+                    first = torch.where(group, key, torch.full_like(key, 64)).min(dim=1, keepdim=True).values
+                    second |= group & (key != first)
+                rows_of.append(torch.where(mine, 0, 8) + self.channel[pieces % 6] + second.long())
+            white_rows, black_rows = rows_of
+        white = (ow >> 1) * INPUTS + white_rows * 64 + white_squares
+        black = (ob >> 1) * INPUTS + black_rows * 64 + black_squares
         black_to_move = (self.live["stm"][index] == 1)[:, None]
         us = torch.where(black_to_move, black, white)
         them = torch.where(black_to_move, white, black)
         pad = torch.full_like(us, PAD)
         return torch.where(live, us, pad), torch.where(live, them, pad), bucket
+
+    def layers(self, pieces, squares, live, count):
+        """reference.layers_of on the device: each side's layer by phase and pawns."""
+        queens = (live & ((pieces == 4) | (pieces == 10))).any(dim=1)
+        bit = torch.ones_like(squares) << squares
+        zero = torch.zeros_like(squares)
+        wp, bp = live & (pieces == 0), live & (pieces == 6)
+        white = torch.where(wp, bit, zero).sum(dim=1)   # a pawn stands on a square once, so the sum is the union
+        black = torch.where(bp, bit, zero).sum(dim=1)
+        middle = torch.ones_like(count)
+        if reference.LAYERS == "struct6":
+            file = squares & 7
+            centre = ((wp | bp) & ((file == 3) | (file == 4))).sum(dim=1)
+            locked = ((white << 8) & black & self.centre_files) != 0
+            middle = torch.where(locked, 2, torch.where(centre <= 1, 1, 3))
+        with_queens = torch.where(count >= reference.OPENING_MEN, torch.zeros_like(count), middle)
+        if reference.LAYERS == "phase3":
+            both = torch.where(queens, with_queens, torch.full_like(count, 2))
+            return both, both
+        white_passer = (wp & ((self.front[0][squares] & black[:, None]) == 0)).any(dim=1)
+        black_passer = (bp & ((self.front[1][squares] & white[:, None]) == 0)).any(dim=1)
+        five, four = torch.full_like(count, 5), torch.full_like(count, 4)
+        return torch.where(queens, with_queens, torch.where(white_passer, four, five)), torch.where(queens, with_queens, torch.where(black_passer, four, five))
 
     def targets(self, index):
         """The number the network is asked to produce, as a win probability."""
@@ -251,7 +335,7 @@ def open_sources(specs):
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
     with torch.no_grad():
-        fw = model.features.weight[:PAD].cpu().numpy() * QA
+        fw = model.zone_weights().cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
         ow = model.out.weight.cpu().numpy() * QB
         ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * QB
@@ -295,10 +379,28 @@ def start_from(model, path, device):
     print("starting from {}".format(path))
 
 
+def share_of(path):
+    """The fraction of the card's time `path` asks for, 1.0 when it is absent, empty or not a fraction."""
+    try:
+        with open(path) as handle:
+            share = float(handle.read().strip())
+    except (OSError, ValueError):
+        return 1.0
+    return share if 0.05 <= share < 1.0 else 1.0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
     parser.add_argument("--out", default="machete.nnue")
+    parser.add_argument("--king-zones", type=int, default=reference.KING_BUCKETS, choices=(8, 16, 32),
+                        help="king zones a side: the engine that plays the network must be built for the same number")
+    parser.add_argument("--factorise", action="store_true",
+                        help="train a table shared by every king zone beside the zones' own; the file written is the same shape")
+    parser.add_argument("--layers", choices=("phase3", "struct6"), default=reference.LAYERS or None,
+                        help="layers by phase and pawns in place of king zones (reference.LAYERS); needs an engine built for it")
+    parser.add_argument("--piece-roles", action="store_true",
+                        help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
     parser.add_argument("--epochs", type=int, default=12)
@@ -317,6 +419,12 @@ def main():
     parser.add_argument("--blend", type=float, default=-1.0,
                         help="how much of the target is the search score, the rest "
                              "the game result; -1 keeps the default")
+    parser.add_argument("--resume", action="store_true",
+                        help="keep the training state beside --out after every epoch and, when it is there at the "
+                             "start, carry on from it: a stopped run loses the epoch it was in and no more")
+    parser.add_argument("--share-file", default="",
+                        help="a file holding the fraction of the card's time to use (0.5 trains half the time and "
+                             "sleeps the other half), read as training goes; absent or empty is all of it")
     args = parser.parse_args()
 
     if args.scale:
@@ -347,19 +455,42 @@ def main():
     if corpus.window:
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
-    model = Net(args.hidden).to(device)
+    model = Net(args.hidden, args.factorise).to(device)
     if args.init:
         start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = torch.optim.lr_scheduler.StepLR(optimiser, step_size=1, gamma=0.8)
     loss_of = nn.MSELoss()
 
-    for epoch in range(args.epochs):
+    # --resume: what a run needs to carry on is the weights, the optimiser's
+    # moments, the learning rate's place in its schedule and the shuffler's
+    # state. The held-out positions are the same ones (they come from the seed
+    # before any of this); the epochs still to run shuffle differently from an
+    # unbroken run's, each still a shuffle of every row. The state names the run
+    # it belongs to, so one left by a different recipe is refused, not continued;
+    # the window is not part of that, it only says how much is on the card.
+    state = args.out + ".state"
+    recipe = repr((args.data, args.hidden, args.epochs, args.batch, args.lr, args.validation, args.seed, args.init,
+                   args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles))
+    first = 0
+    if args.resume and os.path.exists(state):
+        kept = torch.load(state, map_location=device, weights_only=False)
+        if kept["recipe"] != recipe:
+            raise SystemExit("{} is from a different run: remove it or run that one".format(state))
+        model.load_state_dict(kept["model"])
+        optimiser.load_state_dict(kept["optimiser"])
+        schedule.load_state_dict(kept["schedule"])
+        rng.set_state(kept["rng"])
+        first = kept["epoch"]
+        print("resuming after epoch {} of {}".format(first, args.epochs))
+
+    for epoch in range(first, args.epochs):
         model.train()
         rng.shuffle(training)
         # the loss stays on the device and is read back every 100 steps;
         # reading it every step made the CPU wait on the GPU each batch
         started, seen, running = time.time(), 0, torch.zeros((), device=device)
+        slept, mark = 0.0, time.time()
         for us, them, bucket, target in corpus.batches(training, args.batch, rng):
             predicted = torch.sigmoid(model(us, them, bucket))
             loss = loss_of(predicted, target)
@@ -369,6 +500,18 @@ def main():
             model.clip_weights()
             running += loss.detach()
             seen += 1
+            if args.share_file and seen % 20 == 0:
+                # the card is shared with whatever else the owner is running:
+                # wait for the queued steps to finish, then leave it alone for
+                # as long as makes the work this fraction of the time
+                share = share_of(args.share_file)
+                if share < 1.0:
+                    if device == "cuda":
+                        torch.cuda.synchronize()
+                    pause = (time.time() - mark) * (1.0 - share) / share
+                    time.sleep(pause)
+                    slept += pause
+                mark = time.time()
             if seen % 100 == 0:
                 rate = seen * args.batch / (time.time() - started)
                 sys.stdout.write("\repoch {}  {:,} positions  loss {:.5f}  {:,.0f}/s".format(
@@ -390,7 +533,16 @@ def main():
         # network still training
         worst = export(model, partial)
         print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
+        if slept:
+            print("  slept {:.0f} s of the epoch to share the card".format(slept))
+        if args.resume:
+            torch.save({"recipe": recipe, "epoch": epoch + 1, "model": model.state_dict(),
+                        "optimiser": optimiser.state_dict(), "schedule": schedule.state_dict(),
+                        "rng": rng.get_state()}, state + ".new")
+            os.replace(state + ".new", state)
     os.replace(partial, args.out)
+    if args.resume and os.path.exists(state):
+        os.remove(state)
     print("finished: {}".format(args.out))
     return 0
 

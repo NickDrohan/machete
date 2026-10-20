@@ -1,5 +1,13 @@
 # Handing off machete
 
+## 2026-10-20: 0.5.0
+
+**0.5.0 is released and on the lichess bot.** One change in play from 0.4.1: the network, C33F280P3, which chooses each side's inputs by the phase of the game (three layers: opening, middlegame, endgame; `LAYERS 3` in `src/nnue.mach`, now the release build) instead of by king zone, trained on 0.4.0's recipe plus 280M Fischer Random positions (644M). The search is 0.4.1's. As packaged against 0.4.1: +26 +/- 18 at 10+0.1 (1,500 games, 346-920-234, no early stop). The network against 0.4.1's on 0.4.0's search: +19 +/- 18 (1,500, 10+0.1), +18 +/- 28 (600, 60+0.6). Two speed changes that play the same moves: the 3.5 MB network (16% more nodes a second than 0.4.1's 9.4 MB) and fused AVX2 kernels that carry a move's changes to a child's accumulator in one pass (8.1% less time, identical tree). 1.24x 0.4.1's nodes per second. `release/notes-0.5.0.md` has the account. Mach 6.10.1 and std 9.5.0 are the latest releases; the load-elimination fix asked for in mach#4162 was closed for the mirl backend (mirl#71), not released.
+
+0.5.0 does not load king-zone networks. `check.sh` exports `MACHETE_LAYERS` from the build, so the reference describes what the engine reads; its width pattern also tolerated the aligned `HIDDEN` declaration only after this release (three gates had silently read an empty width on the `feat/search-tuning` branch).
+
+Measured and not in it: data on top of C33F280P3 (rook endgames +8, 60M breadth +7, human positions swapped for engine self-play +5, all +/- 18); the battle-stack ports (razoring +9, mop-up +3, drawish -10, capture history -14, extensions -17); losing captures ordered after quiet moves (`port/badcap`) is being measured for 0.5.1.
+
 ## 2026-10-15: 0.4.1
 
 **0.4.1 is released and on the lichess bot.** One change from 0.4.0: thirteen search constants, tuned by SPSA (5,746 steps on 0.3.0, continued on 0.4.0 to 15,457; `harness/spsa.py`, state `E:/machete/claude/r3/spsa040.json`). Against 0.4.0's search with its network: +31 +/- 18 at 10+0.1 (1,500 games, no early stop), +14 +/- 28 at 60+0.6 (600). Against Koivisto 9.0, 1,200 games each at 10+0.1: 0.4.0 -308 +/- 28, 0.4.1 -291 +/- 27. The packaged build searches the same tree as 0.4.0 with the tuned values as options (635,361 nodes to depth 14 both ways). Bench 197,209. `release/notes-0.4.1.md` has the account. The one test that assumed the old defaults (`tunables_set_clamp_and_reach_the_search`) now restores whatever the defaults are.

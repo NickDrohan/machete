@@ -396,6 +396,46 @@ pub rec Search {
     known_check: [64]i64;
     pv:          [64][64]Move;
     pv_len:      [64]i64;
+    # how well the moves were ordered, counted at every cutoff of one search
+    # (see ORDERING): `cut_at` by how many legal moves had been tried, the
+    # cutting one included - 1, 2, 3, 4 to 6, 7 or more - and `cut_by` by why
+    # the cutting move stood where it did (CUT_TT and on)
+    cut_at: [5]i64;
+    cut_by: [6]i64;
+}
+
+# what put the move that cut where it was in the list: the table's move, a
+# capture that survives the exchange (or a queen promotion), a killer, the
+# counter move, the quiet-move history, and a capture that loses material
+val CUT_TT:      i64 = 0;
+val CUT_CAPTURE: i64 = 1;
+val CUT_KILLER:  i64 = 2;
+val CUT_COUNTER: i64 = 3;
+val CUT_HISTORY: i64 = 4;
+val CUT_LOSING:  i64 = 5;
+
+# UCI OrderingStats: after each search, an info string with the cutoff counts
+pub var ORDERING: bool = false;
+
+fun count_cut(s: *Search, legal: i64, score: i64, m: Move) {
+    var at: i64 = 4;
+    if (legal <= 3) { at = legal - 1; }
+    or (legal <= 6) { at = 3; }
+    var by: i64 = CUT_HISTORY;
+    if (score >= 1000000000)                    { by = CUT_TT; }
+    or (score >= GOOD_CAPTURE)                  { by = CUT_CAPTURE; }
+    or (score >= 600000000)                     { by = CUT_KILLER; }
+    or (score >= 550000000)                     { by = CUT_COUNTER; }
+    or (mv.is_capture(m) || mv.is_promotion(m)) { by = CUT_LOSING; }
+    s.cut_at[at] = s.cut_at[at] + 1;
+    s.cut_by[by] = s.cut_by[by] + 1;
+}
+
+fun print_ordering(s: *Search) {
+    print.printf("info string ordering cuts at 1 {} 2 {} 3 {} 4-6 {} 7+ {}", s.cut_at[0], s.cut_at[1], s.cut_at[2], s.cut_at[3], s.cut_at[4]);
+    print.printf(" by tt {} capture {} killer {} counter {} history {} losing {}", s.cut_by[CUT_TT], s.cut_by[CUT_CAPTURE],
+        s.cut_by[CUT_KILLER], s.cut_by[CUT_COUNTER], s.cut_by[CUT_HISTORY], s.cut_by[CUT_LOSING]);
+    print.println("");
 }
 
 # everything a search starts from, and the history tables cleared: a new
@@ -1030,6 +1070,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 flag  = tt.EXACT;
                 copy_pv(s, m, ply);
                 if (alpha >= beta) {
+                    count_cut(s, legal, scores[i], m);
                     if (!mv.is_capture(m) && !mv.is_promotion(m)) {
                         s.killers[ply][1] = s.killers[ply][0];
                         s.killers[ply][0] = m;
@@ -1223,6 +1264,12 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     s.node_limit    = limits.nodes;
     s.soft          = 0;
     s.soft_start    = start;
+    var c: i64 = 0;
+    for (c < 6) {
+        if (c < 5) { s.cut_at[c] = 0; }
+        s.cut_by[c] = 0;
+        c           = c + 1;
+    }
     val b: Budget = budget(p, limits);
     # read after the deadline was cleared, so a ponderhit that lands in between
     # is seen here rather than overwritten
@@ -1330,6 +1377,7 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         os.sleep(1000000);
     }
     pos.detach(p);
+    if (ORDERING && s.quiet == 0) { print_ordering(s); }
     ret s.best;
 }
 

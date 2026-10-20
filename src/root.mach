@@ -237,6 +237,8 @@ fun nnue_of(argc: i64, argv: **u8) i64 {
         ret EXIT_USAGE;
     }
     pos.attach(?p, nn.stack(0));
+    # whatever a half still owes (all of it, in a build with piece roles) is built now, as eval.evaluate does
+    nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(?p, pos.WHITE), pos.king_square(?p, pos.BLACK));
     print.printlnf("{}", nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])));
     ret 0;
 }
