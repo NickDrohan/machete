@@ -195,6 +195,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "UCI_RatingAdv", value, ?RATING_ADV, 0 - 10000, 10000)) {
         ret true;
     }
+    or (tune_one(name, "MoveOverhead", value, ?MOVE_OVERHEAD, 0, 5000)) {
+        ret true;
+    }
     ret false;
 }
 
@@ -220,6 +223,7 @@ pub fun print_tunables() {
     print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
     print.printlnf("option name Contempt type spin default {} min 0 max 100", CONTEMPT);
     print.printlnf("option name UCI_RatingAdv type spin default {} min -10000 max 10000", RATING_ADV);
+    print.printlnf("option name MoveOverhead type spin default {} min 0 max 5000", MOVE_OVERHEAD);
 }
 
 # Variety: in the first VARIETY_MOVES moves of a game, each root move gets
@@ -1171,9 +1175,14 @@ fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
     print.println("");
 }
 
-# milliseconds held back from every clock reading for the pipe and the GUI;
-# a game is lost for overrunning, and ten seconds a game leaves little slack
-val MOVE_OVERHEAD: i64 = 20;
+# milliseconds held back from every clock reading for the pipe and the GUI,
+# and kept in reserve for every move still to come (see budget). The UCI
+# option MoveOverhead: on lichess a move costs about 130 ms of clock beyond
+# the search (2026-10-21, the last moves of a 5+0 game), so the bot sets 150.
+pub var MOVE_OVERHEAD: i64 = 20;
+
+# the moves a game is assumed to have left when the GUI does not say
+val HORIZON: i64 = 50;
 
 # how long to spend on one move
 # ---
@@ -1206,14 +1215,23 @@ pub fun budget(p: *Position, limits: *Limits) Budget {
     if (remaining <= 0) { ret b; }
     remaining = remaining - MOVE_OVERHEAD;
     if (remaining < 1) { remaining = 1; }
-    # the soft aim: a share of what is left plus most of the increment. With
-    # movestogo the share is the moves actually left, not a guess of 25.
-    var moves: i64 = 25;
+    # the soft aim: an even share of the time the rest of the game has - the
+    # clock, the increments still to come, less the overhead every one of
+    # those moves will cost - over the moves assumed left (HORIZON, or the
+    # GUI's movestogo). Until 0.5.1 it was a twenty-fifth of the clock plus
+    # three quarters of the increment, with no reserve: on lichess that lost a
+    # 5+0 game on time at move 116 in a drawn ending, and reached the ending
+    # of a 5+2 game with 25 seconds to the opponent's 280 (2026-10-20/21). In a
+    # 5+0 game with 130 ms of lag a move, the old aim runs out of time near
+    # move 110-130, this one after move 230.
+    var moves: i64 = HORIZON;
     if (limits.movestogo > 0) {
         moves = limits.movestogo;
         if (moves < 2) { moves = 2; }
     }
-    b.soft = remaining / moves + increment * 3 / 4;
+    var left: i64 = remaining + increment * (moves - 1) - MOVE_OVERHEAD * (moves + 2);
+    if (left < 1) { left = 1; }
+    b.soft = left / moves;
     # the hard stop lets an unsettled move run to five times the aim, but never
     # past a quarter of the clock, so a reserve always survives
     b.hard = b.soft * 5;
@@ -1447,7 +1465,7 @@ test losing_capture_orders_after_every_quiet_move {
     val losing: i64 = LOSING_CAPTURE - 100;
     if (losing >= 0 - HISTORY_MAX) { ret 1; }
     # and still below LOSING_CAPTURE, which quiescence reads to skip them
-    if (losing >= LOSING_CAPTURE)  { ret 2; }
+    if (losing >= LOSING_CAPTURE) { ret 2; }
     # a winning capture still comes first
     if (GOOD_CAPTURE <= HISTORY_MAX) { ret 3; }
     ret 0;
@@ -1518,14 +1536,15 @@ test clock_budget {
     var limits: Limits;
     limits.wtime = 60020;
     limits.btime = 60020;
-    # no movestogo: a twenty-fifth of the clock after the overhead, and the
+    # no movestogo: a fiftieth of the clock after the overhead, less the
+    # overhead of the 52 moves' reserve ((60000 - 20 * 52) / 50), and the
     # hard stop at five times that
     var b: Budget = budget(?p, ?limits);
-    if (b.soft != 2400 || b.hard != 12000 || b.fixed != 0) { ret 2; }
-    # a tenth would be 6000, which fits under the hard stop's quarter
+    if (b.soft != 1179 || b.hard != 5895 || b.fixed != 0) { ret 2; }
+    # a tenth, less twelve moves' overhead, fits under the hard stop's quarter
     limits.movestogo = 10;
     b                = budget(?p, ?limits);
-    if (b.soft != 6000 || b.hard != 15000) { ret 3; }
+    if (b.soft != 5976 || b.hard != 15000) { ret 3; }
     # one move to go: the quarter caps both
     limits.movestogo = 1;
     b                = budget(?p, ?limits);
@@ -1534,12 +1553,13 @@ test clock_budget {
     limits.movetime = 500;
     b               = budget(?p, ?limits);
     if (b.soft != 500 || b.hard != 500 || b.fixed != 1) { ret 5; }
-    # most of the increment is spent on the move it arrives with
+    # the increments still to come count as time the game has:
+    # (60000 + 1000 * 49 - 20 * 52) / 50
     limits.movetime  = 0;
     limits.movestogo = 0;
     limits.winc      = 1000;
     b                = budget(?p, ?limits);
-    if (b.soft != 3150 || b.hard != 15000) { ret 6; }
+    if (b.soft != 2159 || b.hard != 10795) { ret 6; }
     # a clock nearly out still gives a positive budget
     limits.movetime  = 0;
     limits.movestogo = 0;
@@ -1547,6 +1567,40 @@ test clock_budget {
     b                = budget(?p, ?limits);
     if (b.soft < 1 || b.hard < b.soft) { ret 7; }
     ret 0;
+}
+
+test a_long_sudden_death_game_keeps_its_clock {
+    # the 5+0 game 0.5.0 lost on time at move 116 (lichess gJFzcmfZ): every
+    # move costs its search plus 130 ms of lag, the GUI reports the clock
+    # 2 s short, and the bot sets MoveOverhead 150. Spending the whole soft
+    # aim every move, and a third more on unsettled ones, the clock must last
+    # 200 moves; the aim before 0.5.1 ran out near move 110.
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    val overhead: i64 = MOVE_OVERHEAD;
+    MOVE_OVERHEAD = 150;
+    var result: i32 = 0;
+    var extra:  i64 = 0;
+    for (extra < 2) {
+        var clock: i64 = 300000;
+        var move:  i64 = 0;
+        for (move < 200 && result == 0) {
+            var limits: Limits;
+            limits.wtime = clock - 2000;
+            if (limits.wtime < 1) { limits.wtime = 1; }
+            limits.btime = limits.wtime;
+            val b:     Budget = budget(?p, ?limits);
+            var spend: i64    = b.soft;
+            if (extra == 1)     { spend = b.soft * 4 / 3; }
+            if (spend > b.hard) { spend = b.hard; }
+            clock = clock - spend - 130;
+            if (clock <= 0) { result = (2 + extra)::i32; }
+            move = move + 1;
+        }
+        extra = extra + 1;
+    }
+    MOVE_OVERHEAD = overhead;
+    ret result;
 }
 
 test unsettled_move_gets_more_time_than_settled_one {
