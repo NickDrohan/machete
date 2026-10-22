@@ -1,9 +1,14 @@
-# transposition table: fixed size, allocated with the program
+# transposition table, sized by the UCI Hash option
 #
-# the table is a statically sized array so the engine allocates nothing at
-# run time. 2^23 slots of 16 bytes is 128 MB, and because the size never
-# changes it is one less thing that can fail mid-search. The UCI Hash option
-# is therefore reported but not honoured.
+# The table is the engine's memory of every position it has searched, and it
+# is kept from move to move: after a move, the subtree under it is already
+# stored, and the next search walks back through it on table hits. Its size
+# is how much of that survives. Fixed at 128 MB until 0.5.2, it overflowed on
+# most of the bot's moves (8 threads search 15-30 million positions a move
+# into 8 million slots); one thread, two moves on, found 78% of the work saved
+# after a depth-16 search and 48% after depth 18. It is now allocated from the
+# operating system's pages, 128 MB until Hash asks for another size, and
+# resized only between searches.
 #
 # Slots come in buckets of four, one 64-byte cache line, and a position may
 # live in any slot of its bucket. A store that finds no slot of its own
@@ -15,9 +20,14 @@
 # a stored mate score counts from the root, so it must be converted to and
 # from "distance from this node" as it crosses the table; search does that.
 
+use std.allocator;
+use std.allocator.page;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
 
 use mv: machete.move;
 use machete.move.Move;
@@ -29,13 +39,16 @@ pub val LOWER: u8 = 1;
 # the score is an upper bound: no move beat alpha
 pub val UPPER: u8 = 2;
 
-pub val ENTRIES: i64 = 8388608;
-# what the UCI Hash option reports: ENTRIES (2^23) slots of 16 bytes, a fixed size
-pub val MEGABYTES: i64 = 128;
+# the size a table starts at, and the most Hash may ask for
+pub val DEFAULT_MEGABYTES: i64 = 128;
+pub val MAX_MEGABYTES:     i64 = 32768;
 
-# slots per bucket, and buckets in the table
-val WAYS:    i64 = 4;
-val BUCKETS: i64 = 2097152;
+# the table's slots and the megabytes they take (set by resize), and its
+# buckets of WAYS slots
+pub var ENTRIES:   i64 = 0;
+pub var MEGABYTES: i64 = 0;
+val     WAYS:      i64 = 4;
+var     BUCKETS:   i64 = 0;
 
 pub rec Entry {
     key:   u64;
@@ -55,7 +68,55 @@ rec Slot {
     data:  u64;
 }
 
-var TABLE: [8388608]Slot;
+var TABLE: *Slot = nil;
+
+# the operating system's pages, which come zeroed: a new table is empty
+var PAGES:       allocator.Allocator;
+var PAGES_READY: bool = false;
+
+# give the table `megabytes`, rounded down to a power of two; when that much
+# cannot be had, the largest smaller power of two that can. Returns the
+# megabytes it now has, 0 when not even one could be had (and then there is
+# no table: probe and store must not be called). Never called while a search
+# runs; a new table is empty.
+pub fun resize(megabytes: i64) i64 {
+    if (!PAGES_READY) {
+        val made: err[allocator.Error] = page.make(?PAGES);
+        if (sel made.err) { ret 0; }
+        PAGES_READY = true;
+    }
+    var want: i64 = megabytes;
+    if (want < 1)             { want = 1; }
+    if (want > MAX_MEGABYTES) { want = MAX_MEGABYTES; }
+    var size: i64 = 1;
+    for (size * 2 <= want) { size = size * 2; }
+    if (size == MEGABYTES && TABLE != nil) {
+        clear();
+        ret size;
+    }
+    # the old table goes first: holding both at once is twice the memory
+    if (TABLE != nil) {
+        val freed: err[allocator.Error] = allocator.deallocate[Slot](?PAGES, TABLE, ENTRIES::usize);
+        TABLE     = nil;
+        ENTRIES   = 0;
+        MEGABYTES = 0;
+    }
+    for (size >= 1) {
+        val slots: i64                         = size * 1048576 / 16;
+        val got:   res[*Slot, allocator.Error] = allocator.zallocate[Slot](?PAGES, slots::usize);
+        if (sel got.err) {
+            size = size / 2;
+            cnt;
+        }
+        TABLE      = got.ok;
+        ENTRIES    = slots;
+        BUCKETS    = slots / WAYS;
+        MEGABYTES  = size;
+        GENERATION = 0;
+        ret size;
+    }
+    ret 0;
+}
 
 # which search wrote an entry, counted modulo 64; new_search moves it on
 var GENERATION: u64 = 0;
@@ -88,7 +149,16 @@ fun worth(e: *Slot) i64 {
     ret ((data >> 48) & 0xFF)::i64 - 4 * age;
 }
 
+# a table to search with: the default size the first time a search asks
+pub fun ready() {
+    if (TABLE == nil) { resize(DEFAULT_MEGABYTES); }
+}
+
 pub fun clear() {
+    if (TABLE == nil) {
+        resize(DEFAULT_MEGABYTES);
+        ret;
+    }
     var i: i64 = 0;
     for (i < ENTRIES) {
         TABLE[i].guard = 0;
@@ -201,5 +271,26 @@ test stores_probes_prefers_depth {
         way                          = way + 1;
     }
     if (probe(78, ?out)) { ret 10; }
+    ret 0;
+}
+
+test resizes_to_a_power_of_two_and_starts_empty {
+    clear();
+    store(4242, mv.make(12, 28, mv.QUIET), 7, 6, EXACT);
+    var out: Entry;
+    if (!probe(4242, ?out)) { ret 1; }
+    # 3 MB rounds down to 2: 131,072 slots of 16 bytes, and nothing in them
+    if (resize(3) != 2 || MEGABYTES != 2 || ENTRIES != 131072) { ret 2; }
+    if (probe(4242, ?out))                                     { ret 3; }
+    store(4242, mv.make(12, 28, mv.QUIET), 7, 6, EXACT);
+    if (!probe(4242, ?out) || out.score != 7) { ret 4; }
+    # a gigabyte, used at its far end
+    if (resize(1024) != 1024 || ENTRIES != 67108864) { ret 5; }
+    val far: u64 = (BUCKETS - 1)::u64;
+    store(far, mv.make(1, 2, mv.QUIET), 9, 3, EXACT);
+    if (!probe(far, ?out) || out.score != 9) { ret 6; }
+    # asking for the size it has empties it
+    if (resize(1024) != 1024 || probe(far, ?out))       { ret 7; }
+    if (resize(DEFAULT_MEGABYTES) != DEFAULT_MEGABYTES) { ret 8; }
     ret 0;
 }

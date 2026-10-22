@@ -1350,6 +1350,7 @@ var     CREDITED:      i64 = 0;
 # ponderhit or stop rather than answering early, which the protocol forbids.
 pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     init_tables();
+    tt.ready();
     val start: i64 = clock.now_ms();
     s.nodes         = 0;
     s.stop          = 0;
