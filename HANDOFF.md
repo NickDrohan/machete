@@ -1,5 +1,9 @@
 # Handing off machete
 
+## 2026-10-22: 0.5.1
+
+**0.5.1 is released and on the lichess bot.** A bundle (the owner's call): razoring (+15 +/- 12 alone), losing captures after quiet moves (+10 +/- 12; the review of 2026-10-20 found LOSING_CAPTURE at +50M), both +16 +/- 12; network C33F280P3ALL (+13 +/- 12 over 0.5.0's, 3,000 games; seed 8 trained, its match queued). Package against 0.5.0: +19 +/- 12 (3,000, 10+0.1); Koivisto -228 +/- 24 (0.5.0 -255). Clock: PonderCredit/PremoveChain (premoves, the owner's idea), a lag reserve without increment (MoveOverhead), EndgameTime/EndgameMen (off). An even share over 50 moves cost 36 +/- 17 and is not in it. On the bot: lichess-bot's extra_game_handlers now sends UCI_RatingAdv (python-chess never did, so contempt applied against stronger opponents) and MoveOverhead 150; the online tablebase answers from 5 s on the clock. `release/notes-0.5.1.md` has the account.
+
 ## 2026-10-20: 0.5.0
 
 **0.5.0 is released and on the lichess bot.** One change in play from 0.4.1: the network, C33F280P3, which chooses each side's inputs by the phase of the game (three layers: opening, middlegame, endgame; `LAYERS 3` in `src/nnue.mach`, now the release build) instead of by king zone, trained on 0.4.0's recipe plus 280M Fischer Random positions (644M). The search is 0.4.1's. As packaged against 0.4.1: +26 +/- 18 at 10+0.1 (1,500 games, 346-920-234, no early stop). The network against 0.4.1's on 0.4.0's search: +19 +/- 18 (1,500, 10+0.1), +18 +/- 28 (600, 60+0.6). Two speed changes that play the same moves: the 3.5 MB network (16% more nodes a second than 0.4.1's 9.4 MB) and fused AVX2 kernels that carry a move's changes to a child's accumulator in one pass (8.1% less time, identical tree). 1.24x 0.4.1's nodes per second. `release/notes-0.5.0.md` has the account. Mach 6.10.1 and std 9.5.0 are the latest releases; the load-elimination fix asked for in mach#4162 was closed for the mirl backend (mirl#71), not released.
