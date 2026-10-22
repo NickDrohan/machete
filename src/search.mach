@@ -17,6 +17,7 @@ use std.types.bool.true;
 use std.types.string.str;
 use std.types.string.str_equals;
 
+use bb: machete.bitboard;
 use machete.clock;
 use machete.eval;
 use mv: machete.move;
@@ -195,6 +196,21 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "UCI_RatingAdv", value, ?RATING_ADV, 0 - 10000, 10000)) {
         ret true;
     }
+    or (tune_one(name, "MoveOverhead", value, ?MOVE_OVERHEAD, 0, 5000)) {
+        ret true;
+    }
+    or (tune_one(name, "EndgameTime", value, ?ENDGAME_TIME, 100, 1000)) {
+        ret true;
+    }
+    or (tune_one(name, "EndgameMen", value, ?ENDGAME_MEN, 2, 32)) {
+        ret true;
+    }
+    or (tune_one(name, "PonderCredit", value, ?PONDER_CREDIT, 0, 1)) {
+        ret true;
+    }
+    or (tune_one(name, "PremoveChain", value, ?PREMOVE_CHAIN, 0, 20)) {
+        ret true;
+    }
     ret false;
 }
 
@@ -220,6 +236,11 @@ pub fun print_tunables() {
     print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
     print.printlnf("option name Contempt type spin default {} min 0 max 100", CONTEMPT);
     print.printlnf("option name UCI_RatingAdv type spin default {} min -10000 max 10000", RATING_ADV);
+    print.printlnf("option name MoveOverhead type spin default {} min 0 max 5000", MOVE_OVERHEAD);
+    print.printlnf("option name EndgameTime type spin default {} min 100 max 1000", ENDGAME_TIME);
+    print.printlnf("option name EndgameMen type spin default {} min 2 max 32", ENDGAME_MEN);
+    print.printlnf("option name PonderCredit type spin default {} min 0 max 1", PONDER_CREDIT);
+    print.printlnf("option name PremoveChain type spin default {} min 0 max 20", PREMOVE_CHAIN);
 }
 
 # Variety: in the first VARIETY_MOVES moves of a game, each root move gets
@@ -618,10 +639,13 @@ fun capture_score(p: *Position, m: Move) i64 {
 }
 
 # a capture that survives the exchange scores about GOOD_CAPTURE; a losing
-# one scores LOSING_CAPTURE plus its (negative) exchange, under the quiet moves
-# that might work, and so below LOSING_CAPTURE
+# one scores LOSING_CAPTURE plus its (negative) exchange, so below LOSING_CAPTURE.
+# LOSING_CAPTURE is negative and further from zero than any history score can
+# reach (+/-16384), so a losing capture comes after every quiet move, however
+# badly its history reads. At +50,000,000 it had been ahead of all the quiet
+# moves but the killers and the counter move.
 val GOOD_CAPTURE:   i64 = 800000000;
-val LOSING_CAPTURE: i64 = 50000000;
+val LOSING_CAPTURE: i64 = 0 - 50000000;
 
 fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (m == tt_move)                                            { ret 1000000000; }
@@ -864,6 +888,16 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     if (!is_pv && !in_check && depth <= 8) {
         val margin: i64 = RFP_MARGIN * depth;
         if (static_eval - margin >= beta && static_eval < MATE_FOUND) { ret static_eval - margin; }
+    }
+
+    # razoring, the mirror image: in the last two plies, a position so far
+    # below alpha that a piece would not lift it is checked by the capture
+    # search alone, and given up if that agrees. Not in a singular check,
+    # whose bar is not a real alpha. (From team cursor's battle-stack,
+    # cursor2/battle-stack 5443518, measured there only in a bundle.)
+    if (!is_pv && !in_check && excluded == mv.NONE && depth <= 2 && static_eval < MATE_FOUND && static_eval + 200 + 150 * depth <= alpha) {
+        val razor: i64 = quiesce(s, p, alpha, beta, ply);
+        if (razor <= alpha) { ret razor; }
     }
 
     # internal iterative reduction, but never in a principal variation node:
@@ -1158,9 +1192,22 @@ fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
     print.println("");
 }
 
-# milliseconds held back from every clock reading for the pipe and the GUI;
-# a game is lost for overrunning, and ten seconds a game leaves little slack
-val MOVE_OVERHEAD: i64 = 20;
+# milliseconds held back from every clock reading for the pipe and the GUI,
+# and kept in reserve for every move still to come (see budget). The UCI
+# option MoveOverhead: on lichess a move costs about 130 ms of clock beyond
+# the search (2026-10-21, the last moves of a 5+0 game), so the bot sets 150.
+pub var MOVE_OVERHEAD: i64 = 20;
+
+# moves of overhead kept back when there is no increment to pay for them
+val RESERVE_MOVES: i64 = 100;
+
+# ENDGAME_TIME percent of the soft aim for a position of ENDGAME_MEN men or
+# fewer, kings and pawns included (UCI options EndgameTime, 100 is none, and
+# EndgameMen). At 7 men and 250 it measured +0 +/- 12 at 10+0.1 (3,000 games):
+# on lichess the online tablebase plays those already, so the ending to spend
+# on is the one just above it.
+pub var ENDGAME_TIME: i64 = 100;
+pub var ENDGAME_MEN:  i64 = 7;
 
 # how long to spend on one move
 # ---
@@ -1200,7 +1247,25 @@ pub fun budget(p: *Position, limits: *Limits) Budget {
         moves = limits.movestogo;
         if (moves < 2) { moves = 2; }
     }
-    b.soft = remaining / moves + increment * 3 / 4;
+    # Without an increment that covers it, every move still to come costs the
+    # overhead (the lag of a move on lichess), so the share comes from the
+    # clock less a reserve for RESERVE_MOVES of them, at most a third of it:
+    # 0.5.0 lost a 5+0 game on time at move 116 of a drawn ending (lichess
+    # gJFzcmfZ). With 130 ms of lag a move, a 5+0 game now lasts to about
+    # move 130-155 where it ran out at 106-127. A real increment needs no
+    # reserve, and the aim is then the old one: spending less early was tried
+    # (an even share over 50 moves) and cost 36 +/- 17 Elo at 10+0.1.
+    var spare: i64 = remaining;
+    if (increment < MOVE_OVERHEAD * 2) {
+        var reserve: i64 = MOVE_OVERHEAD * RESERVE_MOVES;
+        if (reserve > remaining / 3) { reserve = remaining / 3; }
+        spare = remaining - reserve;
+    }
+    if (spare < 1) { spare = 1; }
+    b.soft = spare / moves + increment * 3 / 4;
+    # an ending of few men gets ENDGAME_TIME percent of the aim (the owner,
+    # 2026-10-22: rook and pawn endings need a much deeper search)
+    if (bb.count(p.occ[0] | p.occ[1]) <= ENDGAME_MEN) { b.soft = b.soft * ENDGAME_TIME / 100; }
     # the hard stop lets an unsettled move run to five times the aim, but never
     # past a quarter of the clock, so a reserve always survives
     b.hard = b.soft * 5;
@@ -1235,16 +1300,48 @@ fun time_scale(stable: i64, drop: i64) i64 {
 # Called from the UCI thread while the search runs, so the budget must have
 # been worked out before the search started - the search thread is making
 # and unmaking moves on the position, and its side to move is not stable.
-pub fun ponderhit(s: *Search, b: *Budget) {
+#
+# Premoves (the owner, 2026-10-22). Until 0.5.1 the aim ran from ponderhit,
+# so a reply already searched for its whole aim during the opponent's time
+# was searched as long again: 56% of the bot's moves were ponder hits, and
+# after them it thought a median 3.8 s more (130 minutes over 1,457 hits).
+# With PonderCredit the aim runs from when pondering began (`ponder_started`,
+# taken by the UCI thread before the search thread exists), and a reply that
+# has had its aim already is answered at once, from the last iteration the
+# ponder search finished. PremoveChain hits in a row are credited; the next
+# hit searches afresh, so a line followed on credit is looked at again.
+pub fun ponderhit(s: *Search, b: *Budget, ponder_started: i64) {
     if (atomic.load(?s.pondering) == 0) { ret; }
     if (b.hard > 0) {
-        val now: i64 = clock.now_ms();
-        atomic.store(?s.soft_start, now);
+        val now:      i64 = clock.now_ms();
+        var from:     i64 = now;
+        var deadline: i64 = now + b.hard;
+        if (PONDER_CREDIT != 0 && CREDITED < PREMOVE_CHAIN && ponder_started > 0 && ponder_started <= now) {
+            from     = ponder_started;
+            CREDITED = CREDITED + 1;
+            if (now - from >= b.soft && s.depth_reached > 0) {
+                var quick: i64 = b.soft / 20;
+                if (quick < 10)             { quick = 10; }
+                if (now + quick < deadline) { deadline = now + quick; }
+            }
+        }
+        or { CREDITED = 0; }
+        atomic.store(?s.soft_start, from);
         atomic.store(?s.soft, b.soft);
-        atomic.store(?s.deadline, now + b.hard);
+        atomic.store(?s.deadline, deadline);
     }
     atomic.store(?s.pondering, 0);
 }
+
+# a search that was not a ponder hit ends a chain of credited ones
+pub fun premove_reset() {
+    CREDITED = 0;
+}
+
+# UCI PonderCredit (1 on) and PremoveChain, and the hits credited in a row
+pub var PONDER_CREDIT: i64 = 1;
+pub var PREMOVE_CHAIN: i64 = 3;
+var     CREDITED:      i64 = 0;
 
 # search until the limits say stop; returns the best move and sets s.best
 #
@@ -1428,6 +1525,18 @@ test finds_verified_mate_three {
     ret 0;
 }
 
+test losing_capture_orders_after_every_quiet_move {
+    # the cheapest losing capture (a pawn's worth thrown away) against the
+    # quiet move with the worst history there can be
+    val losing: i64 = LOSING_CAPTURE - 100;
+    if (losing >= 0 - HISTORY_MAX) { ret 1; }
+    # and still below LOSING_CAPTURE, which quiescence reads to skip them
+    if (losing >= LOSING_CAPTURE) { ret 2; }
+    # a winning capture still comes first
+    if (GOOD_CAPTURE <= HISTORY_MAX) { ret 3; }
+    ret 0;
+}
+
 test wins_hanging_queen {
     tt.clear();
     if (!finds_move("q3k3/8/8/8/8/8/8/R3K3 w - - 0 1", 4, "a1a8")) { ret 1; }
@@ -1493,14 +1602,15 @@ test clock_budget {
     var limits: Limits;
     limits.wtime = 60020;
     limits.btime = 60020;
-    # no movestogo: a twenty-fifth of the clock after the overhead, and the
-    # hard stop at five times that
+    # no movestogo and no increment: a twenty-fifth of the clock after the
+    # overhead and a reserve of 100 moves' overhead ((60000 - 2000) / 25), and
+    # the hard stop at five times that
     var b: Budget = budget(?p, ?limits);
-    if (b.soft != 2400 || b.hard != 12000 || b.fixed != 0) { ret 2; }
-    # a tenth would be 6000, which fits under the hard stop's quarter
+    if (b.soft != 2320 || b.hard != 11600 || b.fixed != 0) { ret 2; }
+    # a tenth fits under the hard stop's quarter
     limits.movestogo = 10;
     b                = budget(?p, ?limits);
-    if (b.soft != 6000 || b.hard != 15000) { ret 3; }
+    if (b.soft != 5800 || b.hard != 15000) { ret 3; }
     # one move to go: the quarter caps both
     limits.movestogo = 1;
     b                = budget(?p, ?limits);
@@ -1509,12 +1619,23 @@ test clock_budget {
     limits.movetime = 500;
     b               = budget(?p, ?limits);
     if (b.soft != 500 || b.hard != 500 || b.fixed != 1) { ret 5; }
-    # most of the increment is spent on the move it arrives with
+    # most of the increment is spent on the move it arrives with, and an
+    # increment that covers the overhead needs no reserve
     limits.movetime  = 0;
     limits.movestogo = 0;
     limits.winc      = 1000;
     b                = budget(?p, ?limits);
     if (b.soft != 3150 || b.hard != 15000) { ret 6; }
+    # an ending of seven men or fewer gets EndgameTime percent of the aim
+    val endgame: i64 = ENDGAME_TIME;
+    ENDGAME_TIME = 250;
+    var q: Position;
+    if (!pos.set_fen(?q, "8/5k2/8/3p4/3P4/2R5/5K2/6r1 w - - 0 50")) { ret 8; }
+    b = budget(?q, ?limits);
+    if (b.soft != 7875 || b.hard != 15000) { ret 9; }
+    b = budget(?p, ?limits);
+    if (b.soft != 3150) { ret 10; }
+    ENDGAME_TIME = endgame;
     # a clock nearly out still gives a positive budget
     limits.movetime  = 0;
     limits.movestogo = 0;
@@ -1522,6 +1643,82 @@ test clock_budget {
     b                = budget(?p, ?limits);
     if (b.soft < 1 || b.hard < b.soft) { ret 7; }
     ret 0;
+}
+
+test a_ponder_hit_after_long_pondering_answers_at_once_three_times_running {
+    var s: Search;
+    var b: Budget;
+    b.soft  = 2400;
+    b.hard  = 12000;
+    b.fixed = 0;
+    val credit: i64 = PONDER_CREDIT;
+    PONDER_CREDIT = 1;
+    premove_reset();
+    var hit: i64 = 0;
+    for (hit < 4) {
+        atomic.store(?s.pondering, 1);
+        s.depth_reached = 12;
+        val now: i64 = clock.now_ms();
+        # pondered for five seconds, twice the aim
+        ponderhit(?s, ?b, now - 5000);
+        val left: i64 = atomic.load(?s.deadline) - now;
+        if (hit < 3) {
+            # credited: the aim runs from when pondering began, and the
+            # answer is due within a twentieth of the aim
+            if (atomic.load(?s.soft_start) > now - 4900) { ret 1; }
+            if (left > 200)                              { ret 2; }
+        }
+        or {
+            # the fourth in a row searches afresh, on the whole budget
+            if (atomic.load(?s.soft_start) < now) { ret 3; }
+            if (left < 11000)                     { ret 4; }
+        }
+        hit = hit + 1;
+    }
+    # without credit the aim runs from the hit, as before 0.5.1
+    PONDER_CREDIT = 0;
+    premove_reset();
+    atomic.store(?s.pondering, 1);
+    val now: i64 = clock.now_ms();
+    ponderhit(?s, ?b, now - 5000);
+    if (atomic.load(?s.deadline) - now < 11000) { ret 5; }
+    PONDER_CREDIT = credit;
+    premove_reset();
+    ret 0;
+}
+
+test a_long_sudden_death_game_keeps_its_clock {
+    # the 5+0 game 0.5.0 lost on time at move 116 (lichess gJFzcmfZ): every
+    # move costs its search plus 130 ms of lag, the GUI reports the clock
+    # 2 s short, and the bot sets MoveOverhead 150. Spending the whole soft
+    # aim every move, and a third more on unsettled ones, the clock must last
+    # 120 moves; the aim before 0.5.1 ran out at move 106.
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    val overhead: i64 = MOVE_OVERHEAD;
+    MOVE_OVERHEAD = 150;
+    var result: i32 = 0;
+    var extra:  i64 = 0;
+    for (extra < 2) {
+        var clock: i64 = 300000;
+        var move:  i64 = 0;
+        for (move < 120 && result == 0) {
+            var limits: Limits;
+            limits.wtime = clock - 2000;
+            if (limits.wtime < 1) { limits.wtime = 1; }
+            limits.btime = limits.wtime;
+            val b:     Budget = budget(?p, ?limits);
+            var spend: i64    = b.soft;
+            if (extra == 1)     { spend = b.soft * 4 / 3; }
+            if (spend > b.hard) { spend = b.hard; }
+            clock = clock - spend - 130;
+            if (clock <= 0) { result = (2 + extra)::i32; }
+            move = move + 1;
+        }
+        extra = extra + 1;
+    }
+    MOVE_OVERHEAD = overhead;
+    ret result;
 }
 
 test unsettled_move_gets_more_time_than_settled_one {

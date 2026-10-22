@@ -1,4 +1,4 @@
-machete 0.5.0
+machete 0.5.1
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -31,6 +31,22 @@ Options:
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.5.0
+------------------------
+Two search changes and a network, each measured on its own, then together:
+razoring in the last two plies (+15 +/- 12 alone); losing captures searched
+after the quiet moves (+10 +/- 12); the network C33F280P3ALL, 0.5.0's recipe
+plus rook endings, more ordinary positions and deep self-play (+13 +/- 12).
+As packaged against 0.5.0 as released: +19 +/- 12 Elo at 10+0.1 over 3,000
+games. Against Koivisto 9.0 over 1,200 games: -228 +/- 24, where 0.5.0 scored
+-255 +/- 25.
+
+The clock: time spent pondering counts toward the reply when the opponent
+plays the expected move (PonderCredit, PremoveChain); games without increment
+keep a reserve for lag (MoveOverhead, default 20 ms); EndgameTime and
+EndgameMen give endings more time, off by default.
 
 
 What changed since 0.4.1
