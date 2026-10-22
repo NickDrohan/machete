@@ -1,13 +1,13 @@
-# machete health, 2026-10-22 18:22
+# machete health, 2026-10-22 18:27
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- ALERT: gpu has had nothing to run for 87 min and its backlog is empty
-- ALERT: laneA has had nothing to run for 87 min and its backlog is empty
+- ALERT: gpu has had nothing to run for 92 min and its backlog is empty
+- ALERT: laneA has had nothing to run for 92 min and its backlog is empty
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: DOWN: lichess bot
 - ran recover.ps1 for: lichess bot
 - gpu: running nothing
 - laneA: running nothing
 - laneB: running GEN-ATHENA-2
-- bot: last new game 1.4 h ago
+- bot: last new game 1.5 h ago
