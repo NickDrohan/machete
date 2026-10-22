@@ -199,7 +199,10 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "MoveOverhead", value, ?MOVE_OVERHEAD, 0, 5000)) {
         ret true;
     }
-    or (tune_one(name, "EndgameTime", value, ?ENDGAME_TIME, 100, 500)) {
+    or (tune_one(name, "EndgameTime", value, ?ENDGAME_TIME, 100, 1000)) {
+        ret true;
+    }
+    or (tune_one(name, "EndgameMen", value, ?ENDGAME_MEN, 2, 32)) {
         ret true;
     }
     ret false;
@@ -228,7 +231,8 @@ pub fun print_tunables() {
     print.printlnf("option name Contempt type spin default {} min 0 max 100", CONTEMPT);
     print.printlnf("option name UCI_RatingAdv type spin default {} min -10000 max 10000", RATING_ADV);
     print.printlnf("option name MoveOverhead type spin default {} min 0 max 5000", MOVE_OVERHEAD);
-    print.printlnf("option name EndgameTime type spin default {} min 100 max 500", ENDGAME_TIME);
+    print.printlnf("option name EndgameTime type spin default {} min 100 max 1000", ENDGAME_TIME);
+    print.printlnf("option name EndgameMen type spin default {} min 2 max 32", ENDGAME_MEN);
 }
 
 # Variety: in the first VARIETY_MOVES moves of a game, each root move gets
@@ -1190,9 +1194,12 @@ pub var MOVE_OVERHEAD: i64 = 20;
 val RESERVE_MOVES: i64 = 100;
 
 # ENDGAME_TIME percent of the soft aim for a position of ENDGAME_MEN men or
-# fewer, kings and pawns included (UCI option EndgameTime; 100 is none)
+# fewer, kings and pawns included (UCI options EndgameTime, 100 is none, and
+# EndgameMen). At 7 men and 250 it measured +0 +/- 12 at 10+0.1 (3,000 games):
+# on lichess the online tablebase plays those already, so the ending to spend
+# on is the one just above it.
 pub var ENDGAME_TIME: i64 = 100;
-val     ENDGAME_MEN:  i64 = 7;
+pub var ENDGAME_MEN:  i64 = 7;
 
 # how long to spend on one move
 # ---
