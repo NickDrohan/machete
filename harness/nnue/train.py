@@ -19,6 +19,7 @@ it a net can train beautifully and then evaluate garbage once quantized.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -389,6 +390,24 @@ def share_of(path):
     return share if 0.05 <= share < 1.0 else 1.0
 
 
+QUARANTINE = "E:/machete/corpora/QUARANTINE.json"
+
+
+def refuse_quarantined(data, manifest=QUARANTINE):
+    """Stop before training on a corpus the quarantine names (the owner, 2026-10-23: data under a question
+    mark is set aside whole, kept as examples for finding bad data, and never trained on until cleared).
+    The manifest is {"path": "why", ...}; a path matches with or without an @N suffix, any slashes."""
+    if not os.path.exists(manifest):
+        return
+    held = {os.path.normcase(os.path.normpath(k)): v for k, v in json.load(open(manifest, encoding="utf-8")).items()}
+    hits = [(d, held[os.path.normcase(os.path.normpath(d.split("@")[0]))]) for d in data
+            if os.path.normcase(os.path.normpath(d.split("@")[0])) in held]
+    if hits:
+        raise SystemExit("quarantined data in this recipe:
+" + "
+".join("  %s: %s" % h for h in hits))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
@@ -437,6 +456,7 @@ def main():
             args.blend, round(1.0 - args.blend, 2)))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    refuse_quarantined(args.data)
     sources = open_sources(args.data)
     total = sum(take for _, take in sources)
     print("{:,} positions ({:.2f} GB packed), training on {}".format(
