@@ -403,9 +403,7 @@ def refuse_quarantined(data, manifest=QUARANTINE):
     hits = [(d, held[os.path.normcase(os.path.normpath(d.split("@")[0]))]) for d in data
             if os.path.normcase(os.path.normpath(d.split("@")[0])) in held]
     if hits:
-        raise SystemExit("quarantined data in this recipe:
-" + "
-".join("  %s: %s" % h for h in hits))
+        raise SystemExit("quarantined data in this recipe:\n" + "\n".join("  %s: %s" % h for h in hits))
 
 
 def main():
