@@ -28,6 +28,7 @@ use nn:  machete.nnue;
 use pos: machete.position;
 use machete.position.Position;
 use machete.search;
+use machete.tt;
 
 pub val MAX_THREADS: i64 = 32;
 
@@ -91,6 +92,7 @@ pub fun helper_nodes(count: i64) i64 {
 # threads: total thread count, clamped to 1..MAX_THREADS
 # ret:     the best move
 pub fun think(s: *search.Search, p: *Position, limits: *search.Limits, threads: i64) Move {
+    tt.ready();
     var count: i64 = threads;
     if (count < 1)           { count = 1; }
     if (count > MAX_THREADS) { count = MAX_THREADS; }

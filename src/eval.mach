@@ -226,7 +226,7 @@ fun side_score(p: *Position, color: u8, phase: i64) i64 {
 pub fun evaluate(p: *Position) i64 {
     if (nn.loaded && p.accs != nil) {
         nn.materialise(p.accs, p.acc_top, ?p.board[0], pos.king_square(p, pos.WHITE), pos.king_square(p, pos.BLACK));
-        ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])) + mop_up(p);
+        ret nn.output(?p.accs[p.acc_top], p.side, bb.count(p.occ[0] | p.occ[1])) + mop_up(p) + passers(p);
     }
     ret classical(p) + mop_up(p);
 }
@@ -269,6 +269,64 @@ fun mop_up(p: *Position) i64 {
     }
     if (p.side == strong) { ret bonus; }
     ret 0 - bonus;
+}
+
+# Passed pawns once the queens are off, on top of the network (the owner,
+# 2026-10-22: promoting passed pawns should come first in the endgame). On
+# 79,525 queenless positions the 0.5.1 network had not seen, against
+# Stockfish at 15,000 nodes, it read a lone passer on its sixth rank 27 cp
+# too low and on its seventh 37 cp too low, and the opponent's lone passer
+# there 48 and 71 cp too high; from the fifth rank down the error was within
+# about 15 cp. PASSER_NET is that gap, by rank, for each side's passers;
+# PASSER_BONUS (UCI PasserBonus, in percent, 0 off) scales it.
+pub var PASSER_BONUS: i64    = 0;
+val     PASSER_NET:   [8]i64 = [8]i64{0, 0, 0, 0, 5, 25, 40, 0};
+
+fun passers(p: *Position) i64 {
+    if (PASSER_BONUS == 0)                                                                          { ret 0; }
+    if ((p.pieces[pos.code(pos.WHITE, pos.QUEEN)] | p.pieces[pos.code(pos.BLACK, pos.QUEEN)]) != 0) { ret 0; }
+    init();
+    val white: i64 = passer_sum(p, pos.WHITE);
+    val black: i64 = passer_sum(p, pos.BLACK);
+    var score: i64 = (white - black) * PASSER_BONUS / 100;
+    if (p.side == pos.BLACK) { score = 0 - score; }
+    ret score;
+}
+
+fun passer_sum(p: *Position, color: u8) i64 {
+    val theirs: u64 = p.pieces[pos.code(color ^ 1, pos.PAWN)];
+    var pawns:  u64 = p.pieces[pos.code(color, pos.PAWN)];
+    var sum:    i64 = 0;
+    for (pawns != 0) {
+        val sq: i64 = bb.lsb(pawns);
+        if ((theirs & PASSED_MASK[color][sq]) == 0) {
+            var rank: i64 = bb.rank_of(sq);
+            if (color == pos.BLACK) { rank = 7 - rank; }
+            sum = sum + PASSER_NET[rank];
+        }
+        pawns = pawns & (pawns - 1);
+    }
+    ret sum;
+}
+
+test passer_bonus_counts_queenless_passers_for_the_side_to_move {
+    pos.init();
+    var p: Position;
+    # White's passer on the seventh, Black's on its sixth, no queens: 40 - 25
+    if (!pos.set_fen(?p, "4k3/1P6/8/8/8/6p1/8/4K3 w - - 0 1")) { ret 1; }
+    val saved: i64 = PASSER_BONUS;
+    PASSER_BONUS = 0;
+    if (passers(?p) != 0) { ret 2; }
+    PASSER_BONUS = 100;
+    if (passers(?p) != 15) { ret 3; }
+    # the same position with Black to move reads the other way
+    if (!pos.set_fen(?p, "4k3/1P6/8/8/8/6p1/8/4K3 b - - 0 1")) { ret 4; }
+    if (passers(?p) != 0 - 15)                                 { ret 5; }
+    # with a queen on the board it is the network's alone
+    if (!pos.set_fen(?p, "4k3/1P6/8/8/8/6p1/8/3QK3 w - - 0 1")) { ret 6; }
+    if (passers(?p) != 0)                                       { ret 7; }
+    PASSER_BONUS = saved;
+    ret 0;
 }
 
 # nothing but the king
