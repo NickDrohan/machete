@@ -1,9 +1,9 @@
-# machete health, 2026-10-24 15:23
+# machete health, 2026-10-24 15:28
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- ALERT: gpu has had nothing to run for 225 min and its backlog is empty
-- ALERT: laneA has had nothing to run for 385 min and its backlog is empty
+- ALERT: gpu has had nothing to run for 230 min and its backlog is empty
+- ALERT: laneA has had nothing to run for 390 min and its backlog is empty
 - ALERT: the bot has started no game in 3.8 h
 - ALERT: C has 7 GB free
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
