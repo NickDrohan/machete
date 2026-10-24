@@ -205,6 +205,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "EndgameMen", value, ?ENDGAME_MEN, 2, 32)) {
         ret true;
     }
+    or (tune_one(name, "SuddenMoves", value, ?SUDDEN_MOVES, 8, 40)) {
+        ret true;
+    }
     or (tune_one(name, "PasserBonus", value, ?eval.PASSER_BONUS, 0, 300)) {
         ret true;
     }
@@ -242,6 +245,7 @@ pub fun print_tunables() {
     print.printlnf("option name MoveOverhead type spin default {} min 0 max 5000", MOVE_OVERHEAD);
     print.printlnf("option name EndgameTime type spin default {} min 100 max 1000", ENDGAME_TIME);
     print.printlnf("option name EndgameMen type spin default {} min 2 max 32", ENDGAME_MEN);
+    print.printlnf("option name SuddenMoves type spin default {} min 8 max 40", SUDDEN_MOVES);
     print.printlnf("option name PasserBonus type spin default {} min 0 max 300", eval.PASSER_BONUS);
     print.printlnf("option name PonderCredit type spin default {} min 0 max 1", PONDER_CREDIT);
     print.printlnf("option name PremoveChain type spin default {} min 0 max 20", PREMOVE_CHAIN);
@@ -1205,6 +1209,9 @@ pub var MOVE_OVERHEAD: i64 = 20;
 # moves of overhead kept back when there is no increment to pay for them
 val RESERVE_MOVES: i64 = 100;
 
+# the moves a share is taken over in sudden death (25 with an increment)
+pub var SUDDEN_MOVES: i64 = 20;
+
 # ENDGAME_TIME percent of the soft aim for a position of ENDGAME_MEN men or
 # fewer, kings and pawns included (UCI options EndgameTime, 100 is none, and
 # EndgameMen). At 7 men and 250 it measured +0 +/- 12 at 10+0.1 (3,000 games):
@@ -1259,6 +1266,16 @@ pub fun budget(p: *Position, limits: *Limits) Budget {
     # move 130-155 where it ran out at 106-127. A real increment needs no
     # reserve, and the aim is then the old one: spending less early was tried
     # (an even share over 50 moves) and cost 36 +/- 17 Elo at 10+0.1.
+    # Sudden death: the share is of the clock alone, and the search stops once
+    # half its aim is spent and settles below it on a stable move, so a
+    # twenty-fifth spent about a fiftieth: in the 2026-10-22 Arena gauntlet at
+    # 10+0 machete finished game after game with two to five minutes of its ten
+    # unused while its opponents searched deeper. Without an increment the
+    # share is SUDDEN_MOVES; the reserve below still keeps the lag paid for.
+    # 16 would fail a_long_sudden_death_game_keeps_its_clock (out of time at
+    # move 115 spending the whole aim); 20 lasts to 134 there, 171 spending
+    # the 70% of it a search really spends.
+    if (increment < MOVE_OVERHEAD * 2 && limits.movestogo <= 0) { moves = SUDDEN_MOVES; }
     var spare: i64 = remaining;
     if (increment < MOVE_OVERHEAD * 2) {
         var reserve: i64 = MOVE_OVERHEAD * RESERVE_MOVES;
@@ -1607,11 +1624,11 @@ test clock_budget {
     var limits: Limits;
     limits.wtime = 60020;
     limits.btime = 60020;
-    # no movestogo and no increment: a twenty-fifth of the clock after the
-    # overhead and a reserve of 100 moves' overhead ((60000 - 2000) / 25), and
-    # the hard stop at five times that
+    # no movestogo and no increment: a twentieth (SUDDEN_MOVES) of the clock
+    # after the overhead and a reserve of 100 moves' overhead
+    # ((60000 - 2000) / 20), and the hard stop at five times that
     var b: Budget = budget(?p, ?limits);
-    if (b.soft != 2320 || b.hard != 11600 || b.fixed != 0) { ret 2; }
+    if (b.soft != 2900 || b.hard != 14500 || b.fixed != 0) { ret 2; }
     # a tenth fits under the hard stop's quarter
     limits.movestogo = 10;
     b                = budget(?p, ?limits);
@@ -1696,31 +1713,26 @@ test a_long_sudden_death_game_keeps_its_clock {
     # the 5+0 game 0.5.0 lost on time at move 116 (lichess gJFzcmfZ): every
     # move costs its search plus 130 ms of lag, the GUI reports the clock
     # 2 s short, and the bot sets MoveOverhead 150. Spending the whole soft
-    # aim every move, and a third more on unsettled ones, the clock must last
-    # 120 moves; the aim before 0.5.1 ran out at move 106.
+    # aim every move the clock must last 120 moves; the aim before 0.5.1 ran
+    # out at move 106. The whole aim is the pessimistic case: over 5,314 of
+    # machete's moves at 10+0 (the 2026-10-22 gauntlet) it spent a mean 0.44
+    # of the aim, 0.88 at the 90th percentile, more than 4/3 on 3.4%.
     var p: Position;
     if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
     val overhead: i64 = MOVE_OVERHEAD;
     MOVE_OVERHEAD = 150;
     var result: i32 = 0;
-    var extra:  i64 = 0;
-    for (extra < 2) {
-        var clock: i64 = 300000;
-        var move:  i64 = 0;
-        for (move < 120 && result == 0) {
-            var limits: Limits;
-            limits.wtime = clock - 2000;
-            if (limits.wtime < 1) { limits.wtime = 1; }
-            limits.btime = limits.wtime;
-            val b:     Budget = budget(?p, ?limits);
-            var spend: i64    = b.soft;
-            if (extra == 1)     { spend = b.soft * 4 / 3; }
-            if (spend > b.hard) { spend = b.hard; }
-            clock = clock - spend - 130;
-            if (clock <= 0) { result = (2 + extra)::i32; }
-            move = move + 1;
-        }
-        extra = extra + 1;
+    var clock:  i64 = 300000;
+    var move:   i64 = 0;
+    for (move < 120 && result == 0) {
+        var limits: Limits;
+        limits.wtime = clock - 2000;
+        if (limits.wtime < 1) { limits.wtime = 1; }
+        limits.btime = limits.wtime;
+        val b: Budget = budget(?p, ?limits);
+        clock = clock - b.soft - 130;
+        if (clock <= 0) { result = 2; }
+        move = move + 1;
     }
     MOVE_OVERHEAD = overhead;
     ret result;
