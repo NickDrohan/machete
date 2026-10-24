@@ -1,11 +1,11 @@
-# machete health, 2026-10-24 02:41
+# machete health, 2026-10-24 03:46
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - ALERT: C has 8 GB free
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: all running
-- gpu: running TRAIN-C33F280P3ALLU
+- gpu: running TRAIN-C33F280P3ALLUA
 - laneA: running PASSER-100-0b
 - laneB: running GEN-ENDGAME-1
-- bot: last new game 0.3 h ago
+- bot: last new game 0.0 h ago
