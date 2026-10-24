@@ -1,12 +1,12 @@
-# machete health, 2026-10-24 08:39
+# machete health, 2026-10-24 08:47
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- ALERT: gpu has had nothing to run for 263 min and its backlog is empty
+- ALERT: gpu has had nothing to run for 271 min and its backlog is empty
 - ALERT: C has 8 GB free
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: all running
 - gpu: running nothing
-- laneA: running NET-C33F280P3ALLU-051b
+- laneA: running HASH-1024-128b
 - laneB: running GEN-ENDGAME-1
 - bot: last new game 0.0 h ago
