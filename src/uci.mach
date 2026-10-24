@@ -285,7 +285,7 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete 0.5.1");
+            print.println("id name machete 0.5.2");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min 1 max {}", tt.DEFAULT_MEGABYTES, tt.MAX_MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);

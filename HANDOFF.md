@@ -1,5 +1,9 @@
 # Handing off machete
 
+## 2026-10-24: 0.5.2
+
+**0.5.2 is released and on the lichess bot.** 0.5.1's network and search (same tree with an increment and the repertoire off), plus: the Vienna 3.f4 lines against 2...Nf6 replaced by 3.Bc4 (the 2026-10-22 Arena gauntlet: 7.Bb5+ c6 8.O-O cxb5 lost to Torch, Alexandria and Berserk; machete read 0.00, Stockfish -2.3); SuddenMoves 20 with no increment (+2 +/- 22 at 30+0, 0 time losses; the search spends a mean 0.44 of its aim). Options off by default: Hash (page-allocated, 1 MB-32 GB; HASH-1024-128b measuring), PasserBonus (-9 +/- 8 over 1,800 clean games), SuddenMoves. Not in it: network C33F280P3ALLU (+4 +/- 12 against 0.5.1's, the last 400 games starved). Lessons of the night: a training's data load starves concurrent timed matches of memory (the health check now quarantines any match over 1% time losses); measure on a quiet machine. `release/notes-0.5.2.md` has the account.
+
 ## 2026-10-22: 0.5.1
 
 **0.5.1 is released and on the lichess bot.** A bundle (the owner's call): razoring (+15 +/- 12 alone), losing captures after quiet moves (+10 +/- 12; the review of 2026-10-20 found LOSING_CAPTURE at +50M), both +16 +/- 12; network C33F280P3ALL (+13 +/- 12 over 0.5.0's, 3,000 games; seed 8 trained, its match queued). Package against 0.5.0: +19 +/- 12 (3,000, 10+0.1); Koivisto -228 +/- 24 (0.5.0 -255). Clock: PonderCredit/PremoveChain (premoves, the owner's idea), a lag reserve without increment (MoveOverhead), EndgameTime/EndgameMen (off). An even share over 50 moves cost 36 +/- 17 and is not in it. On the bot: lichess-bot's extra_game_handlers now sends UCI_RatingAdv (python-chess never did, so contempt applied against stronger opponents) and MoveOverhead 150; the online tablebase answers from 5 s on the clock. `release/notes-0.5.1.md` has the account.

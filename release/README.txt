@@ -1,4 +1,4 @@
-machete 0.5.1
+machete 0.5.2
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -31,6 +31,17 @@ Options:
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.5.1
+------------------------
+The network and search are 0.5.1's (the same tree with an increment and the
+repertoire off). The repertoire's Vienna Gambit against 2...Nf6 gave way to
+3.Bc4: three top engines won a bishop the same way after 3.f4 (7.Bb5+ c6
+8.O-O cxb5). Without an increment each move takes a twentieth of the clock,
+not a twenty-fifth, since the search spends less than half its aim (+2 +/- 22
+at 30+0, no losses on time). New options, off by default: Hash (1 MB to
+32 GB), PasserBonus and SuddenMoves.
 
 
 What changed since 0.5.0
