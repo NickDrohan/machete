@@ -71,7 +71,8 @@ def gather(args):
 
 def label(job):
     fens, nodes = job
-    e = chess.engine.SimpleEngine.popen_uci(SF)
+    # a generous timeout: on a loaded machine the handshake can take longer than python-chess's 10 s
+    e = chess.engine.SimpleEngine.popen_uci(SF, timeout=600)
     e.configure({"Threads": 1, "Hash": 64})
     out = []
     for fen, r in fens:
@@ -112,13 +113,19 @@ def main():
     found = found[:args.sample]
     print("%d positions to label at %d nodes" % (len(found), args.nodes), flush=True)
     chunks = [(found[i::args.workers * 8], args.nodes) for i in range(args.workers * 8)]
-    rows = []
+    # each finished chunk is appended to a .part file at once, so a failure loses one chunk, not the run
+    part = args.out + ".part"
+    if os.path.exists(part):
+        os.remove(part)
+    done = 0
     with mp.Pool(args.workers) as pool:
-        for k, part in enumerate(pool.imap_unordered(label, chunks)):
-            rows += part
-            print("  %d of %d chunks" % (k + 1, len(chunks)), flush=True)
-    np.array([to_record(*x) for x in rows], dtype=RECORD).tofile(args.out)
-    print("%d records -> %s" % (len(rows), args.out))
+        for k, rows in enumerate(pool.imap_unordered(label, chunks)):
+            with open(part, "ab") as f:
+                np.array([to_record(*x) for x in rows], dtype=RECORD).tofile(f)
+            done += len(rows)
+            print("  %d of %d chunks, %d records" % (k + 1, len(chunks), done), flush=True)
+    os.replace(part, args.out)
+    print("%d records -> %s" % (done, args.out))
 
 
 if __name__ == "__main__":
