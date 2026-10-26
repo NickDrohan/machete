@@ -1,12 +1,12 @@
-# machete health, 2026-10-26 02:10
+# machete health, 2026-10-26 02:15
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- ALERT: gpu has had nothing to run for 16 min and its backlog is empty
-- ALERT: the bot has started no game in 3.1 h
+- ALERT: gpu has had nothing to run for 21 min and its backlog is empty
+- ALERT: the bot has started no game in 3.2 h
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: all running
 - gpu: running nothing
 - laneA: running GEN-ATHENA-3
 - laneB: running GEN-IMB-SF-OBSIDIAN-2
-- bot: last new game 3.1 h ago
+- bot: last new game 3.2 h ago
