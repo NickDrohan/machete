@@ -196,6 +196,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "UCI_RatingAdv", value, ?RATING_ADV, 0 - 10000, 10000)) {
         ret true;
     }
+    or (tune_one(name, "ContemptGate", value, ?CONTEMPT_GATE, 1, 2000)) {
+        ret true;
+    }
     or (tune_one(name, "MoveOverhead", value, ?MOVE_OVERHEAD, 0, 5000)) {
         ret true;
     }
@@ -242,6 +245,7 @@ pub fun print_tunables() {
     print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
     print.printlnf("option name Contempt type spin default {} min 0 max 100", CONTEMPT);
     print.printlnf("option name UCI_RatingAdv type spin default {} min -10000 max 10000", RATING_ADV);
+    print.printlnf("option name ContemptGate type spin default {} min 1 max 2000", CONTEMPT_GATE);
     print.printlnf("option name MoveOverhead type spin default {} min 0 max 5000", MOVE_OVERHEAD);
     print.printlnf("option name EndgameTime type spin default {} min 100 max 1000", ENDGAME_TIME);
     print.printlnf("option name EndgameMen type spin default {} min 2 max 32", ENDGAME_MEN);
@@ -273,15 +277,35 @@ pub var VARIETY_SEED:  u64 = 0;
 # first 15 non-wins against weaker bots were repetitions from positions it
 # never tried to unbalance. CONTEMPT 0 turns it off, and then the search is
 # exactly what it was.
-pub var CONTEMPT:   i64 = 0;
-pub var RATING_ADV: i64 = 0;
+#
+# Since 0.5.3 (the owner, after a machete-machete game drawn by repetition with
+# most of the pieces still on: "I'd like the engine to play for a win") it is
+# on by default, 20 cp, and shaped by two things. Material: a repetition with
+# many pieces on the board is a game abandoned, one in a bare ending often the
+# right result, so the contempt is whole with CONTEMPT_FULL_MEN men or more and
+# fades to nothing at CONTEMPT_ZERO_MEN. The opponent: whole against one rated
+# at or below the engine, fading to nothing against one CONTEMPT_GATE points
+# stronger, where a draw is a fair result. A GUI that sends no rating (an
+# engine match) leaves RATING_ADV 0 and the contempt whole. The engine still
+# takes a draw it judges better than playing on: the contempt only tips moves
+# it scores within CONTEMPT of a draw.
+pub var CONTEMPT:          i64 = 20;
+pub var RATING_ADV:        i64 = 0;
+pub var CONTEMPT_GATE:     i64 = 200;
+val     CONTEMPT_FULL_MEN: i64 = 20;
+val     CONTEMPT_ZERO_MEN: i64 = 8;
 
-# draw_value: a draw's score for the side to move at this ply; the engine's
-# own side moves at even plies
-fun draw_value(ply: i64) i64 {
-    if (CONTEMPT <= 0 || RATING_ADV < 0) { ret 0; }
-    if (ply % 2 == 0)                    { ret 0 - CONTEMPT; }
-    ret CONTEMPT;
+# draw_value: a draw's score for the side to move at this ply, in position
+# `p`; the engine's own side moves at even plies
+fun draw_value(p: *Position, ply: i64) i64 {
+    if (CONTEMPT <= 0 || RATING_ADV <= 0 - CONTEMPT_GATE) { ret 0; }
+    var c: i64 = CONTEMPT;
+    if (RATING_ADV < 0) { c = c * (CONTEMPT_GATE + RATING_ADV) / CONTEMPT_GATE; }
+    val men: i64 = bb.count(p.occ[0] | p.occ[1]);
+    if (men <= CONTEMPT_ZERO_MEN) { ret 0; }
+    if (men < CONTEMPT_FULL_MEN)  { c = c * (men - CONTEMPT_ZERO_MEN) / (CONTEMPT_FULL_MEN - CONTEMPT_ZERO_MEN); }
+    if (ply % 2 == 0)             { ret 0 - c; }
+    ret c;
 }
 
 # Repertoire: a root move that reaches a position of the author's repertoire
@@ -831,7 +855,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     s.known_check[ply] = 0;
     s.pv_len[ply]      = 0;
     if (out_of_time(s))        { ret 0; }
-    if (ply > 0 && is_draw(p)) { ret draw_value(ply); }
+    if (ply > 0 && is_draw(p)) { ret draw_value(p, ply); }
     if (ply >= MAX_PLY - 1)    { ret eval.evaluate(p); }
 
     val in_check: bool = check_at(p, noted);
@@ -1142,7 +1166,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         # is not reached, so the move is singular, which it is
         if (excluded != mv.NONE) { ret alpha_in; }
         if (in_check)            { ret 0 - MATE + ply; }
-        ret draw_value(ply);
+        ret draw_value(p, ply);
     }
     if (excluded != mv.NONE) { ret best; }
 
@@ -1772,20 +1796,36 @@ test tunables_set_clamp_and_reach_the_search {
     ret 0;
 }
 
-test contempt_scores_draws_against_the_engine_only_when_not_weaker {
-    val c: i64 = CONTEMPT;
-    val r: i64 = RATING_ADV;
+test contempt_by_material_and_by_the_opponents_strength {
+    pos.init();
+    val c:    i64 = CONTEMPT;
+    val r:    i64 = RATING_ADV;
+    var full: Position;
+    if (!pos.set_fen(?full, pos.START_FEN)) { ret 1; }
     CONTEMPT   = 30;
     RATING_ADV = 0;
-    # the engine's own side moves at even plies: a draw is worse for it
-    if (draw_value(0) != 0 - 30) { ret 1; }
-    if (draw_value(3) != 30)     { ret 2; }
-    # against a stronger opponent a draw is a draw
-    RATING_ADV = 0 - 1;
-    if (draw_value(0) != 0) { ret 3; }
-    CONTEMPT   = 0;
-    RATING_ADV = 200;
-    if (draw_value(0) != 0) { ret 4; }
+    # the engine's own side moves at even plies: a draw is worse for it, by
+    # the whole contempt with all 32 men on the board, and when no rating is sent
+    if (draw_value(?full, 0) != 0 - 30) { ret 2; }
+    if (draw_value(?full, 3) != 30)     { ret 3; }
+    # a weaker opponent: whole
+    RATING_ADV = 300;
+    if (draw_value(?full, 0) != 0 - 30) { ret 4; }
+    # 100 points stronger: half; 200 or more: a draw is a draw
+    RATING_ADV = 0 - 100;
+    if (draw_value(?full, 0) != 0 - 15) { ret 5; }
+    RATING_ADV = 0 - 200;
+    if (draw_value(?full, 0) != 0) { ret 6; }
+    # fewer men, less contempt: 14 men is half way between 8 and 20
+    RATING_ADV = 0;
+    var mid: Position;
+    if (!pos.set_fen(?mid, "r3k3/pp3ppp/8/8/8/8/PP3PPP/R3K3 w - - 0 1")) { ret 7; }
+    if (draw_value(?mid, 0) != 0 - 15)                                   { ret 8; }
+    var bare: Position;
+    if (!pos.set_fen(?bare, "4k3/8/3p4/8/8/3P4/8/4K3 w - - 0 1")) { ret 9; }
+    if (draw_value(?bare, 0) != 0)                                { ret 10; }
+    CONTEMPT = 0;
+    if (draw_value(?full, 0) != 0) { ret 11; }
     CONTEMPT   = c;
     RATING_ADV = r;
     ret 0;
