@@ -1,12 +1,12 @@
-# machete health, 2026-10-27 01:08
+# machete health, 2026-10-27 01:13
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- ALERT: gpu has had nothing to run for 1196 min and its backlog is empty
-- ALERT: laneA has had nothing to run for 1320 min and its backlog is empty
+- ALERT: gpu has had nothing to run for 1201 min and its backlog is empty
+- ALERT: laneA has had nothing to run for 1325 min and its backlog is empty
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: all running
 - gpu: running nothing
 - laneA: running nothing
 - laneB: running GEN-EQ-ALEXANDRIA-RECKLESS
-- bot: last new game 1.9 h ago
+- bot: last new game 2.0 h ago
