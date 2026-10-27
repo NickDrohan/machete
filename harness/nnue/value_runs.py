@@ -13,6 +13,10 @@ imbalanced chunk runs twice on different seeds: the gap between the two is the t
 Step 1 of the plan is to check this against data changes whose Elo is known (human positions removed -27,
 imbalanced against balanced 15,000-node data at 15M +484, deep 15,000-node data added +15, rook endings
 added +8): if the ranking agrees, the test is worth using to sort data before spending a day on a training.
+
+Step 1 half-agreed: a pure fine-tune measures how far a chunk shifts the network, not what it adds inside a
+mix. Step 1b, --mix 0.2, trains each run on 20% chunk and 80% a proportional sample of the base's own
+recipe (--recipe, its finished training job), plus a control run on the recipe sample alone.
 """
 import argparse
 import glob
@@ -45,6 +49,18 @@ def take(paths, n):
         out.append(p)
         need -= k
     return out
+
+
+def recipe_sample(job, n):
+    """n records spread over the corpora of a finished training job, each in proportion to its share there."""
+    specs = [a for a in json.load(open(job))["argv"] if a.split("@")[0].endswith(".bin")]
+    sizes = []
+    for s in specs:
+        path, cap = (s.rsplit("@", 1) + [""])[:2] if "@" in os.path.basename(s) else (s, "")
+        k = os.path.getsize(path) // 70
+        sizes.append((path, min(k, int(cap)) if cap else k))
+    total = sum(k for _, k in sizes)
+    return ["%s@%d" % (p, max(1, k * n // total)) for p, k in sizes]
 
 
 def chunks(held_u):
@@ -82,20 +98,30 @@ def main():
     ap.add_argument("--base", default="E:/machete/releases/machete-0.5.1/machete.nnue")
     ap.add_argument("--positions", type=int, default=5000000)
     ap.add_argument("--yardstick", default=C + "yardstick/yardstick_40k.bin")
+    ap.add_argument("--mix", type=float, default=0.0,
+                    help="the chunk's share of each run; the rest is a sample of --recipe's data (step 1b)")
+    ap.add_argument("--recipe", default="E:/machete/queue-gpu/done/20261020-212629-000000-TRAIN-C33F280P3ALL.json",
+                    help="the finished training job whose data the base network learned from")
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
     held_u = newest("depth/n15000u_*.bin")
+    own = int(args.positions * args.mix) if args.mix else args.positions
+    rest = recipe_sample(args.recipe, args.positions - own) if args.mix else []
     sets = {"yardstick": args.yardstick, "n1500b": C + "depth/n1500b.bin", "imbalanced_heldout": held_u}
     nets = {}
-    for name, paths in chunks(held_u).items():
-        paths = [p for p in paths if os.path.exists(p)]
-        if not paths or sum(os.path.getsize(p) // 70 for p in paths) < args.positions:
-            print("skip %s: not %d records" % (name, args.positions), flush=True)
+    runs = chunks(held_u)
+    if args.mix:
+        # the control: the base's own data alone, so each chunk is judged against what more of the same does
+        runs = dict(recipe=[args.recipe], **runs)
+    for name, paths in runs.items():
+        paths = [p for p in paths if os.path.exists(p.split("@")[0])]
+        if name != "recipe" and (not paths or sum(os.path.getsize(p) // 70 for p in paths) < own):
+            print("skip %s: not %d records" % (name, own), flush=True)
             continue
         out = os.path.join(args.outdir, name + ".nnue").replace(os.sep, "/")
         if not os.path.exists(out):
             seed = "2" if name.endswith("seed2") else "1"
-            cmd = [sys.executable, "-u", os.path.join(HERE, "train.py")] + take(paths, args.positions) + [
+            cmd = [sys.executable, "-u", os.path.join(HERE, "train.py")] + (recipe_sample(args.recipe, args.positions) if name == "recipe" else take(paths, own) + rest) + [
                 "--layers", "phase3", "--hidden", "768", "--scale", "150", "--blend", "1.0", "--epochs", "1",
                 "--lr", "0.0001", "--validation", "50000", "--seed", seed, "--init", args.base, "--out", out]
             r = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, MACHETE_LAYERS="phase3"))
