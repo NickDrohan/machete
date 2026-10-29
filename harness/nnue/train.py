@@ -52,8 +52,11 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 
 
 class Net(nn.Module):
-    def __init__(self, hidden, factorise=False):
+    def __init__(self, hidden, factorise=False, screlu=False):
         super(Net, self).__init__()
+        # --activation screlu: the hidden values squared after clipping (SCReLU), which most strong NNUE engines
+        # use; the engine needs its own output kernel for it, so the screen is on held-out loss first
+        self.screlu = screlu
         self.features = nn.EmbeddingBag(PAD + 1, hidden, mode="sum", padding_idx=PAD)
         # --factorise: one more table, shared by every king zone, added to each zone's own. A zone then learns
         # only how it differs from the rest, and a zone the king seldom stands in (the far ranks) still has what
@@ -90,6 +93,8 @@ class Net(nn.Module):
     def forward(self, us, them, bucket):
         ours = torch.clamp(self.half(us) + self.feature_bias, 0.0, 1.0)
         theirs = torch.clamp(self.half(them) + self.feature_bias, 0.0, 1.0)
+        if self.screlu:
+            ours, theirs = ours * ours, theirs * theirs
         every = self.out(torch.cat([ours, theirs], dim=1))
         return every.gather(1, bucket[:, None]).squeeze(1)
 
@@ -335,6 +340,10 @@ def open_sources(specs):
 
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
+    if model.screlu:
+        # the engine reads every .nnue as clipped-relu; an SCReLU network written as one would evaluate wrongly
+        print("  not written: no engine reads an SCReLU network yet (the run's .state keeps it)")
+        return
     with torch.no_grad():
         fw = model.zone_weights().cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
@@ -420,6 +429,8 @@ def main():
                         help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
+    parser.add_argument("--activation", choices=("crelu", "screlu"), default="crelu",
+                        help="screlu squares the clipped hidden values; no engine reads it yet, so nothing is exported")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch", type=int, default=16384)
     parser.add_argument("--lr", type=float, default=0.001)
@@ -473,7 +484,7 @@ def main():
     if corpus.window:
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
-    model = Net(args.hidden, args.factorise).to(device)
+    model = Net(args.hidden, args.factorise, args.activation == "screlu").to(device)
     if args.init:
         start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -489,7 +500,8 @@ def main():
     # the window is not part of that, it only says how much is on the card.
     state = args.out + ".state"
     recipe = repr((args.data, args.hidden, args.epochs, args.batch, args.lr, args.validation, args.seed, args.init,
-                   args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles))
+                   args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles)
+                  + ((args.activation,) if args.activation != "crelu" else ()))
     first = 0
     if args.resume and os.path.exists(state):
         kept = torch.load(state, map_location=device, weights_only=False)
@@ -550,7 +562,8 @@ def main():
         # --out, so a job that --requires the network never starts on a
         # network still training
         worst = export(model, partial)
-        print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
+        if worst is not None:
+            print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
         if slept:
             print("  slept {:.0f} s of the epoch to share the card".format(slept))
         if args.resume:
@@ -558,6 +571,11 @@ def main():
                         "optimiser": optimiser.state_dict(), "schedule": schedule.state_dict(),
                         "rng": rng.get_state()}, state + ".new")
             os.replace(state + ".new", state)
+    if model.screlu:
+        # nothing was exported: the weights live only in the model; keep them for the engine work to come
+        torch.save({"recipe": recipe, "model": model.state_dict()}, args.out + ".screlu.pt")
+        print("finished: {} (SCReLU weights, not an engine network)".format(args.out + ".screlu.pt"))
+        return 0
     os.replace(partial, args.out)
     if args.resume and os.path.exists(state):
         os.remove(state)
