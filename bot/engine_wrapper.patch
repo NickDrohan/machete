@@ -1,0 +1,83 @@
+--- a/lib/engine_wrapper.py
++++ b/lib/engine_wrapper.py
+@@ -8,6 +8,7 @@
+ import chess
+ import subprocess
+ import logging
++import json
+ import datetime
+ import time
+ import random
+@@ -83,6 +84,64 @@
+ PONDERPV_CHARACTERS = 6  # The length of ", Pv: ".
+ 
+ 
++# machete's experience (r3/experience_build.py): moves its games say not to repeat, by position. The owner, 2026-10-31:
++# "we cannot lose that same game any more": one line had run to move 25 and lost 15 times out of 15.
++AVOID_PATH = "E:/machete/experience/avoid.json"
++AVOID_MARGIN = 100  # centipawns a replacement may look worse than the flagged move and still be played
++_avoid: dict[str, list[str]] = {}
++_avoid_stamp = 0.0
++
++
++def avoid_list() -> dict[str, list[str]]:
++    """The moves to avoid, read again whenever the file changes; empty if it cannot be read."""
++    global _avoid, _avoid_stamp
++    try:
++        stamp = os.path.getmtime(AVOID_PATH)
++        if stamp != _avoid_stamp:
++            with open(AVOID_PATH) as f:
++                _avoid = json.load(f)
++            _avoid_stamp = stamp
++    except (OSError, ValueError):
++        return {}
++    return _avoid
++
++
++def avoid_known_losses(engine: chess.engine.SimpleEngine, board: chess.Board, time_limit: chess.engine.Limit,
++                       draw_offered: bool, result: chess.engine.PlayResult) -> chess.engine.PlayResult:
++    """
++    Search again without a move on the avoid list, and play the replacement unless it looks much worse.
++
++    A repeated line is left at its earliest move with a sound alternative. Any failure keeps the engine's own move:
++    this must never cost a game by itself.
++    """
++    try:
++        if result.move is None:
++            return result
++        banned = avoid_list().get(" ".join(board.fen().split()[:4]), [])
++        if result.move.uci() not in banned:
++            return result
++        others = [m for m in board.legal_moves if m.uci() not in banned]
++        clock = time_limit.white_clock if board.turn == chess.WHITE else time_limit.black_clock
++        if not others or (clock is not None and clock < 5):
++            return result
++        budget = 1.0 if clock is None else min(5.0, clock / 30)
++        other = engine.play(board, chess.engine.Limit(time=budget), info=chess.engine.INFO_ALL, ponder=False,
++                            draw_offered=draw_offered, root_moves=others)
++        first, second = result.info.get("score"), other.info.get("score")
++        if other.move not in others or first is None or second is None:
++            return result
++        mine = first.pov(board.turn).score(mate_score=30000)
++        then = second.pov(board.turn).score(mate_score=30000)
++        if then < mine - AVOID_MARGIN:
++            logger.info(f"Keeping known-bad {board.san(result.move)}: {board.san(other.move)} scores {then} against {mine}")
++            return result
++        logger.info(f"Avoiding known-bad {board.san(result.move)} ({mine}): playing {board.san(other.move)} ({then})")
++        return other
++    except Exception:
++        logger.exception("avoid_known_losses failed; keeping the engine's move")
++        return result
++
++
+ class EngineWrapper:
+     """A wrapper used by all engines (UCI, XBoard, Homemade)."""
+ 
+@@ -268,6 +327,7 @@
+                                   ponder=ponder,
+                                   draw_offered=draw_offered,
+                                   root_moves=root_moves if isinstance(root_moves, list) else None)
++        result = avoid_known_losses(self.engine, board, time_limit, draw_offered, result)
+         # Use null_score to have no effect on draw/resign decisions
+         null_score = chess.engine.PovScore(chess.engine.Mate(1), board.turn)
+         self.scores.append(result.info.get("score", null_score))
