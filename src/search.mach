@@ -359,6 +359,7 @@ fun reported_nodes(s: *Search) i64 {
 # nodes:     stop once the main thread has searched this many nodes
 # infinite:  search until stopped
 # ponder:    search the expected reply until ponderhit or stop
+# only:      searchmoves: the root moves to choose among, the first only_count of them; none means all
 pub rec Limits {
     depth:     i64;
     movetime:  i64;
@@ -370,6 +371,8 @@ pub rec Limits {
     nodes:     i64;
     infinite:  u8;
     ponder:    u8;
+    only_count: i64;
+    only:       [64]Move;
 }
 
 # ---
@@ -423,6 +426,9 @@ pub rec Search {
     # that just worked it out: 0 not known, 1 not in check, 2 in check (see
     # check_at)
     known_check: [64]i64;
+    # searchmoves (see Limits), which only this search's root obeys
+    only_count: i64;
+    only:       [64]Move;
     pv:          [64][64]Move;
     pv_len:      [64]i64;
     # how well the moves were ordered, counted at every cutoff of one search
@@ -499,6 +505,7 @@ pub fun next_search(s: *Search) {
     s.pondering  = 0;
     s.best       = mv.NONE;
     s.ponder     = mv.NONE;
+    s.only_count = 0;
     var i: i64 = 0;
     for (i < MAX_PLY) {
         s.killers[i][0] = mv.NONE;
@@ -669,6 +676,16 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (m == s.killers[ply][1])    { ret 600000000; }
     if (m == counter_slot(s, ply)) { ret 550000000; }
     ret s.history[p.board[mv.from(m)]][mv.to(m)];
+}
+
+# whether searchmoves lets the root play m
+fun root_may_play(s: *Search, m: Move) bool {
+    var i: i64 = 0;
+    for (i < s.only_count) {
+        if (s.only[i] == m) { ret true; }
+        i = i + 1;
+    }
+    ret false;
 }
 
 # selection sort one move at a time: most searches never look at the tail.
@@ -997,7 +1014,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     for (i < list.count) {
         pick(?list, ?scores[0], i);
         val m: Move = list.moves[i];
-        if (m == excluded) {
+        if (m == excluded || (ply == 0 && s.only_count > 0 && !root_may_play(s, m))) {
             i = i + 1;
             cnt;
         }
@@ -1405,6 +1422,14 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     movegen.generate_legal(p, ?root);
     if (root.count == 0) { ret mv.NONE; }
     s.best = root.moves[0];
+    # searchmoves: a helper's limits have none, so helpers search freely and only the main thread is held to them
+    s.only_count = limits.only_count;
+    var o: i64 = 0;
+    for (o < s.only_count) {
+        s.only[o] = limits.only[o];
+        o         = o + 1;
+    }
+    if (s.only_count > 0) { s.best = s.only[0]; }
 
     # the network follows the search from here, and is let go again at the end
     # so that moves applied between searches cannot run the stack off its end
@@ -1498,6 +1523,27 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     pos.detach(p);
     if (ORDERING && s.quiet == 0) { print_ordering(s); }
     ret s.best;
+}
+
+test searchmoves_holds_the_root_to_its_list {
+    pos.init();
+    var p: Position;
+    if (!pos.set_fen(?p, pos.START_FEN)) { ret 1; }
+    var s: Search;
+    reset(?s);
+    s.quiet = 1;
+    var limits: Limits;
+    limits.depth      = 6;
+    limits.only_count = 2;
+    limits.only[0]    = movegen.parse_uci(?p, "a2a3");
+    limits.only[1]    = movegen.parse_uci(?p, "h2h3");
+    val best: Move = think(?s, ?p, ?limits);
+    if (best != limits.only[0] && best != limits.only[1]) { ret 2; }
+    # and a search with no list is free again: from here the engine does not choose either
+    limits.only_count = 0;
+    val free: Move = think(?s, ?p, ?limits);
+    if (free == limits.only[0] || free == limits.only[1]) { ret 3; }
+    ret 0;
 }
 
 # search one position to a fixed depth, quietly; used by tests and bench

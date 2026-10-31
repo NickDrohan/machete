@@ -212,6 +212,7 @@ fun parse_go(t: *Tokens) {
     LIMITS.nodes     = 0;
     LIMITS.infinite  = 0;
     LIMITS.ponder    = 0;
+    LIMITS.only_count = 0;
     var i: i64 = 1;
     for (i < t.count) {
         val word: str = t.item[i];
@@ -225,6 +226,16 @@ fun parse_go(t: *Tokens) {
         or (str_equals(word, "nodes"))     { LIMITS.nodes = token_i64(t, i + 1, 0); }
         or (str_equals(word, "infinite"))  { LIMITS.infinite = 1; }
         or (str_equals(word, "ponder"))    { LIMITS.ponder = 1; }
+        or (str_equals(word, "searchmoves")) {
+            # the moves run until the next word that is not a legal move here
+            for (i + 1 < t.count && LIMITS.only_count < 64) {
+                val m: Move = movegen.parse_uci(?GAME, t.item[i + 1]);
+                if (m == mv.NONE) { brk; }
+                LIMITS.only[LIMITS.only_count] = m;
+                LIMITS.only_count              = LIMITS.only_count + 1;
+                i                              = i + 1;
+            }
+        }
         i = i + 1;
     }
 }
@@ -285,7 +296,7 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete 0.5.2");
+            print.println("id name machete 0.5.3");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min 1 max {}", tt.DEFAULT_MEGABYTES, tt.MAX_MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);

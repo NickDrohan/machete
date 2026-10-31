@@ -1,5 +1,9 @@
 # Handing off machete
 
+## 2026-10-31: 0.5.3
+
+**0.5.3 is released and on the lichess bot.** The owner: "we cannot lose that same game any more". One line had run to move 25 and lost 15 of 15. `searchmoves` now works (it was ignored); lichess-bot's `avoid_known_losses` leaves a move on `E:/machete/experience/avoid.json` when a replacement scores within 100 cp; `harness/experience_build.py`, every five minutes from orchestrate.py, keeps the list: 5+ visits and 15% under rating expectation, or lost 3+ times and never anything else. Out of sample: flagged moves -8.6% +/- 3.7, the rest +2.9% +/- 1.6. Search and network are 0.5.2's (209,573). Not in it: COMBO7, seven pruning changes, +27 +/- 9 at 100k nodes and -10 +/- 7 at 10+0.1, 13% slower a node (feat/search-probe has them behind switches; the laptop measures each alone on the clock). Do not trust a fixed-node result for a change that alters what a node costs. `release/notes-0.5.3.md` has the account.
+
 ## 2026-10-24: 0.5.2
 
 **0.5.2 is released and on the lichess bot.** 0.5.1's network and search (same tree with an increment and the repertoire off), plus: the Vienna 3.f4 lines against 2...Nf6 replaced by 3.Bc4 (the 2026-10-22 Arena gauntlet: 7.Bb5+ c6 8.O-O cxb5 lost to Torch, Alexandria and Berserk; machete read 0.00, Stockfish -2.3); SuddenMoves 20 with no increment (+2 +/- 22 at 30+0, 0 time losses; the search spends a mean 0.44 of its aim). Options off by default: Hash (page-allocated, 1 MB-32 GB; HASH-1024-128b measuring), PasserBonus (-9 +/- 8 over 1,800 clean games), SuddenMoves. Not in it: network C33F280P3ALLU (+4 +/- 12 against 0.5.1's, the last 400 games starved). Lessons of the night: a training's data load starves concurrent timed matches of memory (the health check now quarantines any match over 1% time losses); measure on a quiet machine. `release/notes-0.5.2.md` has the account.

@@ -1,0 +1,134 @@
+--- a/lib/lichess_bot.py
++++ b/lib/lichess_bot.py
+@@ -33,6 +33,7 @@
+                                CORRESPONDENCE_QUEUE_TYPE, LOGGING_QUEUE_TYPE, PGN_QUEUE_TYPE)
+ from requests.exceptions import (ChunkedEncodingError, ConnectionError as RequestsConnectionError, HTTPError, ReadTimeout,
+                                  RequestException)
++from requests.models import Response
+ from rich.logging import RichHandler
+ from collections import defaultdict
+ from collections.abc import Iterator, MutableSequence
+@@ -387,6 +388,7 @@
+ 
+             if event["type"] == "local_game_done":
+                 active_games.pop(event["game"]["id"], None)
++                games_with_threads.discard(event["game"]["id"])
+                 matchmaker.game_done()
+                 log_proc_count("Freed", active_games)
+                 one_game_completed = True
+@@ -562,9 +564,14 @@
+     return game_id in (ongoing_game["gameId"] for ongoing_game in active_games)
+ 
+ 
++# Games whose play_game has been started and has not yet reported local_game_done.
++games_with_threads: set[str] = set()
++
++
+ def start_game_thread(active_games: dict[str, str], game_id: str, opponent_name: str,
+                       play_game_args: PlayGameArgsType, pool: POOL_TYPE) -> None:
+     """Start a game thread."""
++    games_with_threads.add(game_id)
+     active_games[game_id] = opponent_name
+     log_proc_count("Used", active_games)
+     play_game_args["game_id"] = game_id
+@@ -613,6 +620,11 @@
+             logger.info(f"--- Will start {config.url + game_id} as soon as possible")
+             low_time_games.append(event["game"])
+         startup_correspondence_games.remove(game_id)
++    elif game_id in games_with_threads:
++        # lichess repeats gameStart for games in progress when the event stream reconnects; a second thread would
++        # play the same game with a second engine, each answering a position a move old (2026-10-27, Iz1y0i6M).
++        # Not active_games: at startup that already holds the ongoing games, whose gameStart must still start them.
++        logger.info(f"--- {config.url + game_id} is already being played; not starting it again")
+     else:
+         opponent_name = event["game"].get("opponent", {}).get("username", "")
+         start_game_thread(active_games, game_id, opponent_name, play_game_args, pool)
+@@ -682,7 +694,7 @@
+     thread_logging_configurer(logging_queue)
+     logger = logging.getLogger(__name__)
+ 
+-    with li.get_game_stream(game_id) as response:
++    with li.get_game_stream(game_id) as response, contextlib.ExitStack() as reopened_streams:
+         lines = response.iter_lines()
+ 
+         # Initial response of stream will be the full game info. Store it.
+@@ -774,8 +786,30 @@
+                         stay_in_game = False
+                 except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, RequestsConnectionError,
+                         StopIteration) as e:
+-                    stopped = isinstance(e, StopIteration)
+-                    stay_in_game = not stopped and (move_attempted or game_is_active(li, game.id))
++                    if is_correspondence:
++                        # left on purpose and picked up again from the correspondence queue
++                        stopped = isinstance(e, StopIteration)
++                        stay_in_game = not stopped and (move_attempted or game_is_active(li, game.id))
++                    elif is_game_over(game):
++                        stay_in_game = False
++                    else:
++                        # The stream ending, or a request failing, does not mean the game is over: lichess closes
++                        # the streams of games still being played, and the clock keeps running for the side to
++                        # move. The old stream is spent, so open a new one. Its first state is lichess's own,
++                        # and with no prior state to compare against it alone decides whether a move is due: a
++                        # move that never arrived is played again, one that did is not.
++                        logger.info(f"The stream for {game.url()} ended ({type(e).__name__}) before the game did; "
++                                    "reconnecting")
++                        reopened = reconnect_game_stream(li, game)
++                        if reopened is None:
++                            stay_in_game = False
++                        else:
++                            new_response, new_lines, full_state = reopened
++                            response.close()
++                            response = reopened_streams.enter_context(new_response)
++                            game_stream = itertools.chain([json.dumps(full_state["state"]).encode("utf-8")],
++                                                          new_lines)
++                            prior_game = None
+ 
+             pgn_record = try_get_pgn_game_record(li, config, game, board, engine)
+         final_queue_entries(control_queue, correspondence_queue, game, is_correspondence, pgn_record, pgn_queue)
+@@ -862,6 +896,46 @@
+     return upd
+ 
+ 
++def reconnect_game_stream(li: lichess.Lichess,
++                          game: model.Game) -> tuple[Response, Iterator[bytes], GameEventType] | None:
++    """
++    Open a new stream for a game whose old stream ended before the game did.
++
++    Returns the stream, its lines with the first already read, and that first line: the game in full as lichess has
++    it now. A request that fails, or a stream that ends before saying anything, leaves the game's state unknown, so it
++    is tried again, a little later each time, until the clock of the side to move (plus a minute) has run out, after
++    which the game is certainly over. None then, or when the bot is told to quit at once.
++    """
++    wait = 0.5
++    while not stop.force_quit:
++        response: Response | None = None
++        try:
++            response = li.get_game_stream(game.id)
++            lines = response.iter_lines()
++            for line in lines:
++                if not line:
++                    continue
++                full_state = cast(GameEventType, json.loads(line.decode("utf-8")))
++                if full_state.get("type") != "gameFull":
++                    break
++                state = full_state["state"]
++                logger.info(f"Reconnected to {game.url()}: {len(state['moves'].split())} moves played, "
++                            f"status {state.get('status')}")
++                return response, lines, full_state
++            logger.info(f"The new stream for {game.url()} ended without the game's state; trying again")
++        except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, RequestsConnectionError,
++                ValueError) as e:
++            logger.info(f"Could not reconnect to {game.url()} ({type(e).__name__}); trying again")
++        if response is not None:
++            response.close()
++        if game.should_terminate_now():
++            logger.info(f"Leaving {game.url()}: no stream reopened before its clock ran out")
++            return None
++        time.sleep(wait)
++        wait = min(wait * 2, 5.0)
++    return None
++
++
+ def setup_board(game: model.Game) -> chess.Board:
+     """Set up the board."""
+     if game.variant_name.lower() == "chess960":
