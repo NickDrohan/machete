@@ -1,4 +1,4 @@
-machete 0.5.2
+machete 0.5.3
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -19,7 +19,7 @@ Using it in Arena (or any UCI GUI)
 
 Options:
   Threads   1 to 32 (default 1). Lazy SMP.
-  Hash      fixed at 128 MB in this version; the option is accepted and ignored.
+  Hash      the transposition table, 1 MB to 32 GB (default 128), rounded down to a power of two.
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
             0.5.0 reads three-layer networks (768 wide, inputs chosen by the
             phase of the game); 0.4.1's and earlier (king zones) do not load.
