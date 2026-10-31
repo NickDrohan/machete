@@ -52,7 +52,7 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 
 
 class Net(nn.Module):
-    def __init__(self, hidden, factorise=False, screlu=False):
+    def __init__(self, hidden, factorise=False, screlu=False, second=0):
         super(Net, self).__init__()
         # --activation screlu: the hidden values squared after clipping (SCReLU), which most strong NNUE engines
         # use; the engine needs its own output kernel for it, so the screen is on held-out loss first
@@ -68,7 +68,10 @@ class Net(nn.Module):
         # one output layer per band of piece counts (reference.bucket); all
         # are computed and the position's own is picked, which on a GPU costs
         # less than gathering eight weight rows per position
-        self.out = nn.Linear(2 * hidden, BUCKETS)
+        # --second N: a small hidden layer between the accumulators and the output, on held-out loss only until an
+        # engine reads one
+        self.second = nn.Linear(2 * hidden, second) if second else None
+        self.out = nn.Linear(second if second else 2 * hidden, BUCKETS)
         nn.init.uniform_(self.features.weight, -0.01, 0.01)
         with torch.no_grad():
             self.features.weight[PAD].zero_()
@@ -95,7 +98,10 @@ class Net(nn.Module):
         theirs = torch.clamp(self.half(them) + self.feature_bias, 0.0, 1.0)
         if self.screlu:
             ours, theirs = ours * ours, theirs * theirs
-        every = self.out(torch.cat([ours, theirs], dim=1))
+        joined = torch.cat([ours, theirs], dim=1)
+        if self.second is not None:
+            joined = torch.clamp(self.second(joined), 0.0, 1.0)
+        every = self.out(joined)
         return every.gather(1, bucket[:, None]).squeeze(1)
 
     def clip_weights(self):
@@ -340,9 +346,9 @@ def open_sources(specs):
 
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
-    if model.screlu:
-        # the engine reads every .nnue as clipped-relu; an SCReLU network written as one would evaluate wrongly
-        print("  not written: no engine reads an SCReLU network yet (the run's .state keeps it)")
+    if model.screlu or model.second is not None:
+        # the engine reads every .nnue as clipped-relu with no second layer; anything else would evaluate wrongly
+        print("  not written: no engine reads this network yet (the run's .state keeps it)")
         return
     with torch.no_grad():
         fw = model.zone_weights().cpu().numpy() * QA
@@ -429,6 +435,7 @@ def main():
                         help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
+    parser.add_argument("--second", type=int, default=0, help="width of a hidden layer after the accumulators; nothing is exported")
     parser.add_argument("--activation", choices=("crelu", "screlu"), default="crelu",
                         help="screlu squares the clipped hidden values; no engine reads it yet, so nothing is exported")
     parser.add_argument("--epochs", type=int, default=12)
@@ -484,7 +491,7 @@ def main():
     if corpus.window:
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
-    model = Net(args.hidden, args.factorise, args.activation == "screlu").to(device)
+    model = Net(args.hidden, args.factorise, args.activation == "screlu", args.second).to(device)
     if args.init:
         start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -501,7 +508,7 @@ def main():
     state = args.out + ".state"
     recipe = repr((args.data, args.hidden, args.epochs, args.batch, args.lr, args.validation, args.seed, args.init,
                    args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles)
-                  + ((args.activation,) if args.activation != "crelu" else ()))
+                  + ((args.activation,) if args.activation != "crelu" else ()) + ((args.second,) if args.second else ()))
     first = 0
     if args.resume and os.path.exists(state):
         kept = torch.load(state, map_location=device, weights_only=False)
@@ -571,7 +578,7 @@ def main():
                         "optimiser": optimiser.state_dict(), "schedule": schedule.state_dict(),
                         "rng": rng.get_state()}, state + ".new")
             os.replace(state + ".new", state)
-    if model.screlu:
+    if model.screlu or model.second is not None:
         # nothing was exported: the weights live only in the model; keep them for the engine work to come
         torch.save({"recipe": recipe, "model": model.state_dict()}, args.out + ".screlu.pt")
         print("finished: {} (SCReLU weights, not an engine network)".format(args.out + ".screlu.pt"))
