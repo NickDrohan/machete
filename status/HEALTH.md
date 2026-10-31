@@ -1,13 +1,13 @@
-# machete health, 2026-10-30 19:36
+# machete health, 2026-10-30 20:41
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
 - processes: all running
-- gpu idle 1053 min, backlog empty
-- laneA idle 426 min, backlog empty
+- gpu idle 1118 min, backlog empty
+- laneA idle 491 min, backlog empty
 - gpu: running nothing
 - laneA: running nothing
-- laneB: running GEN-N15000U-PC-02
-- bot: last new game 0.8 h ago
-- farm: last batch started or finished 1.2 h ago
+- laneB: running GEN-E30-DEFICIT960
+- bot: last new game 0.3 h ago
+- farm: last batch started or finished 0.7 h ago
