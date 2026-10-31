@@ -361,16 +361,16 @@ fun reported_nodes(s: *Search) i64 {
 # ponder:    search the expected reply until ponderhit or stop
 # only:      searchmoves: the root moves to choose among, the first only_count of them; none means all
 pub rec Limits {
-    depth:     i64;
-    movetime:  i64;
-    wtime:     i64;
-    btime:     i64;
-    winc:      i64;
-    binc:      i64;
-    movestogo: i64;
-    nodes:     i64;
-    infinite:  u8;
-    ponder:    u8;
+    depth:      i64;
+    movetime:   i64;
+    wtime:      i64;
+    btime:      i64;
+    winc:       i64;
+    binc:       i64;
+    movestogo:  i64;
+    nodes:      i64;
+    infinite:   u8;
+    ponder:     u8;
     only_count: i64;
     only:       [64]Move;
 }
@@ -429,8 +429,8 @@ pub rec Search {
     # searchmoves (see Limits), which only this search's root obeys
     only_count: i64;
     only:       [64]Move;
-    pv:          [64][64]Move;
-    pv_len:      [64]i64;
+    pv:         [64][64]Move;
+    pv_len:     [64]i64;
     # how well the moves were ordered, counted at every cutoff of one search
     # (see ORDERING): `cut_at` by how many legal moves had been tried, the
     # cutting one included - 1, 2, 3, 4 to 6, 7 or more - and `cut_by` by why

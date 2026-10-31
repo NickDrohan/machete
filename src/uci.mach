@@ -202,16 +202,16 @@ fun set_position(t: *Tokens) {
 # go [depth n] [nodes n] [movetime ms] [wtime ms] [btime ms] [winc ms] [binc ms]
 #    [movestogo n] [infinite] [ponder]
 fun parse_go(t: *Tokens) {
-    LIMITS.depth     = 0;
-    LIMITS.movetime  = 0;
-    LIMITS.wtime     = 0;
-    LIMITS.btime     = 0;
-    LIMITS.winc      = 0;
-    LIMITS.binc      = 0;
-    LIMITS.movestogo = 0;
-    LIMITS.nodes     = 0;
-    LIMITS.infinite  = 0;
-    LIMITS.ponder    = 0;
+    LIMITS.depth      = 0;
+    LIMITS.movetime   = 0;
+    LIMITS.wtime      = 0;
+    LIMITS.btime      = 0;
+    LIMITS.winc       = 0;
+    LIMITS.binc       = 0;
+    LIMITS.movestogo  = 0;
+    LIMITS.nodes      = 0;
+    LIMITS.infinite   = 0;
+    LIMITS.ponder     = 0;
     LIMITS.only_count = 0;
     var i: i64 = 1;
     for (i < t.count) {
