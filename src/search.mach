@@ -1390,8 +1390,9 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
     init_tables();
     tt.ready();
     val start: i64 = clock.now_ms();
-    s.nodes         = 0;
-    s.stop          = 0;
+    s.nodes = 0;
+    # not s.stop: next_search cleared it before this thread started, and a stop sent since then must hold. Cleared
+    # here it was lost, and a go ponder followed at once by stop searched on until the GUI gave up (2026-10-31)
     s.started       = start;
     s.best          = mv.NONE;
     s.ponder        = mv.NONE;
