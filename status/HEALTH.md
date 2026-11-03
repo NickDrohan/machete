@@ -1,13 +1,14 @@
-# machete health, 2026-11-03 04:23
+# machete health, 2026-11-03 05:24
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
-- processes: all running
-- gpu idle 933 min, backlog empty
-- laneB idle 4193 min, backlog empty
+- processes: DOWN: lichess bot
+- ran recover.ps1 for: lichess bot
+- gpu idle 994 min, backlog empty
+- laneB idle 4254 min, backlog empty
 - gpu: running nothing
-- laneA: running NET-L2-16-SCREEN2
+- laneA: running nothing
 - laneB: running nothing
-- bot: last new game 0.2 h ago
-- farm: last batch started or finished 80.4 h ago
+- bot: last new game 0.0 h ago
+- farm: last batch started or finished 81.4 h ago
