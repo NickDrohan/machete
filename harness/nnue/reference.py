@@ -41,6 +41,7 @@ import sys
 import numpy as np
 
 MAGIC = b"MCHNNUE3"
+MAGIC_SCRELU = b"MCHNNUE5"
 # Piece roles (MACHETE_PIECE_ROLES=1), the owner's per-piece inputs: a side's two knights get an input channel
 # each, and so do its two rooks; the bishops share one (the square's colour says which bishop it is) and so do the
 # pawns (the square says which file). Which knight is which is read off the position, never remembered: the one
@@ -74,6 +75,7 @@ QA = 255           # hidden-layer scale: a clipped-relu output of 1.0 is QA
 QB = 64            # output-weight scale
 SCALE = 400        # network output of 1.0 is SCALE centipawns; see set_scale
 HEADER = 32
+QO = 256           # format 5's output-weight scale
 
 WHITE, BLACK = 0, 1
 
@@ -323,10 +325,17 @@ def save(path, feature_weights, feature_bias, output_weights, output_bias):
         handle.write(np.asarray(output_bias, dtype=np.int64).astype("<i4").tobytes())
 
 
+def save_screlu(path, feature_weights, feature_bias, output_weights, output_bias):
+    """Format 5: save()'s layout, read as clipped-and-squared hidden values; output weights on QO, the bias on QA * QA * QO."""
+    save(path, feature_weights, feature_bias, output_weights, output_bias)
+    with open(path, "r+b") as handle:
+        handle.write(MAGIC_SCRELU)
+
+
 def load(path):
     with open(path, "rb") as handle:
         blob = handle.read()
-    if blob[:8] != MAGIC:
+    if blob[:8] not in (MAGIC, MAGIC_SCRELU):
         raise ValueError("not a machete network of this format: bad magic")
     inputs, hidden, qa, qb, scale, buckets = struct.unpack("<IIiiiI", blob[8:32])
     if (inputs, buckets) != (KING_BUCKETS * INPUTS, BUCKETS):
@@ -344,7 +353,7 @@ def load(path):
     at = at + buckets * 4
     if at != len(blob):
         raise ValueError("network file is {} bytes, its header says {}".format(len(blob), at))
-    return {"feature_weights": feature_weights.astype(np.int32),
+    return {"screlu": blob[:8] == MAGIC_SCRELU, "feature_weights": feature_weights.astype(np.int32),
             "feature_bias": feature_bias.astype(np.int32),
             "output_weights": output_weights.astype(np.int32),
             "output_bias": [int(b) for b in output_bias],
@@ -369,6 +378,13 @@ def forward(net, acc, side_to_move, pieces):
     qa, qb, scale, hidden = net["qa"], net["qb"], net["scale"], net["hidden"]
     layer = bucket(pieces)
     weights = net["output_weights"][layer]
+    if net.get("screlu"):
+        ours = (np.clip(acc[side_to_move], 0, qa).astype(np.int64) ** 2) >> 8
+        theirs = (np.clip(acc[side_to_move ^ 1], 0, qa).astype(np.int64) ** 2) >> 8
+        total = (int(np.dot(ours, weights[:hidden])) + int(np.dot(theirs, weights[hidden:]))) * 256
+        numerator = (total + net["output_bias"][layer]) * scale
+        quotient = abs(numerator) // (qa * qa * QO)
+        return -quotient if numerator < 0 else quotient
     ours = np.clip(acc[side_to_move], 0, qa)
     theirs = np.clip(acc[side_to_move ^ 1], 0, qa)
     total = int(np.dot(ours, weights[:hidden]))

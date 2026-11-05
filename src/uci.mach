@@ -15,6 +15,8 @@ use std.sync.atomic;
 use std.sync.thread;
 use std.text.parse;
 use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
 use std.types.result.res;
 use std.types.size.usize;
 use std.types.string.str;
@@ -106,11 +108,15 @@ fun is_thinking() bool {
     ret atomic.load(?thinking) != 0;
 }
 
+var worker_started: bool = false;
+
 # ask the search to stop and wait for its thread to finish
 fun halt() {
-    if (!is_thinking()) { ret; }
+    if (!worker_started) { ret; }
     atomic.store(?ENGINE.stop, 1);
+    # a search that already finished still has a thread to join: not joining it leaked one per move
     thread.join(?worker);
+    worker_started = false;
     atomic.store(?thinking, 0);
 }
 
@@ -131,7 +137,9 @@ fun start_search() {
     config.stack_reserve = SEARCH_STACK;
     config.name          = "machete-search";
     val started: thread.Operation = thread.spawn_with_config(run_search, nil, ?config, ?worker);
+    worker_started = true;
     if (sel started.err) {
+        worker_started = false;
         # without a thread, search in line: the move still has to be produced
         atomic.store(?thinking, 0);
         run_search(nil);
@@ -296,7 +304,7 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete 0.5.3");
+            print.println("id name machete 0.5.4");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min 1 max {}", tt.DEFAULT_MEGABYTES, tt.MAX_MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);

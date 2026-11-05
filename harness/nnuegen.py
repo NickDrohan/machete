@@ -10,6 +10,7 @@ this script with --hidden and nnue.HIDDEN changed to match, and a test in
 nnue.mach refuses a build where the two differ.
 
 Kernels, all on 16-bit accumulator lanes:
+  accumulate_screlu_avx2  accumulate_avx2 with the hidden values squared first (format 5)
   accumulate_sse2/avx2  the output layer's half: clamp each lane to 0..QA,
                         multiply by its weight in pairs (pmaddwd), sum into
                         four 32-bit lanes written to `out`
@@ -79,6 +80,7 @@ def sop_reg(op, dst, src):
 
 
 PMAXSW, PMINSW, PMADDWD, PADDD, PADDW, PSUBW, PXOR, PCMPEQW = 0xEE, 0xEA, 0xF5, 0xFE, 0xFD, 0xF9, 0xEF, 0x75
+PMULLW = 0xD5
 
 
 def line(bs, writes=None):
@@ -142,6 +144,37 @@ def accumulate_avx2(hidden):
              line(VZEROUPPER)]
     return (["# the output layer's half on AVX2, 16 lanes a step, same sums as SSE2",
              "pub fun accumulate_avx2(values: *i16, weights: *i16, out: *i32) {"] +
+            x86(body, [("rdx", "values"), ("rcx", "weights"), ("rax", "out")]) + ["}"])
+
+
+def accumulate_screlu_avx2(hidden):
+    """accumulate_avx2 with a square between clamp and multiply: clamp to 0..QA, square, shift down by 8, pmaddwd with
+    the weights. One pass, nothing stored."""
+    body = ["            # ymm4 = 0, ymm3 = QA (255) in every lane, ymm2 and ymm5 = the sums",
+            line(vop_reg(PXOR, 4, 4, 4), ["xmm4"]),
+            line(vop_reg(PCMPEQW, 3, 3, 3), ["xmm3"]),
+            line(c5(3, 1, 1) + [0x71, modrm_reg(2, 3), 0x08], ["xmm3"]),
+            line(vop_reg(PXOR, 2, 2, 2), ["xmm2"]),
+            line(vop_reg(PXOR, 5, 5, 5), ["xmm5"])]
+    for k in range(hidden // 16):
+        d = 32 * k
+        v, s = k % 2, (2 if k % 2 == 0 else 5)
+        body += ["            # lanes %d..%d" % (16 * k, 16 * k + 15),
+                 line(vload(v, RDX, d), ["xmm%d" % v]),
+                 line(vop_reg(PMAXSW, v, v, 4), ["xmm%d" % v]),
+                 line(vop_reg(PMINSW, v, v, 3), ["xmm%d" % v]),
+                 line(vop_reg(PMULLW, v, v, v), ["xmm%d" % v]),
+                 line(c5(v, 1, 1) + [0x71, modrm_reg(2, v), 0x08], ["xmm%d" % v]),
+                 line(vop_mem(PMADDWD, v, v, RCX, d), ["xmm%d" % v]),
+                 line(vop_reg(PADDD, s, s, v), ["xmm%d" % s])]
+    body += ["            # ymm2 += ymm5, fold the high 128 bits onto the low, store four sums",
+             line(vop_reg(PADDD, 2, 2, 5), ["xmm2"]),
+             line([0xC4, 0xE3, 0x7D, 0x39, modrm_reg(2, 1), 0x01], ["xmm1"]),
+             line(c5(2, 0, 1) + [PADDD, modrm_reg(2, 1)], ["xmm2"]),
+             line(c5(0, 0, 2) + [0x7F, 0x10]),
+             line(VZEROUPPER)]
+    return (["# the output layer's half for SCReLU on AVX2: clamp, square, shift by 8, multiply-add",
+             "pub fun accumulate_screlu_avx2(values: *i16, weights: *i16, out: *i32) {"] +
             x86(body, [("rdx", "values"), ("rcx", "weights"), ("rax", "out")]) + ["}"])
 
 
@@ -254,7 +287,7 @@ def main():
            "",
            "pub val KERNEL_HIDDEN: i64 = %d;" % h,
            "", DETECT, ""]
-    for block in (accumulate_sse2(h), accumulate_avx2(h), column(PADDW, "add_column_avx2", "add", h),
+    for block in (accumulate_sse2(h), accumulate_avx2(h), accumulate_screlu_avx2(h), column(PADDW, "add_column_avx2", "add", h),
                   column(PSUBW, "sub_column_avx2", "subtract", h), copy(h), carry(h, 1), carry(h, 2)):
         out += block + [""]
     # LF on every host, as .gitattributes wants; print() would write CRLF on Windows
