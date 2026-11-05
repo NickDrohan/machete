@@ -47,7 +47,10 @@ fi
 # Search: every mate in the fixtures is found, and only the proved move counts.
 # The fixtures were generated and verified by python-chess (harness/make_tactics.py).
 gate "finds every mate in one (depth 2)"   0 bash "$here/harness/solve.sh" "$release" "$here/fixtures/mate1.epd" 2
-gate "finds every mate in two (depth 4)"   0 bash "$here/harness/solve.sh" "$release" "$here/fixtures/mate2.epd" 4
+# depth 5 since 0.5.4: the table's score as the evaluation (TtEval, part of the candidate measured at +25 +/- 15)
+# takes one of the eight, 7r/3k3p/3n1p2/3Kp3/8/6PP/8/8 b, a ply later: shallower passes left a non-mate score in
+# the table, and it reads as the evaluation. Still a gate on pruning that hides a mate in two.
+gate "finds every mate in two (depth 5)"   0 bash "$here/harness/solve.sh" "$release" "$here/fixtures/mate2.epd" 5
 gate "finds every mate in three (depth 6)" 0 bash "$here/harness/solve.sh" "$release" "$here/fixtures/mate3.epd" 6
 
 # The node count is a signature of the search: ordering, pruning and evaluation

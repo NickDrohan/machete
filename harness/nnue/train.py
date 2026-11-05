@@ -55,7 +55,7 @@ class Net(nn.Module):
     def __init__(self, hidden, factorise=False, screlu=False):
         super(Net, self).__init__()
         # --activation screlu: the hidden values squared after clipping (SCReLU), which most strong NNUE engines
-        # use; the engine needs its own output kernel for it, so the screen is on held-out loss first
+        # use; the engine reads it as format 5 since 0.5.4
         self.screlu = screlu
         self.features = nn.EmbeddingBag(PAD + 1, hidden, mode="sum", padding_idx=PAD)
         # --factorise: one more table, shared by every king zone, added to each zone's own. A zone then learns
@@ -340,15 +340,13 @@ def open_sources(specs):
 
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
-    if model.screlu:
-        # the engine reads every .nnue as clipped-relu; an SCReLU network written as one would evaluate wrongly
-        print("  not written: no engine reads an SCReLU network yet (the run's .state keeps it)")
-        return
+    # SCReLU is written as format 5: output weights on reference.QO, the bias on QA * QA * QO (see nnue.mach)
+    q = reference.QO if model.screlu else QB
     with torch.no_grad():
         fw = model.zone_weights().cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
-        ow = model.out.weight.cpu().numpy() * QB
-        ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * QB
+        ow = model.out.weight.cpu().numpy() * q
+        ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * (QA if model.screlu else 1) * q
 
     fw, fb, ow, ob = np.rint(fw), np.rint(fb), np.rint(ow), np.rint(ob)
     for name, array in (("feature weights", fw), ("feature bias", fb),
@@ -365,8 +363,10 @@ def export(model, path):
     if worst > 32767:
         raise SystemExit("an accumulator could reach {:.0f}, past int16".format(worst))
 
-    reference.save(path, fw.astype(np.int16), fb.astype(np.int16),
-                   ow.astype(np.int16), [int(b) for b in ob])
+    if model.screlu and (np.abs(ow).sum(axis=1) * 254).max() >= 2 ** 31:
+        raise SystemExit("an output sum could reach past i32")
+    (reference.save_screlu if model.screlu else reference.save)(path, fw.astype(np.int16), fb.astype(np.int16),
+                                                                ow.astype(np.int16), [int(b) for b in ob])
     return worst
 
 
@@ -379,6 +379,10 @@ def start_from(model, path, device):
     hidden = model.feature_bias.shape[0]
     if net["hidden"] != hidden:
         raise SystemExit("{} is {} wide, this training {} (--hidden)".format(path, net["hidden"], hidden))
+    if net.get("screlu", False) != model.screlu:
+        raise SystemExit("{} is {}, this training {} (--activation)".format(path, "screlu" if net.get("screlu") else "crelu", "screlu" if model.screlu else "crelu"))
+    if model.screlu:
+        raise SystemExit("--init from an SCReLU network: its output weights are on QO, not read back here")
     if net["scale"] != SCALE:
         raise SystemExit("{} was trained at scale {}, this training is at {} (--scale)".format(path, net["scale"], SCALE))
     with torch.no_grad():
@@ -430,7 +434,7 @@ def main():
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
     parser.add_argument("--activation", choices=("crelu", "screlu"), default="crelu",
-                        help="screlu squares the clipped hidden values; no engine reads it yet, so nothing is exported")
+                        help="screlu squares the clipped hidden values (format 5, read by machete 0.5.4 and later)")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch", type=int, default=16384)
     parser.add_argument("--lr", type=float, default=0.001)
@@ -571,11 +575,6 @@ def main():
                         "optimiser": optimiser.state_dict(), "schedule": schedule.state_dict(),
                         "rng": rng.get_state()}, state + ".new")
             os.replace(state + ".new", state)
-    if model.screlu:
-        # nothing was exported: the weights live only in the model; keep them for the engine work to come
-        torch.save({"recipe": recipe, "model": model.state_dict()}, args.out + ".screlu.pt")
-        print("finished: {} (SCReLU weights, not an engine network)".format(args.out + ".screlu.pt"))
-        return 0
     os.replace(partial, args.out)
     if args.resume and os.path.exists(state):
         os.remove(state)

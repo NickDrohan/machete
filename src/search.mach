@@ -522,7 +522,7 @@ pub fun next_search(s: *Search) {
         s.played[i]     = mv.NONE;
         s.mover[i]      = 0;
         s.evals[i]      = NO_EVAL;
-        s.cut[i]      = 0;
+        s.cut[i]        = 0;
         i               = i + 1;
     }
     var slot: i64 = 0;
@@ -855,8 +855,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     val noted: i64 = s.known_check[ply];
     s.known_check[ply] = 0;
     val cut_node: i64 = s.cut[ply];
-    s.cut[ply]         = 0;
-    s.pv_len[ply]      = 0;
+    s.cut[ply]    = 0;
+    s.pv_len[ply] = 0;
     if (out_of_time(s))        { ret 0; }
     if (ply > 0 && is_draw(p)) { ret draw_value(ply); }
     if (ply >= MAX_PLY - 1)    { ret eval.evaluate(p); }
@@ -974,7 +974,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         var caps: MoveList;
         movegen.generate(p, ?caps, true);
         val cap_pins: u64 = pos.pinned(p, p.side);
-        var c: i64 = 0;
+        var c:        i64 = 0;
         for (c < caps.count) {
             val m: Move = caps.moves[c];
             c = c + 1;
@@ -1013,7 +1013,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         && entry.score < MATE_FOUND && entry.score > 0 - MATE_FOUND) {
         val bar: i64 = entry.score - SE_MARGIN * depth;
         s.excluded[ply] = tt_move;
-        s.cut[ply] = cut_node;
+        s.cut[ply]      = cut_node;
         val score: i64 = search_node(s, p, (depth - 1) / 2, bar - 1, bar, ply, false);
         s.excluded[ply] = mv.NONE;
         # the excluded search ran at this ply and may have left its own line
@@ -1114,7 +1114,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             s.known_check[ply + 1] = 1 + gives::i64;
             s.cut[ply + 1]         = 0;
             if (!is_pv) { s.cut[ply + 1] = 1 - cut_node; }
-            score                  = 0 - search_node(s, p, depth - 1 + grow, 0 - hi, 0 - lo, ply + 1, true);
+            score = 0 - search_node(s, p, depth - 1 + grow, 0 - hi, 0 - lo, ply + 1, true);
         }
         or {
             # late move reduction: quiet moves ordered last are searched
@@ -1354,9 +1354,11 @@ pub fun budget(p: *Position, limits: *Limits) Budget {
         spare = remaining - reserve;
     }
     if (spare < 1) { spare = 1; }
-    # twice what it used to aim for: the bot's games ended with 24-52% of the clock unused, and 200% beat
-    # 100% by +11 +/- 15 over 2,000 games at 30+0.3 (AIM-200-100, -100b)
-    b.soft = (spare / moves + increment * 3 / 4) * 2;
+    b.soft = spare / moves + increment * 3 / 4;
+    # with a real increment, twice that: the bot's games ended with 24-52% of the clock unused, and 200% beat
+    # 100% by +11 +/- 15 over 2,000 games at 30+0.3 (AIM-200-100, -100b). Not in sudden death, where it was
+    # never measured with lichess's lag and twice a twentieth is a tenth: a_long_sudden_death_game_keeps_its_clock.
+    if (increment >= MOVE_OVERHEAD * 2) { b.soft = b.soft * 2; }
     # an ending of few men gets ENDGAME_TIME percent of the aim (the owner,
     # 2026-10-22: rook and pawn endings need a much deeper search)
     if (bb.count(p.occ[0] | p.occ[1]) <= ENDGAME_MEN) { b.soft = b.soft * ENDGAME_TIME / 100; }
@@ -1744,22 +1746,24 @@ test clock_budget {
     limits.movetime = 500;
     b               = budget(?p, ?limits);
     if (b.soft != 500 || b.hard != 500 || b.fixed != 1) { ret 5; }
-    # most of the increment is spent on the move it arrives with, and an
-    # increment that covers the overhead needs no reserve
+    # most of the increment is spent on the move it arrives with, an
+    # increment that covers the overhead needs no reserve, and the aim is
+    # doubled
     limits.movetime  = 0;
     limits.movestogo = 0;
     limits.winc      = 1000;
     b                = budget(?p, ?limits);
-    if (b.soft != 3150 || b.hard != 15000) { ret 6; }
-    # an ending of seven men or fewer gets EndgameTime percent of the aim
+    if (b.soft != 6300 || b.hard != 15000) { ret 6; }
+    # an ending of seven men or fewer gets EndgameTime percent of the aim,
+    # within the hard stop's quarter
     val endgame: i64 = ENDGAME_TIME;
     ENDGAME_TIME = 250;
     var q: Position;
     if (!pos.set_fen(?q, "8/5k2/8/3p4/3P4/2R5/5K2/6r1 w - - 0 50")) { ret 8; }
     b = budget(?q, ?limits);
-    if (b.soft != 7875 || b.hard != 15000) { ret 9; }
+    if (b.soft != 15000 || b.hard != 15000) { ret 9; }
     b = budget(?p, ?limits);
-    if (b.soft != 3150) { ret 10; }
+    if (b.soft != 6300) { ret 10; }
     ENDGAME_TIME = endgame;
     # a clock nearly out still gives a positive budget
     limits.movetime  = 0;
