@@ -42,6 +42,7 @@ same() {
 build_gates() {
     local project="$1"
     gate "dependencies match their pinned commits" 0 "$mach" dep verify "$project" --quiet
+    gate "formatted as CI wants it" 0 "$mach" fmt --check "$project"
     gate "unit tests" 0 "$mach" test "$project" --quiet
     gate "debug build" 0 "$mach" build "$project" --quiet
     gate "release build" 0 "$mach" build "$project" --profile release --quiet

@@ -19,6 +19,7 @@ it a net can train beautifully and then evaluate garbage once quantized.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -51,8 +52,11 @@ CLIP = 127.0 / QB       # the largest weight that survives quantization
 
 
 class Net(nn.Module):
-    def __init__(self, hidden, factorise=False):
+    def __init__(self, hidden, factorise=False, screlu=False):
         super(Net, self).__init__()
+        # --activation screlu: the hidden values squared after clipping (SCReLU), which most strong NNUE engines
+        # use; the engine reads it as format 5 since 0.5.4
+        self.screlu = screlu
         self.features = nn.EmbeddingBag(PAD + 1, hidden, mode="sum", padding_idx=PAD)
         # --factorise: one more table, shared by every king zone, added to each zone's own. A zone then learns
         # only how it differs from the rest, and a zone the king seldom stands in (the far ranks) still has what
@@ -89,6 +93,8 @@ class Net(nn.Module):
     def forward(self, us, them, bucket):
         ours = torch.clamp(self.half(us) + self.feature_bias, 0.0, 1.0)
         theirs = torch.clamp(self.half(them) + self.feature_bias, 0.0, 1.0)
+        if self.screlu:
+            ours, theirs = ours * ours, theirs * theirs
         every = self.out(torch.cat([ours, theirs], dim=1))
         return every.gather(1, bucket[:, None]).squeeze(1)
 
@@ -334,11 +340,13 @@ def open_sources(specs):
 
 def export(model, path):
     """Quantize and write, refusing anything that would not survive int16."""
+    # SCReLU is written as format 5: output weights on reference.QO, the bias on QA * QA * QO (see nnue.mach)
+    q = reference.QO if model.screlu else QB
     with torch.no_grad():
         fw = model.zone_weights().cpu().numpy() * QA
         fb = (model.feature_bias.cpu().numpy()) * QA
-        ow = model.out.weight.cpu().numpy() * QB
-        ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * QB
+        ow = model.out.weight.cpu().numpy() * q
+        ob = model.out.bias.cpu().numpy().astype(np.float64) * QA * (QA if model.screlu else 1) * q
 
     fw, fb, ow, ob = np.rint(fw), np.rint(fb), np.rint(ow), np.rint(ob)
     for name, array in (("feature weights", fw), ("feature bias", fb),
@@ -355,8 +363,10 @@ def export(model, path):
     if worst > 32767:
         raise SystemExit("an accumulator could reach {:.0f}, past int16".format(worst))
 
-    reference.save(path, fw.astype(np.int16), fb.astype(np.int16),
-                   ow.astype(np.int16), [int(b) for b in ob])
+    if model.screlu and (np.abs(ow).sum(axis=1) * 254).max() >= 2 ** 31:
+        raise SystemExit("an output sum could reach past i32")
+    (reference.save_screlu if model.screlu else reference.save)(path, fw.astype(np.int16), fb.astype(np.int16),
+                                                                ow.astype(np.int16), [int(b) for b in ob])
     return worst
 
 
@@ -369,6 +379,10 @@ def start_from(model, path, device):
     hidden = model.feature_bias.shape[0]
     if net["hidden"] != hidden:
         raise SystemExit("{} is {} wide, this training {} (--hidden)".format(path, net["hidden"], hidden))
+    if net.get("screlu", False) != model.screlu:
+        raise SystemExit("{} is {}, this training {} (--activation)".format(path, "screlu" if net.get("screlu") else "crelu", "screlu" if model.screlu else "crelu"))
+    if model.screlu:
+        raise SystemExit("--init from an SCReLU network: its output weights are on QO, not read back here")
     if net["scale"] != SCALE:
         raise SystemExit("{} was trained at scale {}, this training is at {} (--scale)".format(path, net["scale"], SCALE))
     with torch.no_grad():
@@ -389,6 +403,22 @@ def share_of(path):
     return share if 0.05 <= share < 1.0 else 1.0
 
 
+QUARANTINE = "E:/machete/corpora/QUARANTINE.json"
+
+
+def refuse_quarantined(data, manifest=QUARANTINE):
+    """Stop before training on a corpus the quarantine names (the owner, 2026-10-23: data under a question
+    mark is set aside whole, kept as examples for finding bad data, and never trained on until cleared).
+    The manifest is {"path": "why", ...}; a path matches with or without an @N suffix, any slashes."""
+    if not os.path.exists(manifest):
+        return
+    held = {os.path.normcase(os.path.normpath(k)): v for k, v in json.load(open(manifest, encoding="utf-8")).items()}
+    hits = [(d, held[os.path.normcase(os.path.normpath(d.split("@")[0]))]) for d in data
+            if os.path.normcase(os.path.normpath(d.split("@")[0])) in held]
+    if hits:
+        raise SystemExit("quarantined data in this recipe:\n" + "\n".join("  %s: %s" % h for h in hits))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", nargs="+", help="corpora, each PATH or PATH@N for its first N records")
@@ -403,6 +433,8 @@ def main():
                         help="a channel each for a side's two knights and two rooks (reference.ROLES); needs an engine built for it")
     parser.add_argument("--hidden", type=int, default=reference.HIDDEN,
                         help="hidden width; the engine must be built with the same")
+    parser.add_argument("--activation", choices=("crelu", "screlu"), default="crelu",
+                        help="screlu squares the clipped hidden values (format 5, read by machete 0.5.4 and later)")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch", type=int, default=16384)
     parser.add_argument("--lr", type=float, default=0.001)
@@ -437,6 +469,7 @@ def main():
             args.blend, round(1.0 - args.blend, 2)))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    refuse_quarantined(args.data)
     sources = open_sources(args.data)
     total = sum(take for _, take in sources)
     print("{:,} positions ({:.2f} GB packed), training on {}".format(
@@ -455,7 +488,7 @@ def main():
     if corpus.window:
         print("streaming in windows of {:,} ({:.2f} GB on the device at a time)".format(
             corpus.window, corpus.window * Corpus.BYTES / 1e9))
-    model = Net(args.hidden, args.factorise).to(device)
+    model = Net(args.hidden, args.factorise, args.activation == "screlu").to(device)
     if args.init:
         start_from(model, args.init, device)
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -471,7 +504,8 @@ def main():
     # the window is not part of that, it only says how much is on the card.
     state = args.out + ".state"
     recipe = repr((args.data, args.hidden, args.epochs, args.batch, args.lr, args.validation, args.seed, args.init,
-                   args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles))
+                   args.scale, args.blend, args.king_zones, args.factorise, args.layers, args.piece_roles)
+                  + ((args.activation,) if args.activation != "crelu" else ()))
     first = 0
     if args.resume and os.path.exists(state):
         kept = torch.load(state, map_location=device, weights_only=False)
@@ -532,7 +566,8 @@ def main():
         # --out, so a job that --requires the network never starts on a
         # network still training
         worst = export(model, partial)
-        print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
+        if worst is not None:
+            print("  wrote {} (worst accumulator {:.0f} of 32767)".format(partial, worst))
         if slept:
             print("  slept {:.0f} s of the epoch to share the card".format(slept))
         if args.resume:
