@@ -113,6 +113,11 @@ pub var LMR_DIV: i64 = 213;
 # quiet history worth one ply of reduction
 pub var LMR_HIST_DIV: i64 = 3849;
 # shallowest node that tries a singular extension
+# ProbCut's margin: a capture must beat beta by this much at depth - 4 (ProbCut 200 was +6 on the clock)
+pub val PROBCUT: i64 = 200;
+# plies more of late move reduction at an expected cut node
+pub val CUT_LMR: i64 = 1;
+
 pub var SE_DEPTH: i64 = 6;
 # singular bar: table score less this per ply
 pub var SE_MARGIN: i64 = 2;
@@ -426,6 +431,8 @@ pub rec Search {
     # that just worked it out: 0 not known, 1 not in check, 2 in check (see
     # check_at)
     known_check: [64]i64;
+    # 1 when the parent expects this node to fail high, noted as known_check is (see CUT_LMR)
+    cut: [64]i64;
     # searchmoves (see Limits), which only this search's root obeys
     only_count: i64;
     only:       [64]Move;
@@ -515,6 +522,7 @@ pub fun next_search(s: *Search) {
         s.played[i]     = mv.NONE;
         s.mover[i]      = 0;
         s.evals[i]      = NO_EVAL;
+        s.cut[i]      = 0;
         i               = i + 1;
     }
     var slot: i64 = 0;
@@ -846,6 +854,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # read before any early return, so a note is never left for another call
     val noted: i64 = s.known_check[ply];
     s.known_check[ply] = 0;
+    val cut_node: i64 = s.cut[ply];
+    s.cut[ply]         = 0;
     s.pv_len[ply]      = 0;
     if (out_of_time(s))        { ret 0; }
     if (ply > 0 && is_draw(p)) { ret draw_value(ply); }
@@ -903,6 +913,11 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         s.evals[ply] = static_eval;
         if (ply >= 2 && s.evals[ply - 2] != NO_EVAL) { improving = static_eval > s.evals[ply - 2]; }
         or (ply >= 4 && s.evals[ply - 4] != NO_EVAL) { improving = static_eval > s.evals[ply - 4]; }
+        # a table score whose bound says the true score lies past the evaluation replaces it (TtEval, +10 on the clock)
+        if (tt_hit && entry.score < MATE_FOUND && entry.score > 0 - MATE_FOUND
+            && (entry.flag == tt.EXACT || (entry.flag == tt.LOWER && entry.score > static_eval) || (entry.flag == tt.UPPER && entry.score < static_eval))) {
+            static_eval = entry.score;
+        }
     }
 
     # reverse futility: if the position is already so far above beta that a
@@ -945,10 +960,42 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (margin > 3) { margin = 3; }
         val reduction: i64 = NMP_BASE + depth / NMP_DIV + margin;
         pos.make_null(p);
+        s.cut[ply + 1] = 1 - cut_node;
         val score: i64 = 0 - search_node(s, p, depth - 1 - reduction, 0 - beta, 1 - beta, ply + 1, false);
         pos.unmake_null(p);
         if (s.stop != 0)   { ret 0; }
         if (score >= beta) { ret beta; }
+    }
+
+    # ProbCut: a capture that beats beta by PROBCUT at a much reduced depth almost surely beats it at this one
+    if (!is_pv && !in_check && excluded == mv.NONE && depth >= 5 && beta < MATE_FOUND && beta > 0 - MATE_FOUND
+        && !(tt_hit && entry.depth >= depth - 3 && entry.flag != tt.LOWER && entry.score < beta + PROBCUT)) {
+        val high: i64 = beta + PROBCUT;
+        var caps: MoveList;
+        movegen.generate(p, ?caps, true);
+        val cap_pins: u64 = pos.pinned(p, p.side);
+        var c: i64 = 0;
+        for (c < caps.count) {
+            val m: Move = caps.moves[c];
+            c = c + 1;
+            if (see.evaluate(p, m) < 0) { cnt; }
+            val test: bool = pos.needs_test(p, m, cap_pins, false);
+            pos.make(p, m);
+            if (test && pos.left_in_check(p)) {
+                pos.unmake(p);
+                cnt;
+            }
+            s.played[ply] = m;
+            s.mover[ply]  = p.board[mv.to(m)];
+            var score: i64 = 0 - quiesce(s, p, 0 - high, 1 - high, ply + 1);
+            if (score >= high && s.stop == 0) { score = 0 - search_node(s, p, depth - 4, 0 - high, 1 - high, ply + 1, true); }
+            pos.unmake(p);
+            if (s.stop != 0) { ret 0; }
+            if (score >= high) {
+                tt.store(p.key, m, table_score(score, ply), depth - 3, tt.LOWER);
+                ret score;
+            }
+        }
     }
 
     # singular extension: when the table's move scored well at nearly this
@@ -966,6 +1013,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         && entry.score < MATE_FOUND && entry.score > 0 - MATE_FOUND) {
         val bar: i64 = entry.score - SE_MARGIN * depth;
         s.excluded[ply] = tt_move;
+        s.cut[ply] = cut_node;
         val score: i64 = search_node(s, p, (depth - 1) / 2, bar - 1, bar, ply, false);
         s.excluded[ply] = mv.NONE;
         # the excluded search ran at this ply and may have left its own line
@@ -1064,6 +1112,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             var grow: i64 = 0;
             if (m == tt_move) { grow = extension; }
             s.known_check[ply + 1] = 1 + gives::i64;
+            s.cut[ply + 1]         = 0;
+            if (!is_pv) { s.cut[ply + 1] = 1 - cut_node; }
             score                  = 0 - search_node(s, p, depth - 1 + grow, 0 - hi, 0 - lo, ply + 1, true);
         }
         or {
@@ -1094,6 +1144,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (is_pv) { reduction = reduction - 1; }
                 # and so is an attack on the king (see `attacking` above)
                 if (attacking) { reduction = reduction - 1; }
+                # and an expected cut node can afford one more (CutLmr, +9 on the clock)
+                if (cut_node != 0) { reduction = reduction + CUT_LMR; }
                 # the history of this move says how often it has refuted
                 # something before: a good record buys back up to two plies,
                 # a bad one costs up to two more. s.mover holds the piece on
@@ -1107,9 +1159,11 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 if (reduction > depth - 2) { reduction = depth - 2; }
             }
             s.known_check[ply + 1] = 1 + gives::i64;
+            s.cut[ply + 1]         = 1;
             score                  = 0 - search_node(s, p, depth - 1 - reduction, 0 - lo - 1, 0 - lo, ply + 1, true);
             if (score > lo && reduction > 0) {
                 s.known_check[ply + 1] = 1 + gives::i64;
+                s.cut[ply + 1]         = 1 - cut_node;
                 score                  = 0 - search_node(s, p, depth - 1, 0 - lo - 1, 0 - lo, ply + 1, true);
             }
             if (score > lo && score < hi) {
@@ -1300,7 +1354,9 @@ pub fun budget(p: *Position, limits: *Limits) Budget {
         spare = remaining - reserve;
     }
     if (spare < 1) { spare = 1; }
-    b.soft = spare / moves + increment * 3 / 4;
+    # twice what it used to aim for: the bot's games ended with 24-52% of the clock unused, and 200% beat
+    # 100% by +11 +/- 15 over 2,000 games at 30+0.3 (AIM-200-100, -100b)
+    b.soft = (spare / moves + increment * 3 / 4) * 2;
     # an ending of few men gets ENDGAME_TIME percent of the aim (the owner,
     # 2026-10-22: rook and pawn endings need a much deeper search)
     if (bb.count(p.occ[0] | p.occ[1]) <= ENDGAME_MEN) { b.soft = b.soft * ENDGAME_TIME / 100; }
