@@ -1,11 +1,12 @@
-# machete health, 2026-11-07 12:21
+# machete health, 2026-11-07 13:25
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume OK), disk events in the last 10 min: 0
 - processes: all running
-- laneB idle 10430 min, backlog empty
-- gpu: running TRAIN-1024-SCRELU
-- laneA: running SCREEN-MIDGEN-CLOCK
+- laneA idle 47 min, backlog empty
+- laneB idle 10495 min, backlog empty
+- gpu: running nothing
+- laneA: running nothing
 - laneB: running nothing
-- bot: last new game 0.2 h ago
+- bot: last new game 0.0 h ago
