@@ -1,14 +1,12 @@
-# machete health, 2026-11-07 23:00
+# machete health, 2026-11-08 00:02
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume OK), disk events in the last 10 min: 0
-- processes: DOWN: GPU queue runner
-- ran recover.ps1 for: GPU queue runner
-- gpu idle 122 min, backlog empty
-- laneA idle 623 min, backlog empty
-- laneB idle 11070 min, backlog empty
-- gpu: running nothing
+- processes: all running
+- laneA idle 684 min, backlog empty
+- laneB idle 11132 min, backlog empty
+- gpu: running TRAIN-1024-SCRELU
 - laneA: running nothing
 - laneB: running nothing
-- bot: last new game 0.4 h ago
+- bot: last new game 0.9 h ago
