@@ -1,12 +1,12 @@
-# machete health, 2026-11-11 03:42
+# machete health, 2026-11-11 04:20
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- E: drive answers (volume missing), disk events in the last 10 min: 0
-- processes: no answer from Windows this pass
+- ALERT: SCREEN-THIN-CLOCK quarantined, 164 of 2000 games lost on time
+- E: drive answers (volume OK), disk events in the last 10 min: 0
 - processes: all running
-- laneB idle 15670 min, backlog empty
+- laneB idle 15710 min, backlog empty
 - gpu: running TRAIN-1024-CANDC
-- laneA: running SCREEN-THIN-CLOCK
+- laneA: running nothing
 - laneB: running nothing
-- bot: last new game 0.7 h ago
+- bot: last new game 1.4 h ago
