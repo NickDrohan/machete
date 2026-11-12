@@ -173,6 +173,20 @@ fun bucket(key: u64) i64 {
     ret (key & (BUCKETS - 1)::u64)::i64 * WAYS;
 }
 
+# ask the processor to start loading key's bucket: called as soon as a move is made, so the child's probe a few
+# hundred instructions later finds the bucket in cache where it would have waited on memory. A hint only; nothing
+# is read, and where the instruction cannot be emitted it is nothing at all.
+pub fun prefetch(key: u64) {
+    $if ($mach.build.arch == $mach.arch.x86_64) {
+        val at: *Slot = ?TABLE[bucket(key)];
+        asm x86_64 {
+            mov rax, {at}
+            # prefetcht0 [rax] - not in the assembler's mnemonic table, so raw
+            .byte 0x0F, 0x18, 0x08 :: writes(rax)
+        }
+    }
+}
+
 # copy the entry for key into out; false when this position is not stored, or
 # when its slot was caught mid-write by another thread
 pub fun probe(key: u64, out: *Entry) bool {

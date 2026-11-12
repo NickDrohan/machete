@@ -925,6 +925,7 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         }
         val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
+        tt.prefetch(p.key);
         if (test && pos.left_in_check(p)) {
             pos.unmake(p);
             i = i + 1;
@@ -1094,6 +1095,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             if (see.evaluate(p, m) < 0) { cnt; }
             val test: bool = pos.needs_test(p, m, cap_pins, false);
             pos.make(p, m);
+            tt.prefetch(p.key);
             if (test && pos.left_in_check(p)) {
                 pos.unmake(p);
                 cnt;
@@ -1183,6 +1185,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
         val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
+        tt.prefetch(p.key);
         if (test && pos.left_in_check(p)) {
             pos.unmake(p);
             i = i + 1;
