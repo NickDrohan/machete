@@ -132,8 +132,8 @@ pub var QS_DELTA: i64 = 203;
 pub var IIR_DEPTH: i64 = 5;
 # continuation history (see CONT): 1 on, 0 off
 pub var CONT_HIST: i64 = 1;
-# capture history (see CAPHIST): 1 on, 0 off
-pub var CAP_HIST: i64 = 1;
+# capture history (see CAPHIST): 1 on, 0 off. Off: as built it lost 10 +/- 10 Elo at fixed nodes (2026-11-12)
+pub var CAP_HIST: i64 = 0;
 # history pruning: near the horizon a quiet move whose history reads below minus this per ply of depth is not
 # searched; 0 turns it off
 pub var HIST_PRUNE: i64 = 0;
