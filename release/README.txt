@@ -1,4 +1,4 @@
-machete 0.5.4
+machete 0.5.5
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -23,7 +23,8 @@ Options:
   EvalFile  path to a network file; defaults to machete.nnue beside the exe.
             0.5.0 reads three-layer networks (768 wide, inputs chosen by the
             phase of the game); 0.4.1's and earlier (king zones) do not load.
-            0.5.4 also reads SCReLU networks (format 5).
+            0.5.4 also reads SCReLU networks (format 5). 0.5.5 reads only
+            1,024-wide networks; 0.5.4's (768 wide) do not load.
   Ponder    supported: go ponder, ponderhit and stop.
   Repertoire  0 to 100 (default 40): prefer the author's openings - White the
             Vienna, English and Catalan; Black the Marshall, Nimzo-Indian and
@@ -32,6 +33,16 @@ Options:
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
 Not supported yet: opening books, endgame tablebases, Chess960.
+
+
+What changed since 0.5.4
+------------------------
+The network is 1,024 wide (was 768), trained on 0.5.4's data plus this
+week's deeply labelled middlegame positions and positions from the bot's
+own lost games: +13 Elo against 0.5.4's network on the same search, 10+0.1,
+1,355 games, and every 1,024-wide network measured was ahead of it. A forced
+move on a clock is searched only far enough to ponder. 0.5.4's network does
+not load in 0.5.5.
 
 
 What changed since 0.5.3

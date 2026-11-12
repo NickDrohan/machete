@@ -381,15 +381,19 @@ def start_from(model, path, device):
         raise SystemExit("{} is {} wide, this training {} (--hidden)".format(path, net["hidden"], hidden))
     if net.get("screlu", False) != model.screlu:
         raise SystemExit("{} is {}, this training {} (--activation)".format(path, "screlu" if net.get("screlu") else "crelu", "screlu" if model.screlu else "crelu"))
-    if model.screlu:
-        raise SystemExit("--init from an SCReLU network: its output weights are on QO, not read back here")
     if net["scale"] != SCALE:
         raise SystemExit("{} was trained at scale {}, this training is at {} (--scale)".format(path, net["scale"], SCALE))
+    # the scales export() wrote: format 5 (SCReLU) has output weights on QO and the bias on QA * QA * QO
+    q = reference.QO if model.screlu else QB
+    bias_scale = float(QA * (QA if model.screlu else 1) * q)
     with torch.no_grad():
         model.features.weight[:PAD].copy_(torch.from_numpy(net["feature_weights"].astype(np.float32) / QA).to(device))
+        if model.shared is not None:
+            # the file's zones already hold the shared table (export adds it into each): start the table at zero
+            model.shared.weight.zero_()
         model.feature_bias.copy_(torch.from_numpy(net["feature_bias"].astype(np.float32) / QA).to(device))
-        model.out.weight.copy_(torch.from_numpy(net["output_weights"].astype(np.float32) / QB).to(device))
-        model.out.bias.copy_(torch.tensor([b / float(QA * QB) for b in net["output_bias"]], dtype=torch.float32, device=device))
+        model.out.weight.copy_(torch.from_numpy(net["output_weights"].astype(np.float32) / q).to(device))
+        model.out.bias.copy_(torch.tensor([b / bias_scale for b in net["output_bias"]], dtype=torch.float32, device=device))
     print("starting from {}".format(path))
 
 

@@ -113,6 +113,9 @@ pub var LMR_DIV: i64 = 213;
 # quiet history worth one ply of reduction
 pub var LMR_HIST_DIV: i64 = 3849;
 # shallowest node that tries a singular extension
+# how deep a search with only one legal move goes on a clock, for the move it expects in reply
+pub val ONLY_MOVE_DEPTH: i64 = 8;
+
 # ProbCut's margin: a capture must beat beta by this much at depth - 4 (ProbCut 200 was +6 on the clock)
 pub val PROBCUT: i64 = 200;
 # plies more of late move reduction at an expected cut node
@@ -1567,6 +1570,9 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
                 # a clock: stop once the scaled aim is half spent, since the
                 # next iteration usually costs more than all before it. The
                 # aim runs from ponderhit when there was one.
+                # one legal move: nothing to choose, so only enough search to name a reply to ponder on, and the
+                # time goes to the opponent's turn instead (the owner, 2026-11-05: 15 s on a forced move at 20+10)
+                if (root.count == 1 && depth >= ONLY_MOVE_DEPTH) { brk; }
                 val spent: i64 = clock.now_ms() - atomic.load(?s.soft_start);
                 var aim:   i64 = soft;
                 if (depth >= 4)       { aim = soft * time_scale(stable, drop) / 1000; }
@@ -1720,6 +1726,30 @@ test node_limit_stops_exactly_there_repeats_exactly {
     var b: Search;
     search_nodes(?p, 20000, ?b);
     if (b.nodes != a.nodes || b.best != a.best || b.depth_reached != a.depth_reached) { ret 4; }
+    ret 0;
+}
+
+test a_forced_move_on_a_clock_is_played_at_once {
+    pos.init();
+    var p: Position;
+    # Kxg2 is White's only legal move
+    if (!pos.set_fen(?p, "k7/8/8/8/8/8/6q1/7K w - - 0 1")) { ret 1; }
+    var s: Search;
+    reset(?s);
+    s.quiet = 1;
+    var limits: Limits;
+    limits.wtime = 600000;
+    limits.btime = 600000;
+    limits.winc  = 10000;
+    limits.binc  = 10000;
+    val best: Move = think(?s, ?p, ?limits);
+    if (best != movegen.parse_uci(?p, "h1g2")) { ret 2; }
+    if (s.depth_reached > ONLY_MOVE_DEPTH)     { ret 3; }
+    # and a fixed depth is still searched in full
+    var fixed: Limits;
+    fixed.depth = 12;
+    think(?s, ?p, ?fixed);
+    if (s.depth_reached < 12) { ret 4; }
     ret 0;
 }
 
