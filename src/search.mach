@@ -137,9 +137,11 @@ pub var CAP_HIST: i64 = 0;
 # history pruning: near the horizon a quiet move whose history reads below minus this per ply of depth is not
 # searched; 0 turns it off
 pub var HIST_PRUNE: i64 = 0;
-# staged move generation: 1 generates and scores each stage when the search reaches it; 0 scores every move before
-# the first is searched, as 0.5.5 did (the same moves in the same stages, so a check on the staging itself)
-pub var STAGED: i64 = 1;
+# staged move generation: 0 scores every move before the first is searched, as 0.5.5 did; 1 generates and scores
+# each stage when the search reaches it; 2 tries the table's move first and then generates and scores the rest.
+# 0 by default: 1 searched 6% more nodes a second and lost 20 +/- 9 Elo at equal nodes (2026-11-12), the one
+# difference being that the quiet moves were scored after the captures' subtrees had changed the history tables.
+pub var STAGED: i64 = 0;
 
 fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
     if (!str_equals(name, want)) { ret false; }
@@ -208,13 +210,13 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "Repertoire", value, ?REPERTOIRE, 0, 100)) {
         ret true;
     }
-    or (tune_one(name, "Staged", value, ?STAGED, 0, 1)) {
+    or (tune_one(name, "Staged", value, ?STAGED, 0, 2)) {
         ret true;
     }
     or (tune_one(name, "ContHist", value, ?CONT_HIST, 0, 1)) {
         ret true;
     }
-    or (tune_one(name, "CapHist", value, ?CAP_HIST, 0, 1)) {
+    or (tune_one(name, "CapHist", value, ?CAP_HIST, 0, 2)) {
         ret true;
     }
     or (tune_one(name, "HistPrune", value, ?HIST_PRUNE, 0, 20000)) {
@@ -267,9 +269,9 @@ pub fun print_tunables() {
     print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
     print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
-    print.printlnf("option name Staged type spin default {} min 0 max 1", STAGED);
+    print.printlnf("option name Staged type spin default {} min 0 max 2", STAGED);
     print.printlnf("option name ContHist type spin default {} min 0 max 1", CONT_HIST);
-    print.printlnf("option name CapHist type spin default {} min 0 max 1", CAP_HIST);
+    print.printlnf("option name CapHist type spin default {} min 0 max 2", CAP_HIST);
     print.printlnf("option name HistPrune type spin default {} min 0 max 20000", HIST_PRUNE);
     print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
     print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
@@ -793,7 +795,9 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
             # among captures the exchange says are equal, the one that has cut before goes first: at most
             # HISTORY_MAX / 4, under half a pawn of exchange (a pawn is 10,000 here)
             var record: i64 = 0;
-            if (CAP_HIST != 0) { record = CAPHIST[s.thread_id][cap_index(p, m)]::i64 / 4; }
+            if (CAP_HIST == 1) { record = CAPHIST[s.thread_id][cap_index(p, m)]::i64 / 4; }
+            # 2: only to order captures the exchange and the pieces leave level (at most 256, under one piece step)
+            if (CAP_HIST == 2) { record = CAPHIST[s.thread_id][cap_index(p, m)]::i64 / 64; }
             ret GOOD_CAPTURE + gain * 100 + capture_score(p, m) + record;
         }
         ret LOSING_CAPTURE + gain;
@@ -932,7 +936,6 @@ fun quiesce(s: *Search, p: *Position, alpha_in: i64, beta: i64, ply: i64) i64 {
         }
         val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
-        tt.prefetch(p.key);
         if (test && pos.left_in_check(p)) {
             pos.unmake(p);
             i = i + 1;
@@ -1108,7 +1111,6 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             if (see.evaluate(p, m) < 0) { cnt; }
             val test: bool = pos.needs_test(p, m, cap_pins, false);
             pos.make(p, m);
-            tt.prefetch(p.key);
             if (test && pos.left_in_check(p)) {
                 pos.unmake(p);
                 cnt;
@@ -1209,12 +1211,16 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             if (stage == STAGE_GENERATE && STAGED == 0) { stage = STAGE_REST; }
             if (stage == STAGE_GENERATE) {
                 movegen.generate_mode(p, ?list, movegen.NOISY);
+                stage = STAGE_NOISY;
+                if (STAGED == 2) {
+                    movegen.generate_mode(p, ?list, movegen.QUIET);
+                    stage = STAGE_REST;
+                }
                 var k: i64 = 0;
                 for (k < list.count) {
                     scores[k] = score_move(s, p, list.moves[k], tt_move, ply);
                     k         = k + 1;
                 }
-                stage = STAGE_NOISY;
             }
             if (i < list.count) { pick(?list, ?scores[0], i); }
             # a losing capture scores below zero and every other capture far above it: when the best left is a
@@ -1239,7 +1245,6 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (m == excluded || (ply == 0 && s.only_count > 0 && !root_may_play(s, m))) { cnt; }
         val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
-        tt.prefetch(p.key);
         if (test && pos.left_in_check(p)) {
             pos.unmake(p);
             cnt;
