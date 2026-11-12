@@ -137,6 +137,9 @@ pub var CAP_HIST: i64 = 1;
 # history pruning: near the horizon a quiet move whose history reads below minus this per ply of depth is not
 # searched; 0 turns it off
 pub var HIST_PRUNE: i64 = 0;
+# staged move generation: 1 generates and scores each stage when the search reaches it; 0 scores every move before
+# the first is searched, as 0.5.5 did (the same moves in the same stages, so a check on the staging itself)
+pub var STAGED: i64 = 1;
 
 fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
     if (!str_equals(name, want)) { ret false; }
@@ -205,6 +208,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "Repertoire", value, ?REPERTOIRE, 0, 100)) {
         ret true;
     }
+    or (tune_one(name, "Staged", value, ?STAGED, 0, 1)) {
+        ret true;
+    }
     or (tune_one(name, "ContHist", value, ?CONT_HIST, 0, 1)) {
         ret true;
     }
@@ -261,6 +267,7 @@ pub fun print_tunables() {
     print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
     print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
+    print.printlnf("option name Staged type spin default {} min 0 max 1", STAGED);
     print.printlnf("option name ContHist type spin default {} min 0 max 1", CONT_HIST);
     print.printlnf("option name CapHist type spin default {} min 0 max 1", CAP_HIST);
     print.printlnf("option name HistPrune type spin default {} min 0 max 20000", HIST_PRUNE);
@@ -962,6 +969,12 @@ fun table_score(score: i64, ply: i64) i64 {
     ret score;
 }
 
+# the stages search_node's moves come in
+val STAGE_TABLE:    i64 = 0;
+val STAGE_GENERATE: i64 = 1;
+val STAGE_NOISY:    i64 = 2;
+val STAGE_REST:     i64 = 3;
+
 fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i64, ply: i64, allow_null: bool) i64 {
     # read before any early return, so a note is never left for another call
     val noted: i64 = s.known_check[ply];
@@ -1138,13 +1151,23 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         or (bar >= beta) { ret bar; }
     }
 
+    # The moves come in stages, generated only when the search gets that far: the table's move before anything is
+    # generated (most nodes that cut, cut on it), then the captures, then the quiet moves once only losing captures
+    # are left. The order is the one a full list sorted by score gave.
     var list: MoveList;
-    movegen.generate(p, ?list, false);
-    var scores: [256]i64;
-    var i:      i64 = 0;
-    for (i < list.count) {
-        scores[i] = score_move(s, p, list.moves[i], tt_move, ply);
-        i         = i + 1;
+    list.count = 0;
+    var scores:   [256]i64;
+    var i:        i64  = 0;
+    var stage:    i64  = STAGE_TABLE;
+    val tt_first: bool = tt_move != mv.NONE && movegen.pseudo_legal(p, tt_move);
+    if (STAGED == 0) {
+        movegen.generate_mode(p, ?list, movegen.NOISY);
+        movegen.generate_mode(p, ?list, movegen.QUIET);
+        var k: i64 = 0;
+        for (k < list.count) {
+            scores[k] = score_move(s, p, list.moves[k], tt_move, ply);
+            k         = k + 1;
+        }
     }
 
     var best:      i64  = 0 - INFINITE;
@@ -1175,20 +1198,50 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     }
 
     val pins: u64 = pos.pinned(p, p.side);
-    i = 0;
-    for (i < list.count) {
-        pick(?list, ?scores[0], i);
-        val m: Move = list.moves[i];
-        if (m == excluded || (ply == 0 && s.only_count > 0 && !root_may_play(s, m))) {
-            i = i + 1;
-            cnt;
+    for (true) {
+        var m:     Move = tt_move;
+        var order: i64  = 1000000000;
+        if (stage == STAGE_TABLE) {
+            stage = STAGE_GENERATE;
+            if (!tt_first) { cnt; }
         }
+        or {
+            if (stage == STAGE_GENERATE && STAGED == 0) { stage = STAGE_REST; }
+            if (stage == STAGE_GENERATE) {
+                movegen.generate_mode(p, ?list, movegen.NOISY);
+                var k: i64 = 0;
+                for (k < list.count) {
+                    scores[k] = score_move(s, p, list.moves[k], tt_move, ply);
+                    k         = k + 1;
+                }
+                stage = STAGE_NOISY;
+            }
+            if (i < list.count) { pick(?list, ?scores[0], i); }
+            # a losing capture scores below zero and every other capture far above it: when the best left is a
+            # losing one, or nothing is, the quiet moves are due
+            if (stage == STAGE_NOISY && (i >= list.count || scores[i] < 0)) {
+                var k: i64 = list.count;
+                movegen.generate_mode(p, ?list, movegen.QUIET);
+                for (k < list.count) {
+                    scores[k] = score_move(s, p, list.moves[k], tt_move, ply);
+                    k         = k + 1;
+                }
+                stage = STAGE_REST;
+                if (i < list.count) { pick(?list, ?scores[0], i); }
+            }
+            if (i >= list.count) { brk; }
+            m     = list.moves[i];
+            order = scores[i];
+            i     = i + 1;
+            # already tried, in its own stage
+            if (tt_first && m == tt_move) { cnt; }
+        }
+        if (m == excluded || (ply == 0 && s.only_count > 0 && !root_may_play(s, m))) { cnt; }
         val test: bool = pos.needs_test(p, m, pins, in_check);
         pos.make(p, m);
         tt.prefetch(p.key);
         if (test && pos.left_in_check(p)) {
             pos.unmake(p);
-            i = i + 1;
             cnt;
         }
         # A quiet move that gives check is never prunable: it can be mate, and
@@ -1201,7 +1254,6 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         val tactical: bool = mv.is_capture(m) || mv.is_promotion(m) || gives;
         if (futile && legal > 0 && !tactical) {
             pos.unmake(p);
-            i = i + 1;
             cnt;
         }
         # late move pruning: near the horizon, once enough quiet moves have
@@ -1209,15 +1261,13 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (!is_pv && !in_check && !attacking && depth <= 4 && legal > 0 && !tactical
             && best > 0 - MATE_FOUND && legal > LMP_BASE + depth * depth) {
             pos.unmake(p);
-            i = i + 1;
             cnt;
         }
         # history pruning: near the horizon, a quiet move with a record this bad (killers and the counter move
         # score far above any record) is not worth a node
         if (HIST_PRUNE != 0 && !is_pv && !in_check && !attacking && depth <= 3 && legal > 0 && !tactical
-            && best > 0 - MATE_FOUND && scores[i] < 0 - HIST_PRUNE * depth) {
+            && best > 0 - MATE_FOUND && order < 0 - HIST_PRUNE * depth) {
             pos.unmake(p);
-            i = i + 1;
             cnt;
         }
         legal         = legal + 1;
@@ -1313,7 +1363,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 flag  = tt.EXACT;
                 copy_pv(s, m, ply);
                 if (alpha >= beta) {
-                    count_cut(s, legal, scores[i], m);
+                    count_cut(s, legal, order, m);
                     if (!mv.is_capture(m) && !mv.is_promotion(m)) {
                         s.killers[ply][1] = s.killers[ply][0];
                         s.killers[ply][0] = m;
@@ -1342,7 +1392,6 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 }
             }
         }
-        i = i + 1;
     }
 
     if (legal == 0) {
