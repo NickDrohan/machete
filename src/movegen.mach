@@ -33,19 +33,15 @@ fun add(list: *MoveList, m: Move) {
     list.count             = list.count + 1;
 }
 
-# queen: whether the queen promotion is wanted; under: whether the other three are. A capture always wants all
-# four; a push wants them by the generation mode (see generate_mode).
-fun add_pawn(list: *MoveList, from: i64, to: i64, capture: bool, queen: bool, under: bool) {
+fun add_pawn(list: *MoveList, from: i64, to: i64, capture: bool) {
     val last_rank: i64 = bb.rank_of(to);
     if (last_rank == 7 || last_rank == 0) {
         var base: u32 = mv.PROMO;
         if (capture) { base = mv.PROMO_CAPTURE; }
-        if (queen)   { add(list, mv.make(from, to, base + 3)); }
-        if (under) {
-            add(list, mv.make(from, to, base));
-            add(list, mv.make(from, to, base + 2));
-            add(list, mv.make(from, to, base + 1));
-        }
+        add(list, mv.make(from, to, base + 3));
+        add(list, mv.make(from, to, base));
+        add(list, mv.make(from, to, base + 2));
+        add(list, mv.make(from, to, base + 1));
         ret;
     }
     if (capture) { add(list, mv.make(from, to, mv.CAPTURE)); }
@@ -94,36 +90,13 @@ fun add_castling(p: *Position, list: *MoveList, us: u8) {
 # tactical_only: restrict to captures, en passant and promotions (for quiescence)
 pub fun generate(p: *Position, list: *MoveList, tactical_only: bool) {
     list.count = 0;
-    if (tactical_only) { generate_mode(p, list, TACTICAL); }
-    or                 { generate_mode(p, list, ALL); }
-}
-
-# what generate_mode adds to the list:
-#   ALL       every pseudo-legal move
-#   TACTICAL  captures, en passant and every promotion (quiescence)
-#   NOISY     captures, en passant, capturing promotions and the queen promotion by a push
-#   QUIET     everything NOISY leaves out, the three lesser promotions by a push included
-# NOISY then QUIET is ALL, split in two, and each keeps the order ALL lists its moves in: a search that takes the
-# captures first and generates the quiet moves only when it needs them sees the moves in the order it always did.
-pub val ALL:      i64 = 0;
-pub val TACTICAL: i64 = 1;
-pub val NOISY:    i64 = 2;
-pub val QUIET:    i64 = 3;
-
-# add the moves of `mode` to the list, after whatever it holds
-pub fun generate_mode(p: *Position, list: *MoveList, mode: i64) {
     val us:     u8  = p.side;
     val them:   u8  = us ^ 1;
     val own:    u64 = p.occ[us];
     val enemy:  u64 = p.occ[them];
     val occ:    u64 = own | enemy;
     var target: u64 = ~own;
-    if (mode == TACTICAL || mode == NOISY) { target = enemy; }
-    if (mode == QUIET)                     { target = ~occ; }
-    val tactical_only: bool = mode == TACTICAL || mode == NOISY;
-    val takes:         bool = mode != QUIET;
-    val push_queen:    bool = mode != QUIET;
-    val push_under:    bool = mode != NOISY;
+    if (tactical_only) { target = enemy; }
 
     var forward:    i64 = 8;
     var start_rank: u64 = bb.RANK_2;
@@ -138,20 +111,18 @@ pub fun generate_mode(p: *Position, list: *MoveList, mode: i64) {
         val to:       i64  = from + forward;
         val promotes: bool = bb.rank_of(to) == 7 || bb.rank_of(to) == 0;
         if (p.board[to] == pos.EMPTY && (!tactical_only || promotes)) {
-            add_pawn(list, from, to, false, push_queen, push_under);
+            add_pawn(list, from, to, false);
             if (!tactical_only && bb.has(start_rank, from) && p.board[to + forward] == pos.EMPTY) {
                 add(list, mv.make(from, to + forward, mv.DOUBLE_PUSH));
             }
         }
-        if (takes) {
-            var hits: u64 = attacks.PAWN[us][from] & enemy;
-            for (hits != 0) {
-                add_pawn(list, from, bb.lsb(hits), true, true, true);
-                hits = hits & (hits - 1);
-            }
-            if (p.ep != pos.NO_SQ && bb.has(attacks.PAWN[us][from], p.ep)) {
-                add(list, mv.make(from, p.ep, mv.EP_CAPTURE));
-            }
+        var hits: u64 = attacks.PAWN[us][from] & enemy;
+        for (hits != 0) {
+            add_pawn(list, from, bb.lsb(hits), true);
+            hits = hits & (hits - 1);
+        }
+        if (p.ep != pos.NO_SQ && bb.has(attacks.PAWN[us][from], p.ep)) {
+            add(list, mv.make(from, p.ep, mv.EP_CAPTURE));
         }
         pawns = pawns & (pawns - 1);
     }
@@ -180,81 +151,6 @@ pub fun generate_mode(p: *Position, list: *MoveList, mode: i64) {
     val king: i64 = pos.king_square(p, us);
     add_targets(list, king, attacks.KING[king] & target, enemy);
     if (!tactical_only) { add_castling(p, list, us); }
-}
-
-# whether generate would list m in this position: exactly that, no more and no less. The table's move is tried
-# before anything is generated, and a table entry can belong to another position (a key collision, or a slot read
-# while another thread wrote it), so the move is checked against the board first.
-pub fun pseudo_legal(p: *Position, m: Move) bool {
-    val from:  i64 = mv.from(m);
-    val to:    i64 = mv.to(m);
-    val flag:  u32 = mv.flag(m);
-    val us:    u8  = p.side;
-    val them:  u8  = us ^ 1;
-    val piece: u8  = p.board[from];
-    if (piece == pos.EMPTY || pos.color_of(piece) != us || from == to) { ret false; }
-    val own:   u64 = p.occ[us];
-    val enemy: u64 = p.occ[them];
-    val occ:   u64 = own | enemy;
-    val kind:  u8  = pos.kind_of(piece);
-    if (kind == pos.PAWN) {
-        var forward:    i64 = 8;
-        var start_rank: u64 = bb.RANK_2;
-        if (us == pos.BLACK) {
-            forward    = -8;
-            start_rank = bb.RANK_7;
-        }
-        val last:     i64  = bb.rank_of(to);
-        val promotes: bool = last == 7 || last == 0;
-        if (flag == mv.EP_CAPTURE) { ret p.ep != pos.NO_SQ && to == p.ep && bb.has(attacks.PAWN[us][from], to); }
-        if (flag == mv.DOUBLE_PUSH) {
-            ret bb.has(start_rank, from) && to == from + 2 * forward && p.board[from + forward] == pos.EMPTY && p.board[to] == pos.EMPTY;
-        }
-        val takes: bool = (flag & 4) != 0;
-        if (((flag & 8) != 0) != promotes)                       { ret false; }
-        if (!promotes && flag != mv.QUIET && flag != mv.CAPTURE) { ret false; }
-        if (takes)                                               { ret bb.has(attacks.PAWN[us][from] & enemy, to); }
-        val ahead: i64 = from + forward;
-        ret ahead >= 0 && ahead < 64 && to == ahead && p.board[to] == pos.EMPTY;
-    }
-    if (flag == mv.KING_CASTLE || flag == mv.QUEEN_CASTLE) {
-        if (kind != pos.KING) { ret false; }
-        var king: i64 = 4;
-        var k_rt: u8  = pos.CASTLE_WK;
-        var q_rt: u8  = pos.CASTLE_WQ;
-        if (us == pos.BLACK) {
-            king = 60;
-            k_rt = pos.CASTLE_BK;
-            q_rt = pos.CASTLE_BQ;
-        }
-        if (from != king) { ret false; }
-        val rook: u8 = pos.code(us, pos.ROOK);
-        if (flag == mv.KING_CASTLE) {
-            ret to == king + 2 && (p.castling & k_rt) != 0 && p.board[king + 3] == rook
-                && p.board[king + 1] == pos.EMPTY && p.board[king + 2] == pos.EMPTY
-                && !pos.attacked(p, king, them) && !pos.attacked(p, king + 1, them);
-        }
-        ret to == king - 2 && (p.castling & q_rt) != 0 && p.board[king - 4] == rook
-            && p.board[king - 1] == pos.EMPTY && p.board[king - 2] == pos.EMPTY && p.board[king - 3] == pos.EMPTY
-            && !pos.attacked(p, king, them) && !pos.attacked(p, king - 1, them);
-    }
-    # a piece move is QUIET onto an empty square or CAPTURE onto an enemy one, and nothing else
-    if (flag == mv.CAPTURE) {
-        if (!bb.has(enemy, to)) { ret false; }
-    }
-    or (flag == mv.QUIET) {
-        if (bb.has(occ, to)) { ret false; }
-    }
-    or {
-        ret false;
-    }
-    var reach: u64 = 0;
-    if (kind == pos.KNIGHT) { reach = attacks.KNIGHT[from]; }
-    or (kind == pos.BISHOP) { reach = magic.bishop(from, occ); }
-    or (kind == pos.ROOK)   { reach = magic.rook(from, occ); }
-    or (kind == pos.QUEEN)  { reach = magic.bishop(from, occ) | magic.rook(from, occ); }
-    or                      { reach = attacks.KING[from]; }
-    ret bb.has(reach, to);
 }
 
 # every legal move
@@ -485,65 +381,5 @@ test move_pin_test_calls_safe_never_leaves_king_check {
         k = k + 1;
     }
     if (found != 1) { ret 7; }
-    ret 0;
-}
-
-fun listed(list: *MoveList, m: Move) bool {
-    var i: i64 = 0;
-    for (i < list.count) {
-        if (list.moves[i] == m) { ret true; }
-        i = i + 1;
-    }
-    ret false;
-}
-
-# on one position: pseudo_legal says yes to exactly the moves generate lists, of all 65,536 encodings; and NOISY
-# followed by QUIET holds ALL's moves, each part in ALL's order. 0 when both hold.
-fun staging_holds(fen: str) i64 {
-    var p: Position;
-    if (!pos.set_fen(?p, fen)) { ret 1; }
-    var every: MoveList;
-    generate(?p, ?every, false);
-    var m: u32 = 0;
-    for (m < 65536) {
-        if (pseudo_legal(?p, m) != listed(?every, m)) { ret 2; }
-        m = m + 1;
-    }
-    var noisy: MoveList;
-    noisy.count = 0;
-    generate_mode(?p, ?noisy, NOISY);
-    var quiet: MoveList;
-    quiet.count = 0;
-    generate_mode(?p, ?quiet, QUIET);
-    if (noisy.count + quiet.count != every.count) { ret 3; }
-    var n: i64 = 0;
-    var q: i64 = 0;
-    var i: i64 = 0;
-    for (i < every.count) {
-        if (n < noisy.count && noisy.moves[n] == every.moves[i]) { n = n + 1; }
-        or (q < quiet.count && quiet.moves[q] == every.moves[i]) { q = q + 1; }
-        or                                                       { ret 4; }
-        i = i + 1;
-    }
-    ret 0;
-}
-
-test movegen_pseudo_legal_and_the_staged_modes_agree_with_generate {
-    val fens: [8]str = [8]str{
-        pos.START_FEN,
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
-        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-        "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
-        "4k3/1P4P1/8/8/8/8/1p4p1/R3K2R b KQ - 0 1"
-    };
-    var i: i64 = 0;
-    for (i < 8) {
-        val r: i64 = staging_holds(fens[i]);
-        if (r != 0) { ret (r * 10 + i)::i32; }
-        i = i + 1;
-    }
     ret 0;
 }
