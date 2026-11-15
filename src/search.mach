@@ -130,14 +130,9 @@ pub var ASP_WINDOW: i64 = 19;
 pub var QS_DELTA: i64 = 203;
 # internal iterative reduction from this depth
 pub var IIR_DEPTH: i64 = 5;
-# continuation history (see CONT): 1 on, 0 off
+# continuation history (see CONT): 0 off, 1 the opponent's last move and this side's previous one, 2 the opponent's
+# last move only (half the table reads)
 pub var CONT_HIST: i64 = 1;
-# capture history (see CAPHIST): 0 off, 1 on, 2 on as a tie-break only. Off: 1 lost 10 +/- 10 Elo at fixed nodes
-# (2026-11-12)
-pub var CAP_HIST: i64 = 0;
-# history pruning: near the horizon a quiet move whose history reads below minus this per ply of depth is not
-# searched; 0 turns it off
-pub var HIST_PRUNE: i64 = 0;
 
 fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
     if (!str_equals(name, want)) { ret false; }
@@ -206,13 +201,7 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "Repertoire", value, ?REPERTOIRE, 0, 100)) {
         ret true;
     }
-    or (tune_one(name, "ContHist", value, ?CONT_HIST, 0, 1)) {
-        ret true;
-    }
-    or (tune_one(name, "CapHist", value, ?CAP_HIST, 0, 2)) {
-        ret true;
-    }
-    or (tune_one(name, "HistPrune", value, ?HIST_PRUNE, 0, 20000)) {
+    or (tune_one(name, "ContHist", value, ?CONT_HIST, 0, 2)) {
         ret true;
     }
     or (tune_one(name, "Contempt", value, ?CONTEMPT, 0, 100)) {
@@ -262,9 +251,7 @@ pub fun print_tunables() {
     print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
     print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
-    print.printlnf("option name ContHist type spin default {} min 0 max 1", CONT_HIST);
-    print.printlnf("option name CapHist type spin default {} min 0 max 2", CAP_HIST);
-    print.printlnf("option name HistPrune type spin default {} min 0 max 20000", HIST_PRUNE);
+    print.printlnf("option name ContHist type spin default {} min 0 max 2", CONT_HIST);
     print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
     print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
     print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
@@ -583,13 +570,10 @@ val HISTORY_MAX: i64 = 16384;
 # earlier move and where it landed, then the piece moving now and where it goes. The same table is read twice for a
 # move: against the opponent's last move (one ply back) and against this side's own previous move (two plies back).
 # A move that is good in general and bad after this reply is told apart here, which the plain history cannot do.
-# Capture history: how a capture has done, by the capturing piece, the square and the kind of piece taken.
-# Both are 16-bit, with the same gravity as the plain history, so they stay within +/-HISTORY_MAX. They are too large
-# for a Search (which callers keep on their stacks), so they live here, one of each per search thread.
+# It is 16-bit, with the same gravity as the plain history, so they stay within +/-HISTORY_MAX. They are too large
+# for a Search (which callers keep on their stacks), so it lives here, one per search thread.
 val CONT_SIZE: i64 = 589824; # (12 * 64) * (12 * 64)
-val CAP_SIZE:  i64 = 4608; # 12 * 64 * 6
 var CONT:      [33][589824]i16;
-var CAPHIST:   [33][4608]i16;
 
 # a history value after one update: towards +/-HISTORY_MAX by the bonus, and back towards zero by its own size
 fun gravity(current: i64, bonus: i64) i64 {
@@ -621,23 +605,12 @@ fun quiet_history(s: *Search, ply: i64, piece: u8, to: i64) i64 {
     if (CONT_HIST != 0) {
         val one: i64 = cont_index(s, ply, 1, piece, to);
         if (one >= 0) { total = total + CONT[s.thread_id][one]::i64; }
-        val two: i64 = cont_index(s, ply, 2, piece, to);
-        if (two >= 0) { total = total + CONT[s.thread_id][two]::i64; }
+        if (CONT_HIST == 1) {
+            val two: i64 = cont_index(s, ply, 2, piece, to);
+            if (two >= 0) { total = total + CONT[s.thread_id][two]::i64; }
+        }
     }
     ret total;
-}
-
-fun cap_index(p: *Position, m: Move) i64 {
-    var victim: u8 = pos.PAWN;
-    if (mv.flag(m) != mv.EP_CAPTURE) { victim = pos.kind_of(p.board[mv.to(m)]); }
-    ret (p.board[mv.from(m)]::i64 * 64 + mv.to(m)) * 6 + victim::i64;
-}
-
-# a capture was tried at this depth and cut (good) or did not; called with the move not made
-fun capture_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
-    if (CAP_HIST == 0) { ret; }
-    val at: i64 = cap_index(p, m);
-    CAPHIST[s.thread_id][at] = gravity(CAPHIST[s.thread_id][at]::i64, history_bonus(depth, good))::i16;
 }
 
 fun clear_tables(id: i64) {
@@ -645,11 +618,6 @@ fun clear_tables(id: i64) {
     for (i < CONT_SIZE) {
         CONT[id][i] = 0;
         i           = i + 1;
-    }
-    i = 0;
-    for (i < CAP_SIZE) {
-        CAPHIST[id][i] = 0;
-        i              = i + 1;
     }
 }
 
@@ -703,8 +671,10 @@ fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool, pl
     if (CONT_HIST != 0) {
         val one: i64 = cont_index(s, ply, 1, piece, to);
         if (one >= 0) { CONT[s.thread_id][one] = gravity(CONT[s.thread_id][one]::i64, bonus)::i16; }
-        val two: i64 = cont_index(s, ply, 2, piece, to);
-        if (two >= 0) { CONT[s.thread_id][two] = gravity(CONT[s.thread_id][two]::i64, bonus)::i16; }
+        if (CONT_HIST == 1) {
+            val two: i64 = cont_index(s, ply, 2, piece, to);
+            if (two >= 0) { CONT[s.thread_id][two] = gravity(CONT[s.thread_id][two]::i64, bonus)::i16; }
+        }
     }
 }
 
@@ -783,15 +753,7 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
         # a capture that survives the recapture sequence is worth trying early;
         # one that loses material belongs below the quiet moves that might work
         val gain: i64 = see.evaluate(p, m);
-        if (gain >= 0) {
-            # among captures the exchange says are equal, the one that has cut before goes first: at most
-            # HISTORY_MAX / 4, under half a pawn of exchange (a pawn is 10,000 here)
-            var record: i64 = 0;
-            if (CAP_HIST == 1) { record = CAPHIST[s.thread_id][cap_index(p, m)]::i64 / 4; }
-            # 2: only to order captures the exchange and the pieces leave level (at most 256, under one piece step)
-            if (CAP_HIST == 2) { record = CAPHIST[s.thread_id][cap_index(p, m)]::i64 / 64; }
-            ret GOOD_CAPTURE + gain * 100 + capture_score(p, m) + record;
-        }
+        if (gain >= 0) { ret GOOD_CAPTURE + gain * 100 + capture_score(p, m); }
         ret LOSING_CAPTURE + gain;
     }
     if (m == s.killers[ply][0])    { ret 700000000; }
@@ -1154,8 +1116,6 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     var flag:      u8   = tt.UPPER;
     var quiets:    [64]Move;
     var quiet_n:   i64  = 0;
-    var takes:     [32]Move;
-    var take_n:    i64  = 0;
 
     # futility: near the horizon, a quiet move that cannot lift a losing
     # position to alpha is not worth a node. captures, promotions and checks
@@ -1212,24 +1172,12 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
             i = i + 1;
             cnt;
         }
-        # history pruning: near the horizon, a quiet move with a record this bad (killers and the counter move
-        # score far above any record) is not worth a node
-        if (HIST_PRUNE != 0 && !is_pv && !in_check && !attacking && depth <= 3 && legal > 0 && !tactical
-            && best > 0 - MATE_FOUND && scores[i] < 0 - HIST_PRUNE * depth) {
-            pos.unmake(p);
-            i = i + 1;
-            cnt;
-        }
         legal         = legal + 1;
         s.played[ply] = m;
         s.mover[ply]  = p.board[mv.to(m)];
         if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
             quiets[quiet_n] = m;
             quiet_n         = quiet_n + 1;
-        }
-        if (mv.is_capture(m) && take_n < 32) {
-            takes[take_n] = m;
-            take_n        = take_n + 1;
         }
         var score: i64 = 0;
         # the root's variety bonus (see root_bonus): the child is searched
@@ -1329,13 +1277,6 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                             if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false, ply); }
                             q = q + 1;
                         }
-                    }
-                    # the same for captures: the one that cut is credited, and every capture tried before
-                    # the cut, whatever cut in the end, is marked down
-                    var t: i64 = 0;
-                    for (t < take_n) {
-                        capture_update(s, p, takes[t], depth, takes[t] == m);
-                        t = t + 1;
                     }
                     flag = tt.LOWER;
                     brk;
