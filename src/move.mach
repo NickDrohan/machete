@@ -3,9 +3,18 @@
 # flag values follow the common 4-bit scheme: bit 2 marks a capture and bit 3
 # a promotion, whose low two bits select knight, bishop, rook or queen.
 
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+
 pub def Move: u32;
 
 pub val NONE: Move = 0;
+
+# UCI_Chess960: castling is spelled as the king taking its own rook, as Chess960 GUIs expect; otherwise as the king's
+# two-square step. Inside the engine a castling move is always the king taking its own rook (`to` is the rook's
+# square), which says which rook castles in either game.
+pub var CHESS960: bool = false;
 
 pub val QUIET:         u32 = 0;
 pub val DOUBLE_PUSH:   u32 = 1;
@@ -48,7 +57,9 @@ pub fun promotion_type(m: Move) u8 {
 # write the UCI spelling ("e2e4", "e7e8q") into out, which needs 6 bytes
 pub fun to_uci(m: Move, out: *u8) {
     val f: i64 = from(m);
-    val t: i64 = to(m);
+    var t: i64 = to(m);
+    if (!CHESS960 && flag(m) == KING_CASTLE)  { t = (f & 56) + 6; }
+    if (!CHESS960 && flag(m) == QUEEN_CASTLE) { t = (f & 56) + 2; }
     out[0] = ('a'::i64 + (f & 7))::u8;
     out[1] = ('1'::i64 + (f >> 3))::u8;
     out[2] = ('a'::i64 + (t & 7))::u8;
@@ -73,7 +84,7 @@ test fields_round_trip {
     val p: Move = make(52, 61, PROMO_CAPTURE + 3);
     if (!is_capture(p) || !is_promotion(p) || promotion_type(p) != 4)          { ret 3; }
     if (!is_capture(make(1, 2, EP_CAPTURE)))                                   { ret 4; }
-    if (is_capture(make(4, 6, KING_CASTLE)) || is_capture(make(8, 16, PROMO))) { ret 5; }
+    if (is_capture(make(4, 7, KING_CASTLE)) || is_capture(make(8, 16, PROMO))) { ret 5; }
     ret 0;
 }
 
@@ -83,5 +94,18 @@ test uci_spelling {
     if (buf[0] != 'e' || buf[1] != '2' || buf[2] != 'e' || buf[3] != '4' || buf[4] != 0) { ret 1; }
     to_uci(make(52, 60, PROMO + 3), ?buf[0]);
     if (buf[4] != 'q' || buf[5] != 0) { ret 2; }
+    ret 0;
+}
+
+test castling_spelled_both_ways {
+    var buf: [6]u8;
+    to_uci(make(4, 7, KING_CASTLE), ?buf[0]);
+    if (buf[2] != 'g' || buf[3] != '1') { ret 1; }
+    to_uci(make(60, 56, QUEEN_CASTLE), ?buf[0]);
+    if (buf[2] != 'c' || buf[3] != '8') { ret 2; }
+    CHESS960 = true;
+    to_uci(make(4, 7, KING_CASTLE), ?buf[0]);
+    CHESS960 = false;
+    if (buf[2] != 'h' || buf[3] != '1') { ret 3; }
     ret 0;
 }

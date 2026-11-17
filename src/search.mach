@@ -29,6 +29,7 @@ use pos: machete.position;
 use machete.position.Position;
 use rep: machete.repertoire;
 use machete.see;
+use machete.syzygy;
 use machete.tt;
 
 pub val INFINITE: i64 = 31000;
@@ -37,6 +38,8 @@ pub val MATE:     i64 = 30000;
 pub val MATE_FOUND: i64 = 29000;
 
 pub val MAX_PLY: i64 = 64;
+# a tablebase win, less the ply it was found at: above any evaluation, below every mate score
+pub val TB_WIN: i64 = 28000;
 
 # no static evaluation: the node was in check
 val NO_EVAL: i64 = 0 - 32000;
@@ -130,6 +133,9 @@ pub var ASP_WINDOW: i64 = 19;
 pub var QS_DELTA: i64 = 203;
 # internal iterative reduction from this depth
 pub var IIR_DEPTH: i64 = 5;
+# continuation history (see CONT): 0 off, 1 the opponent's last move and this side's previous one, 2 the opponent's
+# last move only (half the table reads)
+pub var CONT_HIST: i64 = 1;
 
 fun tune_one(name: str, want: str, value: i64, slot: *i64, low: i64, high: i64) bool {
     if (!str_equals(name, want)) { ret false; }
@@ -198,6 +204,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "Repertoire", value, ?REPERTOIRE, 0, 100)) {
         ret true;
     }
+    or (tune_one(name, "ContHist", value, ?CONT_HIST, 0, 2)) {
+        ret true;
+    }
     or (tune_one(name, "Contempt", value, ?CONTEMPT, 0, 100)) {
         ret true;
     }
@@ -245,6 +254,7 @@ pub fun print_tunables() {
     print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
     print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
+    print.printlnf("option name ContHist type spin default {} min 0 max 2", CONT_HIST);
     print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
     print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
     print.printlnf("option name Repertoire type spin default {} min 0 max 100", REPERTOIRE);
@@ -400,7 +410,9 @@ pub rec Limits {
 #             ponderhit that arrives before the search thread runs must not
 #             be lost.
 pub rec Search {
-    nodes:         i64;
+    nodes: i64;
+    # positions the tablebases settled
+    tb_hits:       i64;
     stop:          i64;
     deadline:      i64;
     soft:          i64;
@@ -486,7 +498,15 @@ fun print_ordering(s: *Search) {
 # everything a search starts from, and the history tables cleared: a new
 # game, a test, bench
 pub fun reset(s: *Search) {
+    reset_as(s, 0);
+}
+
+# reset for the search thread `id` (0 the main thread, helpers from 1), whose continuation and capture tables are
+# emptied with it
+pub fun reset_as(s: *Search, id: i64) {
     next_search(s);
+    s.thread_id = id;
+    clear_tables(id);
     var pc: i64 = 0;
     for (pc < 12) {
         var sq: i64 = 0;
@@ -506,6 +526,7 @@ pub fun reset(s: *Search) {
 # are; killers are by ply and belong to one search.
 pub fun next_search(s: *Search) {
     s.nodes      = 0;
+    s.tb_hits    = 0;
     s.thread_id  = 0;
     s.stop       = 0;
     s.deadline   = 0;
@@ -551,6 +572,61 @@ pub fun next_search(s: *Search) {
 # a hard cap and lets old information decay as new arrives.
 val HISTORY_MAX: i64 = 16384;
 
+# Continuation history: how a quiet move has done as the follow-up to a particular move, by the piece that made the
+# earlier move and where it landed, then the piece moving now and where it goes. The same table is read twice for a
+# move: against the opponent's last move (one ply back) and against this side's own previous move (two plies back).
+# A move that is good in general and bad after this reply is told apart here, which the plain history cannot do.
+# It is 16-bit, with the same gravity as the plain history, so they stay within +/-HISTORY_MAX. They are too large
+# for a Search (which callers keep on their stacks), so it lives here, one per search thread.
+val CONT_SIZE: i64 = 589824; # (12 * 64) * (12 * 64)
+var CONT:      [33][589824]i16;
+
+# a history value after one update: towards +/-HISTORY_MAX by the bonus, and back towards zero by its own size
+fun gravity(current: i64, bonus: i64) i64 {
+    var magnitude: i64 = bonus;
+    if (magnitude < 0) { magnitude = 0 - magnitude; }
+    ret current + bonus * 32 - current * magnitude / 512;
+}
+
+# the bonus a cutoff at this depth is worth
+fun history_bonus(depth: i64, good: bool) i64 {
+    var bonus: i64 = depth * depth;
+    if (bonus > 400) { bonus = 400; }
+    if (!good)       { bonus = 0 - bonus; }
+    ret bonus;
+}
+
+# where in CONT the move (piece to square) sits as a follow-up to the move played `back` plies above ply, or -1
+# when there is no such move (the root, or a null move)
+fun cont_index(s: *Search, ply: i64, back: i64, piece: u8, to: i64) i64 {
+    if (ply < back) { ret 0 - 1; }
+    val prev: Move = s.played[ply - back];
+    if (prev == mv.NONE) { ret 0 - 1; }
+    ret (s.mover[ply - back]::i64 * 64 + mv.to(prev)) * 768 + piece::i64 * 64 + to;
+}
+
+# a quiet move's whole history: the plain table and the two continuation readings
+fun quiet_history(s: *Search, ply: i64, piece: u8, to: i64) i64 {
+    var total: i64 = s.history[piece][to];
+    if (CONT_HIST != 0) {
+        val one: i64 = cont_index(s, ply, 1, piece, to);
+        if (one >= 0) { total = total + CONT[s.thread_id][one]::i64; }
+        if (CONT_HIST == 1) {
+            val two: i64 = cont_index(s, ply, 2, piece, to);
+            if (two >= 0) { total = total + CONT[s.thread_id][two]::i64; }
+        }
+    }
+    ret total;
+}
+
+fun clear_tables(id: i64) {
+    var i: i64 = 0;
+    for (i < CONT_SIZE) {
+        CONT[id][i] = 0;
+        i           = i + 1;
+    }
+}
+
 # correction history: the static evaluation is systematically wrong in some
 # pawn structures - a blocked centre, a passed pawn it underrates - and the
 # search finds that out node after node. Each (side, pawn structure) slot
@@ -593,16 +669,19 @@ fun correction_update(s: *Search, p: *Position, raw: i64, found: i64, depth: i64
     s.correction[p.side][slot] = next;
 }
 
-fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool) {
+fun history_update(s: *Search, p: *Position, m: Move, depth: i64, good: bool, ply: i64) {
     val piece: u8  = p.board[mv.from(m)];
     val to:    i64 = mv.to(m);
-    var bonus: i64 = depth * depth;
-    if (bonus > 400) { bonus = 400; }
-    if (!good)       { bonus = 0 - bonus; }
-    var magnitude: i64 = bonus;
-    if (magnitude < 0) { magnitude = 0 - magnitude; }
-    val current: i64 = s.history[piece][to];
-    s.history[piece][to] = current + bonus * 32 - current * magnitude / 512;
+    val bonus: i64 = history_bonus(depth, good);
+    s.history[piece][to] = gravity(s.history[piece][to], bonus);
+    if (CONT_HIST != 0) {
+        val one: i64 = cont_index(s, ply, 1, piece, to);
+        if (one >= 0) { CONT[s.thread_id][one] = gravity(CONT[s.thread_id][one]::i64, bonus)::i16; }
+        if (CONT_HIST == 1) {
+            val two: i64 = cont_index(s, ply, 2, piece, to);
+            if (two >= 0) { CONT[s.thread_id][two] = gravity(CONT[s.thread_id][two]::i64, bonus)::i16; }
+        }
+    }
 }
 
 # the counter-move slot for whatever the opponent just played
@@ -686,7 +765,14 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     if (m == s.killers[ply][0])    { ret 700000000; }
     if (m == s.killers[ply][1])    { ret 600000000; }
     if (m == counter_slot(s, ply)) { ret 550000000; }
-    ret s.history[p.board[mv.from(m)]][mv.to(m)];
+    ret quiet_history(s, ply, p.board[mv.from(m)], mv.to(m));
+}
+
+# the square the moving piece ends on: the move's own, but a castling king's is on the g- or c-file (a castling move's
+# `to` is its rook's square)
+fun landing(m: Move) i64 {
+    if (mv.flag(m) == mv.KING_CASTLE || mv.flag(m) == mv.QUEEN_CASTLE) { ret pos.castle_king_to(m); }
+    ret mv.to(m);
 }
 
 # whether searchmoves lets the root play m
@@ -898,6 +984,42 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
     }
 
+    # Syzygy tablebases (SyzygyPath): right after a capture or a pawn move, with few enough men and no castling
+    # rights, the tables say win, draw or loss outright. A win or loss is a bound (how fast is not known), so it ends
+    # the node only when it settles the window; a draw ends it always. A win the fifty-move rule spoils is a draw.
+    # A bound that does not settle a wide window still holds: the node's answer is kept on its side of it.
+    var tb_floor: i64 = 0 - INFINITE;
+    var tb_cap:   i64 = INFINITE;
+    if (syzygy.LARGEST > 0 && ply > 0 && excluded == mv.NONE && p.halfmove == 0 && p.castling == 0
+        && bb.count(pos.all(p)) <= syzygy.LARGEST) {
+        var tb_ok: bool = false;
+        val wdl:   i64  = syzygy.probe_wdl(p, ?tb_ok);
+        if (tb_ok) {
+            s.tb_hits = s.tb_hits + 1;
+            var value: i64 = draw_value(ply);
+            var bound: u8  = tt.EXACT;
+            if (wdl >= 2) {
+                value = TB_WIN - ply;
+                bound = tt.LOWER;
+            }
+            or (wdl <= 0 - 2) {
+                value = 0 - TB_WIN + ply;
+                bound = tt.UPPER;
+            }
+            if (bound == tt.EXACT || (bound == tt.LOWER && value >= beta) || (bound == tt.UPPER && value <= alpha)) {
+                tt.store(p.key, mv.NONE, value, depth + 6, bound);
+                ret value;
+            }
+            if (bound == tt.LOWER) {
+                tb_floor = value;
+                if (value > alpha) { alpha = value; }
+            }
+            or {
+                tb_cap = value;
+            }
+        }
+    }
+
     # the static evaluation, once per node, remembered by ply. A node is
     # improving when its side stands better than it did two plies earlier - on
     # its own previous move - which says the position is going somewhere. An
@@ -963,6 +1085,8 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         if (margin > 3) { margin = 3; }
         val reduction: i64 = NMP_BASE + depth / NMP_DIV + margin;
         pos.make_null(p);
+        # a pass is no move to follow up: without this the child would read whatever was last played at this ply
+        if (CONT_HIST != 0) { s.played[ply] = mv.NONE; }
         s.cut[ply + 1] = 1 - cut_node;
         val score: i64 = 0 - search_node(s, p, depth - 1 - reduction, 0 - beta, 1 - beta, ply + 1, false);
         pos.unmake_null(p);
@@ -989,7 +1113,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 cnt;
             }
             s.played[ply] = m;
-            s.mover[ply]  = p.board[mv.to(m)];
+            s.mover[ply]  = p.board[landing(m)];
             var score: i64 = 0 - quiesce(s, p, 0 - high, 1 - high, ply + 1);
             if (score >= high && s.stop == 0) { score = 0 - search_node(s, p, depth - 4, 0 - high, 1 - high, ply + 1, true); }
             pos.unmake(p);
@@ -1099,7 +1223,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
         legal         = legal + 1;
         s.played[ply] = m;
-        s.mover[ply]  = p.board[mv.to(m)];
+        s.mover[ply]  = p.board[landing(m)];
         if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
             quiets[quiet_n] = m;
             quiet_n         = quiet_n + 1;
@@ -1153,7 +1277,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 # something before: a good record buys back up to two plies,
                 # a bad one costs up to two more. s.mover holds the piece on
                 # its new square, which is the piece that moved.
-                var credit: i64 = s.history[s.mover[ply]][mv.to(m)] / LMR_HIST_DIV;
+                var credit: i64 = quiet_history(s, ply, s.mover[ply], mv.to(m)) / LMR_HIST_DIV;
                 if (credit > 2)     { credit = 2; }
                 if (credit < 0 - 2) { credit = 0 - 2; }
                 reduction = reduction - credit;
@@ -1193,13 +1317,13 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                         if (ply > 0 && s.played[ply - 1] != mv.NONE) {
                             s.counter[s.mover[ply - 1]][mv.to(s.played[ply - 1])] = m;
                         }
-                        history_update(s, p, m, depth, true);
+                        history_update(s, p, m, depth, true, ply);
                         # every quiet move that was tried and did not cut gets
                         # the matching penalty, which is what gives the table
                         # its ordering signal rather than just a hit count
                         var q: i64 = 0;
                         for (q < quiet_n) {
-                            if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false); }
+                            if (quiets[q] != m) { history_update(s, p, quiets[q], depth, false, ply); }
                             q = q + 1;
                         }
                     }
@@ -1219,6 +1343,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         ret draw_value(ply);
     }
     if (excluded != mv.NONE) { ret best; }
+    if (best < tb_floor) {
+        best = tb_floor;
+        flag = tt.LOWER;
+    }
+    if (best > tb_cap) {
+        best = tb_cap;
+        flag = tt.UPPER;
+    }
 
     # the search's answer for a quiet position says how far the evaluation
     # was off here; a bound says so only in the direction it bounds
@@ -1259,10 +1391,10 @@ fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
     if (score > MATE_FOUND || score < 0 - MATE_FOUND) {
         var mate_in: i64 = (MATE - score + 1) / 2;
         if (score < 0) { mate_in = 0 - (MATE + score + 1) / 2; }
-        print.printf("info depth {} score mate {} nodes {} nps {} time {} pv", depth, mate_in, nodes, nps, elapsed);
+        print.printf("info depth {} score mate {} nodes {} nps {} tbhits {} time {} pv", depth, mate_in, nodes, nps, s.tb_hits, elapsed);
     }
     or {
-        print.printf("info depth {} score cp {} nodes {} nps {} time {} pv", depth, score, nodes, nps, elapsed);
+        print.printf("info depth {} score cp {} nodes {} nps {} tbhits {} time {} pv", depth, score, nodes, nps, s.tb_hits, elapsed);
     }
     var spelled: [6]u8;
     var i:       i64 = 0;
