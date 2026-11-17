@@ -762,6 +762,13 @@ fun score_move(s: *Search, p: *Position, m: Move, tt_move: Move, ply: i64) i64 {
     ret quiet_history(s, ply, p.board[mv.from(m)], mv.to(m));
 }
 
+# the square the moving piece ends on: the move's own, but a castling king's is on the g- or c-file (a castling move's
+# `to` is its rook's square)
+fun landing(m: Move) i64 {
+    if (mv.flag(m) == mv.KING_CASTLE || mv.flag(m) == mv.QUEEN_CASTLE) { ret pos.castle_king_to(m); }
+    ret mv.to(m);
+}
+
 # whether searchmoves lets the root play m
 fun root_may_play(s: *Search, m: Move) bool {
     var i: i64 = 0;
@@ -1064,7 +1071,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
                 cnt;
             }
             s.played[ply] = m;
-            s.mover[ply]  = p.board[mv.to(m)];
+            s.mover[ply]  = p.board[landing(m)];
             var score: i64 = 0 - quiesce(s, p, 0 - high, 1 - high, ply + 1);
             if (score >= high && s.stop == 0) { score = 0 - search_node(s, p, depth - 4, 0 - high, 1 - high, ply + 1, true); }
             pos.unmake(p);
@@ -1174,7 +1181,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
         legal         = legal + 1;
         s.played[ply] = m;
-        s.mover[ply]  = p.board[mv.to(m)];
+        s.mover[ply]  = p.board[landing(m)];
         if (!mv.is_capture(m) && !mv.is_promotion(m) && quiet_n < 64) {
             quiets[quiet_n] = m;
             quiet_n         = quiet_n + 1;

@@ -232,8 +232,9 @@ fun next_move(p: *Position, b: *Bits, list: *MoveList) Move {
         val index: i64 = take(b, used_bits_safe(size + bb.count(rights::u64)));
         if (index >= size) {
             # castling: the first extra index is queen-side when that right exists
-            if (index == size && (rights & queen_side) != 0) { ret resolve(list, from, from - 2, 0); }
-            ret resolve(list, from, from + 2, 0);
+            var r: i64 = us::i64 * 2;
+            if (index == size && (rights & queen_side) != 0) { r = r + 1; }
+            ret resolve(list, from, p.rook_sq[r], 0);
         }
         ret resolve(list, from, nth_set(reach, index), 0);
     }
@@ -398,11 +399,7 @@ pub fun read_stem(stem: *u8, p: *Position, score: *i64, result: *i64) Move {
     var to:     i64 = (packed >> 2) & 63;
     var promo:  u8  = 0;
     if (kind == 1) { promo = ((packed & 3) + 1)::u8; }
-    if (kind == 2) {
-        # binpack castles as king-takes-own-rook; machete moves the king two files
-        if (bb.file_of(to) == 7) { to = from + 2; }
-        or                       { to = from - 2; }
-    }
+    # binpack castles as king-takes-own-rook, and so does machete
     var list: MoveList;
     gen.generate_legal(p, ?list);
     ret resolve(?list, from, to, promo);

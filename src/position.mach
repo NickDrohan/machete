@@ -79,15 +79,17 @@ pub rec Position {
     # accumulator follows the board without knowing anything about moves.
     accs:    *nn.Acc;
     acc_top: i64;
+    # the castling rooks' squares, by right: white king side, white queen side, black king side, black queen side
+    # (h1 a1 h8 a8 in standard chess, anywhere on the back rank in Chess960)
+    rook_sq: [4]i64;
+    # the rights that survive a move from or to each square: the kings' and the castling rooks' squares end some
+    keep: [64]u8;
 }
 
 pub var Z_PIECE:  [12][64]u64;
 pub var Z_SIDE:   u64;
 pub var Z_CASTLE: [16]u64;
 pub var Z_EP:     [8]u64;
-
-# rights that survive a move touching each square
-var CASTLE_KEEP: [64]u8;
 
 # the squares strictly between two squares on one rank, file or diagonal,
 # and nothing for two squares on no common line
@@ -145,18 +147,7 @@ pub fun init() {
         Z_EP[i] = splitmix();
         i       = i + 1;
     }
-    i = 0;
-    for (i < 64) {
-        CASTLE_KEEP[i] = 15;
-        i              = i + 1;
-    }
-    CASTLE_KEEP[0]  = 15 ^ CASTLE_WQ;
-    CASTLE_KEEP[4]  = 15 ^ (CASTLE_WK | CASTLE_WQ);
-    CASTLE_KEEP[7]  = 15 ^ CASTLE_WK;
-    CASTLE_KEEP[56] = 15 ^ CASTLE_BQ;
-    CASTLE_KEEP[60] = 15 ^ (CASTLE_BK | CASTLE_BQ);
-    CASTLE_KEEP[63] = 15 ^ CASTLE_BK;
-    ready           = 1;
+    ready = 1;
 }
 
 pub fun code(color: u8, kind: u8) u8 {
@@ -274,6 +265,63 @@ fun layer(p: *Position, side: i64) i64 {
     ret nn.layer(side, ?p.board[0]);
 }
 
+# which bit of the castling rights, by index into rook_sq
+val RIGHT_BIT: [4]u8 = [4]u8{1, 2, 4, 8};
+
+# the castling rooks' default squares and the keep table, from the rights and rook squares now set
+fun castling_tables(p: *Position) {
+    var i: i64 = 0;
+    for (i < 64) {
+        p.keep[i] = 15;
+        i         = i + 1;
+    }
+    p.keep[king_square(p, WHITE)] = p.keep[king_square(p, WHITE)] & (15 ^ (CASTLE_WK | CASTLE_WQ));
+    p.keep[king_square(p, BLACK)] = p.keep[king_square(p, BLACK)] & (15 ^ (CASTLE_BK | CASTLE_BQ));
+    var r: i64 = 0;
+    for (r < 4) {
+        p.keep[p.rook_sq[r]] = p.keep[p.rook_sq[r]] & (15 ^ RIGHT_BIT[r]);
+        r                    = r + 1;
+    }
+}
+
+# a right's letter in a FEN: K Q k q when its rook is the outermost on that side, otherwise the rook's file
+fun castling_letter(p: *Position, r: i64) u8 {
+    val color: u8   = (r / 2)::u8;
+    val sq:    i64  = p.rook_sq[r];
+    val rook:  u8   = code(color, ROOK);
+    var outer: bool = true;
+    var f:     i64  = (sq & 7) + 1;
+    var step:  i64  = 1;
+    if (r % 2 == 1) {
+        f    = (sq & 7) - 1;
+        step = 0 - 1;
+    }
+    for (f >= 0 && f < 8) {
+        if (p.board[(sq & 56) + f] == rook) { outer = false; }
+        f = f + step;
+    }
+    var letter: u8 = 'K';
+    if (!outer) {
+        letter = 'A' + (sq & 7)::u8;
+    }
+    or (r % 2 == 1) {
+        letter = 'Q';
+    }
+    if (color == BLACK) { letter = letter + ('a' - 'A'); }
+    ret letter;
+}
+
+# where a castling move puts the king and the rook: the g- or c-file and the f- or d-file of the king's rank
+pub fun castle_king_to(m: Move) i64 {
+    if (mv.flag(m) == mv.KING_CASTLE) { ret (mv.from(m) & 56) + 6; }
+    ret (mv.from(m) & 56) + 2;
+}
+
+pub fun castle_rook_to(m: Move) i64 {
+    if (mv.flag(m) == mv.KING_CASTLE) { ret (mv.from(m) & 56) + 5; }
+    ret (mv.from(m) & 56) + 3;
+}
+
 # apply a pseudo-legal move and record how to take it back
 pub fun make(p: *Position, m: Move) {
     val u: *Undo = ?p.hist[p.ply];
@@ -323,7 +371,19 @@ pub fun make(p: *Position, m: Move) {
     }
     if (kind_of(pc) == PAWN) { p.halfmove = 0; }
 
-    if (mv.is_promotion(m)) {
+    # where the king ends up, for the network's zone check below
+    var king_to: i64 = to;
+    if (flag == mv.KING_CASTLE || flag == mv.QUEEN_CASTLE) {
+        # both off the board before either goes back: in Chess960 the king can land where the rook stood and the
+        # rook where the king did
+        val rook: u8 = p.board[to];
+        king_to = castle_king_to(m);
+        remove(p, from);
+        remove(p, to);
+        put(p, pc, king_to);
+        put(p, rook, castle_rook_to(m));
+    }
+    or (mv.is_promotion(m)) {
         remove(p, from);
         put(p, code(us, mv.promotion_type(m)), to);
     }
@@ -335,15 +395,9 @@ pub fun make(p: *Position, m: Move) {
         p.ep  = (from + to) / 2;
         p.key = p.key ^ Z_EP[p.ep & 7];
     }
-    or (flag == mv.KING_CASTLE) {
-        shift(p, from + 3, from + 1);
-    }
-    or (flag == mv.QUEEN_CASTLE) {
-        shift(p, from - 4, from - 1);
-    }
 
     p.key      = p.key ^ Z_CASTLE[p.castling];
-    p.castling = p.castling & CASTLE_KEEP[from] & CASTLE_KEEP[to];
+    p.castling = p.castling & p.keep[from] & p.keep[to];
     p.key      = p.key ^ Z_CASTLE[p.castling];
 
     p.side = p.side ^ 1;
@@ -353,7 +407,7 @@ pub fun make(p: *Position, m: Move) {
     # a king that changes zone or crosses the d/e line changes which inputs
     # its whole side reads: that half cannot be carried across this move, and
     # is rebuilt from the board when a position at or above it is evaluated
-    if (p.accs != nil && kind_of(pc) == KING && nn.orient(us::i64, from) != nn.orient(us::i64, to)) {
+    if (p.accs != nil && kind_of(pc) == KING && nn.orient(us::i64, from) != nn.orient(us::i64, king_to)) {
         nn.mark_refresh(?p.accs[p.acc_top], us::i64);
     }
     if (watch) {
@@ -377,7 +431,15 @@ pub fun unmake(p: *Position) {
     val to:   i64 = mv.to(m);
     val flag: u32 = mv.flag(m);
 
-    if (mv.is_promotion(m)) {
+    if (flag == mv.KING_CASTLE || flag == mv.QUEEN_CASTLE) {
+        val king: u8 = p.board[castle_king_to(m)];
+        val rook: u8 = p.board[castle_rook_to(m)];
+        remove(p, castle_king_to(m));
+        remove(p, castle_rook_to(m));
+        put(p, king, from);
+        put(p, rook, to);
+    }
+    or (mv.is_promotion(m)) {
         remove(p, to);
         put(p, code(us, PAWN), from);
     }
@@ -385,13 +447,7 @@ pub fun unmake(p: *Position) {
         shift(p, to, from);
     }
 
-    if (flag == mv.KING_CASTLE) {
-        shift(p, from + 1, from + 3);
-    }
-    or (flag == mv.QUEEN_CASTLE) {
-        shift(p, from - 1, from - 4);
-    }
-    or (flag == mv.EP_CAPTURE) {
+    if (flag == mv.EP_CAPTURE) {
         var victim: i64 = to - 8;
         if (us == BLACK) { victim = to + 8; }
         put(p, u.captured, victim);
@@ -501,15 +557,19 @@ fun clear(p: *Position) {
         p.board[i] = EMPTY;
         i          = i + 1;
     }
-    p.side     = WHITE;
-    p.castling = 0;
-    p.ep       = NO_SQ;
-    p.halfmove = 0;
-    p.fullmove = 1;
-    p.key      = 0;
-    p.ply      = 0;
-    p.accs     = nil;
-    p.acc_top  = 0;
+    p.side       = WHITE;
+    p.castling   = 0;
+    p.ep         = NO_SQ;
+    p.halfmove   = 0;
+    p.fullmove   = 1;
+    p.key        = 0;
+    p.ply        = 0;
+    p.accs       = nil;
+    p.acc_top    = 0;
+    p.rook_sq[0] = 7;
+    p.rook_sq[1] = 0;
+    p.rook_sq[2] = 63;
+    p.rook_sq[3] = 56;
 }
 
 fun piece_from_char(c: u8) u8 {
@@ -587,18 +647,57 @@ pub fun set_fen(p: *Position, fen: str) bool {
     }
     or {
         for (fen[i] != 0 && fen[i] != ' ') {
-            val c: u8 = fen[i];
-            if (c == 'K') { p.castling = p.castling | CASTLE_WK; }
-            or (c == 'Q') { p.castling = p.castling | CASTLE_WQ; }
-            or (c == 'k') { p.castling = p.castling | CASTLE_BK; }
-            or (c == 'q') { p.castling = p.castling | CASTLE_BQ; }
+            # K Q k q: the outermost rook on that side of the king (X-FEN); A-H a-h: the rook on that file
+            # (Shredder-FEN), on whichever side of the king it stands
+            val c:     u8 = fen[i];
+            var color: u8 = WHITE;
+            var lower: u8 = c;
+            if (c >= 'a' && c <= 'z') {
+                color = BLACK;
+            }
+            or {
+                lower = c + ('a' - 'A');
+            }
+            val home: i64 = 56 * color::i64;
+            val king: i64 = king_square(p, color);
+            val rook: u8  = code(color, ROOK);
+            var file: i64 = 0 - 1;
+            var side: i64 = 0 - 1;
+            if (lower == 'k') {
+                var f: i64 = 7;
+                for (f > (king & 7) && file < 0) {
+                    if (p.board[home + f] == rook) { file = f; }
+                    f = f - 1;
+                }
+                side = 0;
+            }
+            or (lower == 'q') {
+                var f: i64 = 0;
+                for (f < (king & 7) && file < 0) {
+                    if (p.board[home + f] == rook) { file = f; }
+                    f = f + 1;
+                }
+                side = 1;
+            }
+            or (lower >= 'a' && lower <= 'h') {
+                file = (lower - 'a')::i64;
+                side = 0;
+                if (file < (king & 7)) { side = 1; }
+            }
             or {
                 clear(p);
                 ret false;
             }
+            # a right with no rook for it, or a king off its home rank, is dropped rather than refused
+            if (file >= 0 && (king >> 3) == (home >> 3) && p.board[home + file] == rook) {
+                val r: i64 = color::i64 * 2 + side;
+                p.rook_sq[r] = home + file;
+                p.castling   = p.castling | RIGHT_BIT[r];
+            }
             i = i + 1;
         }
     }
+    castling_tables(p);
 
     for (fen[i] == ' ') { i = i + 1; }
     if (fen[i] == '-') {
@@ -703,21 +802,13 @@ pub fun to_fen(p: *Position, out: *u8) i64 {
         i      = i + 1;
     }
     or {
-        if ((p.castling & CASTLE_WK) != 0) {
-            out[i] = 'K';
-            i      = i + 1;
-        }
-        if ((p.castling & CASTLE_WQ) != 0) {
-            out[i] = 'Q';
-            i      = i + 1;
-        }
-        if ((p.castling & CASTLE_BK) != 0) {
-            out[i] = 'k';
-            i      = i + 1;
-        }
-        if ((p.castling & CASTLE_BQ) != 0) {
-            out[i] = 'q';
-            i      = i + 1;
+        var r: i64 = 0;
+        for (r < 4) {
+            if ((p.castling & RIGHT_BIT[r]) != 0) {
+                out[i] = castling_letter(p, r);
+                i      = i + 1;
+            }
+            r = r + 1;
         }
     }
 
@@ -808,8 +899,8 @@ test position_special_moves_unmake_exactly_and_keep_the_key_incremental {
     val fen: str = "r3k2r/1P6/8/3pP3/8/8/8/R3K2R w KQkq d6 0 1";
     if (!set_fen(?p, fen) || !set_fen(?before, fen)) { ret 1; }
     var moves: [5]Move;
-    moves[0] = mv.make(4, 6, mv.KING_CASTLE);
-    moves[1] = mv.make(4, 2, mv.QUEEN_CASTLE);
+    moves[0] = mv.make(4, 7, mv.KING_CASTLE);
+    moves[1] = mv.make(4, 0, mv.QUEEN_CASTLE);
     moves[2] = mv.make(36, 43, mv.EP_CAPTURE);
     moves[3] = mv.make(49, 56, mv.PROMO_CAPTURE + 3);
     moves[4] = mv.make(0, 56, mv.CAPTURE);
