@@ -29,6 +29,7 @@ use pos: machete.position;
 use machete.position.Position;
 use rep: machete.repertoire;
 use machete.see;
+use machete.syzygy;
 use machete.tt;
 
 pub val INFINITE: i64 = 31000;
@@ -37,6 +38,8 @@ pub val MATE:     i64 = 30000;
 pub val MATE_FOUND: i64 = 29000;
 
 pub val MAX_PLY: i64 = 64;
+# a tablebase win, less the ply it was found at: above any evaluation, below every mate score
+pub val TB_WIN: i64 = 28000;
 
 # no static evaluation: the node was in check
 val NO_EVAL: i64 = 0 - 32000;
@@ -407,7 +410,9 @@ pub rec Limits {
 #             ponderhit that arrives before the search thread runs must not
 #             be lost.
 pub rec Search {
-    nodes:         i64;
+    nodes: i64;
+    # positions the tablebases settled
+    tb_hits:       i64;
     stop:          i64;
     deadline:      i64;
     soft:          i64;
@@ -521,6 +526,7 @@ pub fun reset_as(s: *Search, id: i64) {
 # are; killers are by ply and belong to one search.
 pub fun next_search(s: *Search) {
     s.nodes      = 0;
+    s.tb_hits    = 0;
     s.thread_id  = 0;
     s.stop       = 0;
     s.deadline   = 0;
@@ -978,6 +984,42 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         }
     }
 
+    # Syzygy tablebases (SyzygyPath): right after a capture or a pawn move, with few enough men and no castling
+    # rights, the tables say win, draw or loss outright. A win or loss is a bound (how fast is not known), so it ends
+    # the node only when it settles the window; a draw ends it always. A win the fifty-move rule spoils is a draw.
+    # A bound that does not settle a wide window still holds: the node's answer is kept on its side of it.
+    var tb_floor: i64 = 0 - INFINITE;
+    var tb_cap:   i64 = INFINITE;
+    if (syzygy.LARGEST > 0 && ply > 0 && excluded == mv.NONE && p.halfmove == 0 && p.castling == 0
+        && bb.count(pos.all(p)) <= syzygy.LARGEST) {
+        var tb_ok: bool = false;
+        val wdl:   i64  = syzygy.probe_wdl(p, ?tb_ok);
+        if (tb_ok) {
+            s.tb_hits = s.tb_hits + 1;
+            var value: i64 = draw_value(ply);
+            var bound: u8  = tt.EXACT;
+            if (wdl >= 2) {
+                value = TB_WIN - ply;
+                bound = tt.LOWER;
+            }
+            or (wdl <= 0 - 2) {
+                value = 0 - TB_WIN + ply;
+                bound = tt.UPPER;
+            }
+            if (bound == tt.EXACT || (bound == tt.LOWER && value >= beta) || (bound == tt.UPPER && value <= alpha)) {
+                tt.store(p.key, mv.NONE, value, depth + 6, bound);
+                ret value;
+            }
+            if (bound == tt.LOWER) {
+                tb_floor = value;
+                if (value > alpha) { alpha = value; }
+            }
+            or {
+                tb_cap = value;
+            }
+        }
+    }
+
     # the static evaluation, once per node, remembered by ply. A node is
     # improving when its side stands better than it did two plies earlier - on
     # its own previous move - which says the position is going somewhere. An
@@ -1301,6 +1343,14 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
         ret draw_value(ply);
     }
     if (excluded != mv.NONE) { ret best; }
+    if (best < tb_floor) {
+        best = tb_floor;
+        flag = tt.LOWER;
+    }
+    if (best > tb_cap) {
+        best = tb_cap;
+        flag = tt.UPPER;
+    }
 
     # the search's answer for a quiet position says how far the evaluation
     # was off here; a bound says so only in the direction it bounds
@@ -1341,10 +1391,10 @@ fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
     if (score > MATE_FOUND || score < 0 - MATE_FOUND) {
         var mate_in: i64 = (MATE - score + 1) / 2;
         if (score < 0) { mate_in = 0 - (MATE + score + 1) / 2; }
-        print.printf("info depth {} score mate {} nodes {} nps {} time {} pv", depth, mate_in, nodes, nps, elapsed);
+        print.printf("info depth {} score mate {} nodes {} nps {} tbhits {} time {} pv", depth, mate_in, nodes, nps, s.tb_hits, elapsed);
     }
     or {
-        print.printf("info depth {} score cp {} nodes {} nps {} time {} pv", depth, score, nodes, nps, elapsed);
+        print.printf("info depth {} score cp {} nodes {} nps {} tbhits {} time {} pv", depth, score, nodes, nps, s.tb_hits, elapsed);
     }
     var spelled: [6]u8;
     var i:       i64 = 0;
