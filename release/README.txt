@@ -1,4 +1,4 @@
-machete 0.5.5
+machete 0.5.6
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -32,7 +32,21 @@ Options:
   Contempt  0 to 100 (default 0): against an opponent rated at or below the
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
-Not supported yet: opening books, endgame tablebases, Chess960.
+  SyzygyPath  a folder of Syzygy tablebase files (.rtbw, up to five men); the
+            search then knows the result of such endings exactly. Empty by
+            default.
+  UCI_Chess960  plays Chess960 (Fischer Random): castling is sent and read as
+            the king taking its own rook, as Chess960 GUIs expect.
+
+Not supported yet: opening books.
+
+
+What changed since 0.5.5
+------------------------
+Continuation history: a quiet move is ordered by how it has done after the
+same reply, as well as in general. +10 Elo against 0.5.5 over 6,000 games at
+10+0.1, same network. Syzygy tablebases of up to five men are read in the
+search (SyzygyPath), decoded in Mach. Chess960 (UCI_Chess960).
 
 
 What changed since 0.5.4

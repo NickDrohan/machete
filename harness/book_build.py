@@ -17,6 +17,8 @@ import chess.engine
 OUT = "E:/machete/experience/"
 SF = "C:/Users/Arman/Desktop/Games/Chess/arena_3.5.1/Engines/Stockfish 19/stockfish/stockfish-windows-x86-64-universal.exe"
 MARGIN = 30
+HABIT_GAMES = 20
+HABIT_SHARE = 0.9
 
 
 def check(job):
@@ -51,7 +53,12 @@ def main():
         ok = []
         for uci, v in row["moves"].items():
             n = v[0] + v[1] + v[2]
-            if n >= 5 and v[3] / n >= -0.05 and uci not in avoid.get(key, ()):
+            # the bot's habit: it plays this move nearly every time it is here, so leaving it out of the book changes no
+            # move and only costs clock (2026-11-15: no book reply to 1.d4, 1.Nf3 or 1.c4, where 1...Nf6 was played in
+            # 470 of 473, 173 of 174 and 77 of 78 games and fell under the -0.05 cut). The cut chooses between moves; it
+            # should not leave a position with none. Stockfish's check and the avoid list still apply.
+            habit = n >= HABIT_GAMES and n >= HABIT_SHARE * total
+            if n >= 5 and (v[3] / n >= -0.05 or habit) and uci not in avoid.get(key, ()):
                 ok.append((uci, n))
         if ok:
             jobs.append((key, ok, args.nodes))
