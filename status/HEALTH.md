@@ -1,13 +1,13 @@
-# machete health, 2026-11-18 02:53
+# machete health, 2026-11-18 04:01
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
 - E: drive answers (volume OK), disk events in the last 10 min: 0
+- processes: no answer from Windows this pass
 - processes: all running
-- laneA idle 958 min, backlog empty
-- laneB idle 25703 min, backlog empty
+- laneA idle 1025 min, backlog empty
+- laneB idle 25770 min, backlog empty
 - gpu: running TRAIN-1024-CANDE
 - laneA: running nothing
 - laneB: running nothing
-- bot: last new game 1.4 h ago
-- bot: lichess's daily limit on games against bots holds it until 02:56
+- bot: last new game 0.3 h ago
