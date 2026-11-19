@@ -1,13 +1,13 @@
-# machete health, 2026-11-19 03:20
+# machete health, 2026-11-19 03:27
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- ALERT: gpu has had nothing to run for 6.0 h and its backlog is empty
 - E: drive answers (volume OK), disk events in the last 10 min: 0
 - processes: all running
-- laneA idle 2425 min, backlog empty
-- laneB idle 27170 min, backlog empty
+- gpu idle 367 min, backlog empty
+- laneA idle 2432 min, backlog empty
+- laneB idle 27177 min, backlog empty
 - gpu: running nothing
 - laneA: running nothing
 - laneB: running nothing
-- bot: last new game 0.9 h ago
+- bot: last new game 0.0 h ago
