@@ -1,12 +1,13 @@
-# machete health, 2026-11-21 07:44
+# machete health, 2026-11-21 08:23
 
 Checked every few minutes from D: by D:/machete-health/health.py.
 
-- E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 0
+- ALERT: 1 disk retry/reset events on the E: drive; it may be about to hang again
+- E: drive answers (volume Full Repair Needed), disk events in the last 10 min: 1
 - processes: all running
-- gpu idle 3505 min, backlog empty
-- laneA idle 249 min, backlog empty
-- laneB idle 30314 min, backlog empty
+- gpu idle 3544 min, backlog empty
+- laneA idle 288 min, backlog empty
+- laneB idle 30353 min, backlog empty
 - gpu: running nothing
 - laneA: running nothing
 - laneB: running nothing
