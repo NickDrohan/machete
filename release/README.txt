@@ -1,4 +1,4 @@
-machete 0.6.0
+machete 0.6.1
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -32,13 +32,26 @@ Options:
   Contempt  0 to 100 (default 0): against an opponent rated at or below the
             engine, score draws this much against it. Needs UCI_RatingAdv.
 
-  SyzygyPath  a folder of Syzygy tablebase files (.rtbw, up to five men); the
-            search then knows the result of such endings exactly. Empty by
-            default.
+  SyzygyPath  a folder of Syzygy tablebase files (.rtbw and .rtbz, up to five
+            men); the search then knows the result of such endings exactly,
+            and the root plays them out by DTZ. Empty by default.
   UCI_Chess960  plays Chess960 (Fischer Random): castling is sent and read as
             the king taking its own rook, as Chess960 GUIs expect.
 
 Not supported yet: opening books.
+
+
+What changed since 0.6.0
+------------------------
+With SyzygyPath set, the engine now reads the DTZ tables (.rtbz) beside the
+WDL ones and plays a tablebase ending itself: at the root it searches only
+the moves that keep the best result and, in a won ending, keep it winnable
+inside the fifty-move rule. Against 0.6.0 on 21 tablebase wins that need 40
+to 100 plies to the next capture or pawn move, each played twice with colours
+swapped: 0.6.1 won about 20 of its 21, 0.6.0 about 4 (20 wins, 18 draws, 4
+losses). Put the .rtbz files in the same folder as the .rtbw files. New
+debugging commands: tbdtz and tbroot. The network, the options and the search
+elsewhere are 0.6.0's.
 
 
 What changed since 0.5.6
