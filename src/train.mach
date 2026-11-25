@@ -255,17 +255,17 @@ pub fun load_position(rec: *u8, n: i64) {
 # summed feature by feature in registers rather than in memory: each group of
 # four units reads its (up to) 32 feature rows once and writes once.
 
-#[inline]
+#[inline("always")]
 fun ld(p: *f32, at: i64) f32x4 {
     ret @((?p[at]):~*f32x4);
 }
 
-#[inline]
+#[inline("always")]
 fun st(p: *f32, at: i64, v: f32x4) {
     @((?p[at]):~*f32x4) = v;
 }
 
-#[inline]
+#[inline("always")]
 fun splat(x: f32) f32x4 {
     ret f32x4{x, x, x, x};
 }
@@ -277,12 +277,12 @@ var SQRT_LANES: [32][4]f32;
 # each lane equals sqrt_f32's. Mach's inline assembly has no vector operands,
 # so the vector goes through a per-thread slot of memory; the instruction is
 # hand-encoded, as src/kernels.mach's are. Elsewhere, four scalar roots.
-#[inline]
+#[inline("always")]
 fun sqrt4(v: f32x4, slot: i64) f32x4 {
     $if ($mach.build.arch == $mach.arch.x86_64) {
         st(?SQRT_LANES[slot][0], 0, v);
         val p: *f32 = ?SQRT_LANES[slot][0];
-        asm x86_64 {
+        asm x86-64 {
             mov rax, {p}
             # movaps xmm0, [rax]; sqrtps xmm0, xmm0; movaps [rax], xmm0
             .byte 0x0F, 0x28, 0x00 :: writes(xmm0)
@@ -297,7 +297,7 @@ fun sqrt4(v: f32x4, slot: i64) f32x4 {
 }
 
 # clamp to [0, 1] lane by lane
-#[inline]
+#[inline("always")]
 fun clamp01x(x: f32x4) f32x4 {
     val zero: f32x4 = splat(0.0);
     val one:  f32x4 = splat(1.0);
@@ -404,7 +404,7 @@ pub fun backward(n: i64, h0: i64, h1: i64) {
 
 # torch.optim.Adam's step for four weights at once, then the clip, and the
 # gradients cleared for the next batch
-#[inline]
+#[inline("always")]
 fun adam4(w: *f32, g: *f32, m: *f32, v: *f32, at: i64, step_size: f32x4, bc2_sqrt: f32, slot: i64) {
     val grad: f32x4 = ld(g, at);
     val mm:   f32x4 = splat(BETA1) * ld(m, at) + splat(1.0 - BETA1) * grad;
