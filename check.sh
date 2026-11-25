@@ -184,4 +184,19 @@ gate "binpack decoder refuses a corrupted chunk" 2 bash -c '
     "$1" check "$3" 100000000' _ \
     "$binpack" "$here/fixtures/leela_chunk.binpack" "$work/corrupt.binpack"
 
+# The labeller (src/tools/label.mach) against the farm's Python labellers it replaces, harness/farm/, with machete
+# itself as the teacher (deterministic at a fixed node count on one thread with its table cleared each position):
+# 40 positions from fixtures/label_sample.bin, labelled at 15,000 nodes and then relabelled deeper, byte for byte.
+label="$here/out/windows-x86_64/release/bin/label.exe"
+records="$here/out/windows-x86_64/release/bin/records.exe"
+gate "label writes farm_label15k.py's and farm_relabel.py's records byte for byte" 0 bash -c '
+    "$1" "$2/farm_label15k.py" "$3" "$5/py15k.bin" "$6" 2 >/dev/null &&
+    "$4" 15k "$3" "$5/m15k.bin" "$6" 2 >/dev/null 2>&1 &&
+    "$7" diff "$5/py15k.bin" "$5/m15k.bin" >/dev/null &&
+    "$1" "$2/farm_relabel.py" "$5/py15k.bin" "$5/pyrel.bin" "$6" 2 >/dev/null &&
+    "$4" relabel "$5/py15k.bin" "$5/mrel.bin" "$6" 2 >/dev/null 2>&1 &&
+    "$7" diff "$5/pyrel.bin" "$5/mrel.bin" >/dev/null' _     "$python" "$here/harness/farm" "$here/fixtures/label_sample.bin" "$label" "$work" "$release" "$records"
+# the comparison the gate above rests on must be able to fail: unlabelled records against labelled ones differ
+gate "records diff reports records that differ" 3 "$records" diff "$here/fixtures/label_sample.bin" "$work/py15k.bin"
+
 gates_done

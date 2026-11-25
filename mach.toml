@@ -57,6 +57,24 @@ targets = ["*"]
 link = ["kernel32"]
 need = []
 
+# labels training records with a teacher engine in Mach (src/tools/label.mach), held to farm_label15k.py and farm_relabel.py
+[artifact.label]
+kind = "bin"
+entry = "tools/label.mach"
+out = "{project.work}/bin/label{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
+# inspects and compares training-record files (src/tools/records.mach): stats, show, diff
+[artifact.records]
+kind = "bin"
+entry = "tools/records.mach"
+out = "{project.work}/bin/records{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
 # trains the network in Mach (src/train.mach), checked against harness/nnue/train.py
 [artifact.trainer]
 kind = "bin"
