@@ -39,9 +39,12 @@ use machete.movegen.MoveList;
 use pos: machete.position;
 use machete.position.Position;
 
-pub val STEM:             i64 = 32;
-pub val RECORD_SIZE:      i64 = 70;
-pub val ENGINE_ID:        u8  = 11; # our records' teacher id: 10 theoden, 11 Leela
+pub val STEM:        i64 = 32;
+pub val RECORD_SIZE: i64 = 70;
+pub val ENGINE_ID:   u8  = 11; # our records' teacher id: 10 theoden, 11 Leela
+# a position written with no label (Stockfish's VALUE_NONE): machete's own move-stream files carry one at
+# every ply between labelled positions, and expand leaves them out
+pub val VALUE_NONE:       i64 = 32002;
 pub val CLAMP:            f64 = 10000.0;
 val     INTERNAL_PAWN:    f64 = 208.0; # stockfish internal units per pawn, as binpack.h converts
 val     MAX_SCALE_POINTS: i64 = 64;
@@ -506,6 +509,34 @@ pub fun mapped(s: *Scale, score: i64) i64 {
 # score:  the label, in centipawns from the side to move
 # result: +1/0/-1 from the side to move
 # out:    RECORD_SIZE bytes to fill
+# one of machete's own records, as extract_bots.py and gen.py write them: pieces from the lowest square up, the
+# score in our centipawns as stored, teacher id 0. harness/nnue/movestream.py's record() is the reference.
+pub fun write_own_record(p: *Position, score: i64, result: i64, out: *u8) {
+    var i: i64 = 0;
+    for (i < RECORD_SIZE) {
+        out[i] = 0;
+        i      = i + 1;
+    }
+    out[0] = p.side;
+    var slot: i64 = 0;
+    var sq:   i64 = 0;
+    for (sq < 64) {
+        val pc: u8 = p.board[sq];
+        if (pc != pos.EMPTY) {
+            out[2 + slot]  = pc;
+            out[34 + slot] = sq::u8;
+            slot           = slot + 1;
+        }
+        sq = sq + 1;
+    }
+    out[1] = slot::u8;
+    val stored: i64 = score & 0xFFFF;
+    out[66] = (stored & 0xFF)::u8;
+    out[67] = (stored >> 8)::u8;
+    out[68] = (result + 1)::u8;
+    out[69] = 0;
+}
+
 pub fun write_record(p: *Position, score: i64, result: i64, out: *u8) {
     var i: i64 = 0;
     for (i < RECORD_SIZE) {

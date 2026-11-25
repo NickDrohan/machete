@@ -2,6 +2,7 @@
 #
 #   binpack check   <file.binpack> <positions>
 #   binpack convert <file.binpack> <out.bin> <scale.json> <positions> <stride>
+#   binpack expand  <file.binpack> <out.bin>
 #
 # the Mach counterpart of harness/nnue/leela.py, and checked against it: the
 # records it writes must be byte-identical. `check` decodes and verifies and
@@ -9,6 +10,10 @@
 # per position not in check, its score mapped onto our teachers' scale through
 # the table leela.py --calibrate measured. `stride` converts every stride-th
 # chunk, so a sample spans the whole file.
+#
+# `expand` reads machete's own move-stream files (harness/nnue/movestream.py writes them): every labelled
+# position becomes one of our records, its score as stored, and the unlabelled positions between them (VALUE_NONE)
+# are left out. Its output must match movestream.py's expand byte for byte.
 #
 # the file must be uncompressed binpack: std has gzip and zlib but no zstd, so
 # linrock's .binpack.zst files are decompressed first (leela.py can).
@@ -78,6 +83,7 @@ var RUN: Run;
 fun usage() i64 {
     print.eprintln("usage: binpack check   <file.binpack> <positions>");
     print.eprintln("       binpack convert <file.binpack> <out.bin> <scale.json> <positions> <stride>");
+    print.eprintln("       binpack expand  <file.binpack> <out.bin>");
     ret EXIT_USAGE;
 }
 
@@ -132,6 +138,17 @@ fun visit_convert(ctx: ptr, p: *Position, m: Move, score: i64, result: i64) i64 
     r.written = r.written + 1;
     if (r.used + binpack.RECORD_SIZE > OUT_CAP) { flush(r); }
     if (r.written >= r.limit)                   { ret 1; }
+    ret 0;
+}
+
+fun visit_expand(ctx: ptr, p: *Position, m: Move, score: i64, result: i64) i64 {
+    val r: *Run = ctx::*Run;
+    tally(r, p, result);
+    if (score == binpack.VALUE_NONE) { ret 0; }
+    binpack.write_own_record(p, score, result, ?OUT[r.used]);
+    r.used    = r.used + binpack.RECORD_SIZE;
+    r.written = r.written + 1;
+    if (r.used + binpack.RECORD_SIZE > OUT_CAP) { flush(r); }
     ret 0;
 }
 
@@ -288,6 +305,27 @@ fun convert(argc: i64, argv: **u8) i64 {
     ret 0;
 }
 
+fun expand(argc: i64, argv: **u8) i64 {
+    if (argc < 4) { ret usage(); }
+    val created: res[fs.File, io_error.Error] = fs.create(argv[3], 420);
+    if (sel created.err) {
+        print.eprintlnf("cannot create {}", argv[3]);
+        ret EXIT_FAIL;
+    }
+    RUN.out   = created.ok;
+    RUN.limit = 0;
+    val status: i64 = each_chunk(argv[2], 1, visit_expand, ?RUN);
+    flush(?RUN);
+    val shut: err[io_error.Error] = fs.close(?RUN.out);
+    if (status != binpack.OK && status != binpack.STOPPED) { ret EXIT_FAIL; }
+    if (RUN.failed) {
+        print.eprintln("a write failed");
+        ret EXIT_FAIL;
+    }
+    print.printlnf("{} positions read, {} labelled written to {}", RUN.seen, RUN.written, argv[3]);
+    ret 0;
+}
+
 #[symbol("main")]
 fun main(argc: i64, argv: **u8) i64 {
     pos.init();
@@ -295,5 +333,6 @@ fun main(argc: i64, argv: **u8) i64 {
     val command: str = argv[1];
     if (str_equals(command, "check"))   { ret check(argc, argv); }
     if (str_equals(command, "convert")) { ret convert(argc, argv); }
+    if (str_equals(command, "expand"))  { ret expand(argc, argv); }
     ret usage();
 }

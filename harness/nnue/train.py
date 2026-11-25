@@ -323,14 +323,36 @@ def pack(rows):
     return occupied.astype(np.uint64), np.ascontiguousarray(codes)
 
 
+BINPACK_TOOL = os.environ.get("MACHETE_BINPACK", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                                                                 "out", "windows-x86_64", "release", "bin", "binpack.exe"))
+
+
+def expand_movestream(path):
+    """A move-stream corpus (harness/nnue/movestream.py) as records in memory: the Mach expander writes them to a
+    temporary file, read back and removed, and the file's stalemate sidecar (path.rest.bin) is added."""
+    import subprocess
+    import tempfile
+    handle, tmp = tempfile.mkstemp(suffix=".bin")
+    os.close(handle)
+    try:
+        subprocess.run([BINPACK_TOOL, "expand", path, tmp], check=True, stdout=subprocess.DEVNULL)
+        data = np.fromfile(tmp, dtype=RECORD)
+    finally:
+        os.remove(tmp)
+    if os.path.exists(path + ".rest.bin"):
+        data = np.concatenate([data, np.fromfile(path + ".rest.bin", dtype=RECORD)])
+    return data
+
+
 def open_sources(specs):
-    """`path` or `path@N` (the first N records) for each corpus."""
+    """`path` or `path@N` (the first N records) for each corpus; a .binpack path is a move-stream corpus, expanded
+    into memory on opening."""
     sources = []
     for spec in specs:
         path, take = spec, ""
         if "@" in os.path.basename(spec):
             path, take = spec.rsplit("@", 1)
-        data = np.memmap(path, dtype=RECORD, mode="r")
+        data = expand_movestream(path) if path.endswith(".binpack") else np.memmap(path, dtype=RECORD, mode="r")
         take = int(take) if take else len(data)
         if take > len(data):
             raise SystemExit("{} holds {:,} records, not {:,}".format(path, len(data), take))
