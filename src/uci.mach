@@ -356,6 +356,32 @@ pub fun loop(exe: str) i64 {
             if (ok) { print.printlnf("info string wdl {}", wdl); }
             or      { print.println("info string wdl none"); }
         }
+        or (str_equals(command, "tbdtz")) {
+            # debugging: plies to the next capture or pawn move with best play, for the side to move
+            var ok:  bool = false;
+            val dtz: i64  = syzygy.probe_dtz(?GAME, ?ok);
+            if (ok) { print.printlnf("info string dtz {}", dtz); }
+            or      { print.println("info string dtz none"); }
+        }
+        or (str_equals(command, "tbroot")) {
+            # debugging: the root moves the tablebases keep, best rank first among equals
+            var moves: [64]Move;
+            var n:     i64 = 0;
+            if (syzygy.root_moves(?GAME, ?moves[0], ?n)) {
+                print.printf("info string tbroot");
+                var i: i64 = 0;
+                for (i < n) {
+                    var spelled: [6]u8;
+                    mv.to_uci(moves[i], ?spelled[0]);
+                    print.printf(" {}", ?spelled[0]);
+                    i = i + 1;
+                }
+                print.println("");
+            }
+            or {
+                print.println("info string tbroot none");
+            }
+        }
         or (str_equals(command, "stop")) {
             halt();
         }
@@ -377,7 +403,7 @@ pub fun loop(exe: str) i64 {
                 var dir: [512]u8;
                 join_tokens(?t, 4, t.count, ?dir[0], 512);
                 val found: i64 = syzygy.load(?dir[0]);
-                print.printlnf("info string {} syzygy tables, up to {} men", found, syzygy.LARGEST);
+                print.printlnf("info string {} syzygy tables, up to {} men, {} with DTZ", found, syzygy.LARGEST, syzygy.DTZ_TABLES);
             }
             or (t.count >= 5 && str_equals(t.item[2], "UCI_Chess960")) {
                 mv.CHESS960 = str_equals(t.item[4], "true");

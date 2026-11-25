@@ -75,6 +75,15 @@ targets = ["*"]
 link = ["kernel32"]
 need = []
 
+# holds the Syzygy prober to python-chess's answers (src/tools/tbcheck.mach; harness/syzygy_reference.py writes them)
+[artifact.tbcheck]
+kind = "bin"
+entry = "tools/tbcheck.mach"
+out = "{project.work}/bin/tbcheck{artifact.suffix}"
+targets = ["*"]
+link = ["kernel32"]
+need = []
+
 # trains the network in Mach (src/train.mach), checked against harness/nnue/train.py
 [artifact.trainer]
 kind = "bin"

@@ -8,7 +8,12 @@
 # A WDL table gives, for a position with no castling rights and no en passant square, the result with best play:
 # 2 win, 1 win that the fifty-move rule turns into a draw, 0 draw, -1 the same loss, -2 loss, for the side to move.
 # Positions whose best move is a capture are stored with whatever compresses best, so a probe first plays out the
-# captures (probe_ab). DTZ tables are not read: the bot's root uses lichess's tablebase.
+# captures (probe_ab).
+#
+# The DTZ tables (.rtbz, the DTZ half of the same prober) say how many plies remain to the next capture or pawn move
+# with best play, so a won ending can be won inside the fifty-move rule: probe_dtz gives it for any position of up to
+# five men, and root_moves ranks the legal moves at the root as Fathom's root_probe_dtz does, so the search is held to
+# the moves that keep the best result and make progress towards it.
 
 use std.allocator;
 use std.allocator.page;
@@ -36,7 +41,7 @@ use machete.position.Position;
 pub var LARGEST: i64 = 0;
 
 val MAX_TABLES:       i64 = 256;
-val MAX_SYMBOLS_POOL: i64 = 8388608;
+val MAX_SYMBOLS_POOL: i64 = 16777216;
 
 # ---- the format's index tables (de Man) ----
 
@@ -272,7 +277,7 @@ rec Table {
 
 var TABLES:  [256]Table;
 var COUNT:   i64 = 0;
-var SYM_LEN: [8388608]u8;
+var SYM_LEN: [16777216]u8;
 var SYM_TOP: i64 = 0;
 
 # material key -> table index + 1, open addressing
@@ -584,7 +589,7 @@ fun parse(t: *Table) bool {
 val NAME_CHARS: str = "PNBRQ";
 
 # the table name for these counts (white's men then black's: K then Q R B N P) into out, after `dir`; returns the length
-fun name_of(dir: *u8, counts: *i64, out: *u8) i64 {
+fun name_of(dir: *u8, counts: *i64, out: *u8, ext: str) i64 {
     var n: i64 = 0;
     for (dir[n] != 0) {
         out[n] = dir[n];
@@ -614,8 +619,7 @@ fun name_of(dir: *u8, counts: *i64, out: *u8) i64 {
         }
         c = c + 1;
     }
-    val ext: str = ".rtbw";
-    var e:   i64 = 0;
+    var e: i64 = 0;
     for (e < 5) {
         out[n] = ext[e];
         n      = n + 1;
@@ -628,7 +632,7 @@ fun name_of(dir: *u8, counts: *i64, out: *u8) i64 {
 fun try_table(dir: *u8, counts: *i64) {
     if (COUNT >= MAX_TABLES) { ret; }
     var path: [1024]u8;
-    name_of(dir, counts, ?path[0]);
+    name_of(dir, counts, ?path[0], ".rtbw");
     val t: *Table = ?TABLES[COUNT];
     if (!read_file(?path[0], ?t.bytes)) { ret; }
     var num:     i64 = 2;
@@ -664,6 +668,7 @@ fun try_table(dir: *u8, counts: *i64) {
 fun try_all(dir: *u8, counts: *i64, slot: i64, left: i64) {
     if (slot == 10) {
         try_table(dir, counts);
+        try_dtz(dir, counts);
         ret;
     }
     val index: i64 = (slot / 5) * 6 + (slot % 5);
@@ -676,17 +681,22 @@ fun try_all(dir: *u8, counts: *i64, slot: i64, left: i64) {
     counts[index] = 0;
 }
 
-# load every WDL table of up to five men in `dir`; returns how many were found. Called between searches only.
+# load every WDL and DTZ table of up to five men in `dir`; returns how many WDL tables were found (DTZ_TABLES says
+# how many DTZ). Called between searches only.
 pub fun load(dir: *u8) i64 {
     init_indices();
-    COUNT   = 0;
-    LARGEST = 0;
-    SYM_TOP = 0;
+    COUNT      = 0;
+    DCOUNT     = 0;
+    DTZ_TABLES = 0;
+    LARGEST    = 0;
+    SYM_TOP    = 0;
     var i: i64 = 0;
     for (i < 1024) {
-        KEYS[i]  = 0;
-        SLOTS[i] = 0;
-        i        = i + 1;
+        KEYS[i]   = 0;
+        SLOTS[i]  = 0;
+        DKEYS[i]  = 0;
+        DSLOTS[i] = 0;
+        i         = i + 1;
     }
     var counts: [12]i64;
     i = 0;
@@ -700,8 +710,8 @@ pub fun load(dir: *u8) i64 {
 
 # ---- probing ----
 
-fun decompress(t: *Table, d: *Pairs, idx: i64) i64 {
-    if (d.idx_bits == 0) { ret d.constant; }
+# the offset of the symbol pattern holding entry idx; the caller has dealt with a constant table
+fun decompress_at(t: *Table, d: *Pairs, idx: i64) i64 {
     val main:  i64 = idx >> d.idx_bits;
     var lit:   i64 = (idx & ((1 << d.idx_bits) - 1)) - (1 << (d.idx_bits - 1));
     var block: i64 = u32_le(t, d.index_table + 6 * main);
@@ -751,7 +761,20 @@ fun decompress(t: *Table, d: *Pairs, idx: i64) i64 {
             sym = (t.bytes[w + 2]::i64 << 4) | (t.bytes[w + 1]::i64 >> 4);
         }
     }
-    ret t.bytes[d.sym_pat + 3 * sym]::i64;
+    ret d.sym_pat + 3 * sym;
+}
+
+# a WDL entry: one byte
+fun decompress(t: *Table, d: *Pairs, idx: i64) i64 {
+    if (d.idx_bits == 0) { ret d.constant; }
+    ret t.bytes[decompress_at(t, d, idx)]::i64;
+}
+
+# a DTZ entry: twelve bits, the low byte and the low nibble of the next (a constant DTZ table holds 0)
+fun decompress_dtz(t: *Table, d: *Pairs, idx: i64) i64 {
+    if (d.idx_bits == 0) { ret 0; }
+    val w: i64 = decompress_at(t, d, idx);
+    ret t.bytes[w]::i64 + ((t.bytes[w + 1]::i64 & 15) << 8);
 }
 
 # the squares of the men of table piece `code` (1-6 white pawn to king, 9-14 black), colours swapped when flip
@@ -983,23 +1006,18 @@ fun probe_ab(p: *Position, alpha_in: i64, beta: i64, ok: *bool) i64 {
     ret v;
 }
 
-# win (2), cursed win (1), draw (0), blessed loss (-1) or loss (-2) for the side to move; ok false when the
-# position is not in the tables (too many men, a table missing, castling rights). The caller's accumulator is left
-# untouched: the probe moves on a position with no network attached.
-pub fun probe_wdl(p: *Position, ok: *bool) i64 {
-    @ok = false;
-    if (LARGEST == 0 || p.castling != 0 || bb.count(pos.all(p)) > LARGEST) { ret 0; }
-    @ok = true;
-    val accs: *nn.Acc = p.accs;
-    p.accs = nil;
+# the WDL value with captures resolved, as Fathom's probe_wdl: success is 1, or 2 when a capture (en passant
+# included) decides the result, which probe_dtz needs to know; ok false when a table is missing. No guards, no
+# accumulator handling: the callers below do both.
+fun wdl_full(p: *Position, ok: *bool, success: *i64) i64 {
+    @ok      = true;
+    @success = 1;
     var list: MoveList;
     movegen.generate(p, ?list, true);
-    var best_cap: i64  = 0 - 3;
-    var best_ep:  i64  = 0 - 3;
-    var result:   i64  = 0;
-    var done:     bool = false;
-    var i:        i64  = 0;
-    for (i < list.count && !done) {
+    var best_cap: i64 = 0 - 3;
+    var best_ep:  i64 = 0 - 3;
+    var i:        i64 = 0;
+    for (i < list.count) {
         val m: Move = list.moves[i];
         i = i + 1;
         if (!is_capture(m)) { cnt; }
@@ -1010,58 +1028,430 @@ pub fun probe_wdl(p: *Position, ok: *bool) i64 {
         }
         val v: i64 = 0 - probe_ab(p, 0 - 2, 0 - best_cap, ok);
         pos.unmake(p);
-        if (!@ok) {
-            done = true;
-        }
-        or (v > best_cap) {
+        if (!@ok) { ret 0; }
+        if (v > best_cap) {
             if (v == 2) {
-                result = 2;
-                done   = true;
+                @success = 2;
+                ret 2;
             }
-            or (mv.flag(m) != mv.EP_CAPTURE) {
-                best_cap = v;
-            }
-            or (v > best_ep) {
-                best_ep = v;
-            }
+            if (mv.flag(m) != mv.EP_CAPTURE) { best_cap = v; }
+            or (v > best_ep)                 { best_ep = v; }
         }
     }
-    if (!done) {
-        val v: i64 = probe_table(p, ok);
-        if (@ok) {
-            result = v;
-            if (best_ep > best_cap) {
-                if (best_ep > v) {
-                    result = best_ep;
-                    done   = true;
-                }
-                or {
-                    best_cap = best_ep;
+    val v: i64 = probe_table(p, ok);
+    if (!@ok) { ret 0; }
+    var cap: i64 = best_cap;
+    if (best_ep > cap) {
+        if (best_ep > v) {
+            @success = 2;
+            ret best_ep;
+        }
+        cap = best_ep;
+    }
+    if (cap >= v) {
+        if (cap > 0) { @success = 2; }
+        ret cap;
+    }
+    if (best_ep > 0 - 3 && v == 0) {
+        # stalemate without the en passant capture: the capture is the only move, and decides
+        var all: MoveList;
+        movegen.generate(p, ?all, false);
+        var other: bool = false;
+        var j:     i64  = 0;
+        for (j < all.count && !other) {
+            val m: Move = all.moves[j];
+            j = j + 1;
+            if (mv.flag(m) == mv.EP_CAPTURE) { cnt; }
+            pos.make(p, m);
+            if (!pos.left_in_check(p)) { other = true; }
+            pos.unmake(p);
+        }
+        if (!other && !pos.in_check(p)) {
+            @success = 2;
+            ret best_ep;
+        }
+    }
+    ret v;
+}
+
+# whether the position is in the tables at all: few enough men, no castling rights, tables loaded
+fun probeable(p: *Position) bool {
+    ret LARGEST > 0 && p.castling == 0 && bb.count(pos.all(p)) <= LARGEST;
+}
+
+# win (2), cursed win (1), draw (0), blessed loss (-1) or loss (-2) for the side to move; ok false when the
+# position is not in the tables (too many men, a table missing, castling rights). The caller's accumulator is left
+# untouched: the probe moves on a position with no network attached.
+pub fun probe_wdl(p: *Position, ok: *bool) i64 {
+    @ok = false;
+    if (!probeable(p)) { ret 0; }
+    val accs: *nn.Acc = p.accs;
+    p.accs = nil;
+    var success: i64 = 0;
+    val result:  i64 = wdl_full(p, ok, ?success);
+    p.accs = accs;
+    if (!@ok) { ret 0; }
+    ret result;
+}
+
+# ---- distance to zeroing (DTZ) ----
+
+# Fathom's constants: the map that applies to each WDL value, and the flag bit that says a value is stored in moves,
+# not plies (from win, from loss); WDL_TO_DTZ is the DTZ of a position whose best move zeroes the counter
+val WDL_TO_MAP: [5]i64 = [5]i64{1, 3, 0, 2, 0};
+val PA_FLAGS:   [5]i64 = [5]i64{8, 0, 0, 0, 4};
+val WDL_TO_DTZ: [5]i64 = [5]i64{-1, -101, 0, 101, 1};
+
+# one DTZ table: the WDL table's layout for one side to move (flags bit 0 says which), the map of stored values to
+# DTZ for each WDL value (flags bit 1; bit 4 when its entries are 16 bits), per file for pawn tables
+rec Dtz {
+    t:       Table;
+    flags:   [4]u8;
+    map:     i64;
+    map_idx: [4][4]i64;
+}
+
+var DTZS:   [256]Dtz;
+var DCOUNT: i64 = 0;
+var DKEYS:  [1024]u64;
+var DSLOTS: [1024]i64;
+
+# how many DTZ tables are loaded; the root ranks moves by DTZ only when there are some
+pub var DTZ_TABLES: i64 = 0;
+
+fun dslot_of(key: u64) i64 {
+    var at: i64 = ((key * 0x9E3779B97F4A7C15) >> 54)::i64;
+    for (DKEYS[at] != 0 && DKEYS[at] != key) { at = (at + 1) & 1023; }
+    ret at;
+}
+
+fun dregister(key: u64, index: i64) {
+    val at: i64 = dslot_of(key);
+    DKEYS[at]  = key;
+    DSLOTS[at] = index + 1;
+}
+
+# Fathom's init_table for DTZ: one subtable per file (one for pawnless), no split, then the value maps
+fun parse_dtz(d: *Dtz) bool {
+    val t: *Table = ?d.t;
+    if (u32_le(t, 0) != 0xa50c66d7) { ret false; }
+    var at:  i64 = 5;
+    var num: i64 = 1;
+    if (t.has_pawns) { num = 4; }
+    var size: [4]i64;
+    var f:    i64 = 0;
+    for (f < num) {
+        size[f] = init_enc(t, ?t.enc[f], at, 0, f);
+        at      = at + t.num + 1 + (t.has_pawns && t.pawns[1] > 0)::i64;
+        f       = f + 1;
+    }
+    at = at + (at & 1);
+    var sizes: [4][3]i64;
+    f = 0;
+    for (f < num) {
+        d.flags[f] = t.bytes[at];
+        at         = setup_pairs(t, ?t.enc[f].pairs, at, size[f], ?sizes[f][0]);
+        if (at < 0) { ret false; }
+        # a constant DTZ table holds 0, whatever its header byte says (Fathom's constValue for DTZ)
+        if (t.enc[f].pairs.idx_bits == 0) { t.enc[f].pairs.constant = 0; }
+        f = f + 1;
+    }
+    d.map = at;
+    f     = 0;
+    for (f < num) {
+        if ((d.flags[f] & 2) != 0) {
+            var i: i64 = 0;
+            if ((d.flags[f] & 16) == 0) {
+                for (i < 4) {
+                    d.map_idx[f][i] = at + 1 - d.map;
+                    at              = at + 1 + t.bytes[at]::i64;
+                    i               = i + 1;
                 }
             }
-            if (!done) {
-                if (best_cap >= v) {
-                    result = best_cap;
-                }
-                or (best_ep > 0 - 3 && v == 0) {
-                    # stalemate without the en passant capture: the capture is the only move, and decides
-                    var all: MoveList;
-                    movegen.generate(p, ?all, false);
-                    var other: bool = false;
-                    var j:     i64  = 0;
-                    for (j < all.count && !other) {
-                        val m: Move = all.moves[j];
-                        j = j + 1;
-                        if (mv.flag(m) == mv.EP_CAPTURE) { cnt; }
-                        pos.make(p, m);
-                        if (!pos.left_in_check(p)) { other = true; }
-                        pos.unmake(p);
-                    }
-                    if (!other && !pos.in_check(p)) { result = best_ep; }
+            or {
+                at = at + (at & 1);
+                for (i < 4) {
+                    d.map_idx[f][i] = ((at - d.map) >> 1) + 1;
+                    at              = at + 2 + 2 * u16_le(t, at);
+                    i               = i + 1;
                 }
             }
         }
+        f = f + 1;
+    }
+    at = at + (at & 1);
+    f  = 0;
+    for (f < num) {
+        t.enc[f].pairs.index_table = at;
+        at                         = at + sizes[f][0];
+        f                          = f + 1;
+    }
+    f = 0;
+    for (f < num) {
+        t.enc[f].pairs.size_table = at;
+        at                        = at + sizes[f][1];
+        f                         = f + 1;
+    }
+    f = 0;
+    for (f < num) {
+        at                  = (at + 63) & (0 - 64);
+        t.enc[f].pairs.data = at;
+        at                  = at + sizes[f][2];
+        f                   = f + 1;
+    }
+    ret true;
+}
+
+fun try_dtz(dir: *u8, counts: *i64) {
+    if (DCOUNT >= MAX_TABLES) { ret; }
+    var path: [1024]u8;
+    name_of(dir, counts, ?path[0], ".rtbz");
+    val d: *Dtz   = ?DTZS[DCOUNT];
+    val t: *Table = ?d.t;
+    if (!read_file(?path[0], ?t.bytes)) { ret; }
+    var num:     i64 = 2;
+    var singles: i64 = 2;
+    var i:       i64 = 0;
+    for (i < 12) {
+        if (i % 6 != 5) {
+            num = num + counts[i];
+            if (counts[i] == 1) { singles = singles + 1; }
+        }
+        i = i + 1;
+    }
+    t.num       = num;
+    t.has_pawns = counts[0] + counts[6] > 0;
+    t.kk_enc    = singles == 2;
+    t.pawns[0]  = counts[0];
+    t.pawns[1]  = counts[6];
+    if (counts[6] > 0 && (counts[0] == 0 || counts[0] > counts[6])) {
+        t.pawns[0] = counts[6];
+        t.pawns[1] = counts[0];
+    }
+    t.key = key_of_counts(counts, false);
+    val other: u64 = key_of_counts(counts, true);
+    t.symmetric = t.key == other;
+    if (!parse_dtz(d)) { ret; }
+    dregister(t.key, DCOUNT);
+    if (!t.symmetric) { dregister(other, DCOUNT); }
+    DCOUNT     = DCOUNT + 1;
+    DTZ_TABLES = DCOUNT;
+}
+
+# the stored DTZ for this position and WDL value; other is set when the table holds the other side to move only
+fun probe_dtz_table(p: *Position, wdl: i64, ok: *bool, other: *bool) i64 {
+    @other = false;
+    val key: u64 = key_of_position(p);
+    val at:  i64 = dslot_of(key);
+    if (key == 0 || DSLOTS[at] == 0) {
+        @ok = false;
+        ret 0;
+    }
+    val d:     *Dtz   = ?DTZS[DSLOTS[at] - 1];
+    val t:     *Table = ?d.t;
+    var flip:  bool   = false;
+    var bside: bool   = false;
+    if (!t.symmetric) {
+        flip  = key != t.key;
+        bside = (p.side == pos.WHITE) == flip;
+    }
+    or {
+        flip = p.side != pos.WHITE;
+    }
+    var sq:    [8]i64;
+    var file:  i64  = 0;
+    var e:     *Enc = ?t.enc[0];
+    var flags: i64  = 0;
+    if (!t.has_pawns) {
+        flags = d.flags[0]::i64;
+        if (((flags & 1) != 0) != bside && !t.symmetric) {
+            @other = true;
+            ret 0;
+        }
+        var i: i64 = 0;
+        for (i < t.num) { i = fill(p, e, flip, 0, ?sq[0], i); }
+    }
+    or {
+        var mirror: i64 = 0;
+        if (flip) { mirror = 0x38; }
+        var i: i64 = fill(p, e, flip, mirror, ?sq[0], 0);
+        var j: i64 = 1;
+        for (j < t.pawns[0]) {
+            if (FLAP[sq[0]] > FLAP[sq[j]]) { swap(?sq[0], 0, j); }
+            j = j + 1;
+        }
+        file  = FILE_TO_FILE[sq[0] & 7]::i64;
+        flags = d.flags[file]::i64;
+        if (((flags & 1) != 0) != bside && !t.symmetric) {
+            @other = true;
+            ret 0;
+        }
+        e = ?t.enc[file];
+        for (i < t.num) { i = fill(p, e, flip, mirror, ?sq[0], i); }
+    }
+    var v: i64 = decompress_dtz(t, ?e.pairs, encode(t, e, ?sq[0]));
+    if ((flags & 2) != 0) {
+        val m: i64 = WDL_TO_MAP[wdl + 2];
+        if ((flags & 16) == 0) { v = t.bytes[d.map + d.map_idx[file][m] + v]::i64; }
+        or                     { v = u16_le(t, d.map + 2 * (d.map_idx[file][m] + v)); }
+    }
+    if ((flags & PA_FLAGS[wdl + 2]) == 0 || (wdl & 1) != 0) { v = v * 2; }
+    ret v;
+}
+
+fun is_mate(p: *Position) bool {
+    if (!pos.in_check(p)) { ret false; }
+    var list: MoveList;
+    movegen.generate_legal(p, ?list);
+    ret list.count == 0;
+}
+
+fun is_pawn_move(p: *Position, m: Move) bool {
+    ret pos.kind_of(p.board[mv.from(m)]) == pos.PAWN;
+}
+
+# Fathom's probe_dtz: plies to the next capture or pawn move with best play, from the side to move. n > 0 wins
+# (over 100: a win the fifty-move rule spoils), n < 0 loses, 0 draws, -1 for a mated position; may be one ply long
+fun dtz_of(p: *Position, ok: *bool) i64 {
+    var success: i64 = 0;
+    val wdl:     i64 = wdl_full(p, ok, ?success);
+    if (!@ok)         { ret 0; }
+    if (wdl == 0)     { ret 0; }
+    if (success == 2) { ret WDL_TO_DTZ[wdl + 2]; }
+    var list: MoveList;
+    movegen.generate_legal(p, ?list);
+    if (wdl > 0) {
+        # a winning pawn move that keeps the win zeroes the counter at once
+        var i: i64 = 0;
+        for (i < list.count) {
+            val m: Move = list.moves[i];
+            i = i + 1;
+            if (!is_pawn_move(p, m) || is_capture(m)) { cnt; }
+            pos.make(p, m);
+            var s2: i64 = 0;
+            val v:  i64 = 0 - wdl_full(p, ok, ?s2);
+            pos.unmake(p);
+            if (!@ok)     { ret 0; }
+            if (v == wdl) { ret WDL_TO_DTZ[wdl + 2]; }
+        }
+    }
+    var other: bool = false;
+    val dtz:   i64  = probe_dtz_table(p, wdl, ok, ?other);
+    if (!@ok) { ret 0; }
+    if (!other) {
+        if (wdl > 0) { ret WDL_TO_DTZ[wdl + 2] + dtz; }
+        ret WDL_TO_DTZ[wdl + 2] - dtz;
+    }
+    # the table holds the other side to move: one ply of search over the moves that do not zero the counter
+    var best: i64 = WDL_TO_DTZ[wdl + 2];
+    if (wdl > 0) { best = 1000000; }
+    var i: i64 = 0;
+    for (i < list.count) {
+        val m: Move = list.moves[i];
+        i = i + 1;
+        if (is_capture(m) || is_pawn_move(p, m)) { cnt; }
+        pos.make(p, m);
+        val v:    i64  = 0 - dtz_of(p, ok);
+        val mate: bool = v == 1 && is_mate(p);
+        pos.unmake(p);
+        if (mate) {
+            best = 1;
+        }
+        or (wdl > 0) {
+            if (v > 0 && v + 1 < best) { best = v + 1; }
+        }
+        or {
+            if (v - 1 < best) { best = v - 1; }
+        }
+        if (!@ok) { ret 0; }
+    }
+    ret best;
+}
+
+# the DTZ of the position for the side to move (see dtz_of); ok false when it is not in the tables
+pub fun probe_dtz(p: *Position, ok: *bool) i64 {
+    @ok = false;
+    if (!probeable(p) || DTZ_TABLES == 0) { ret 0; }
+    val accs: *nn.Acc = p.accs;
+    p.accs = nil;
+    val v: i64 = dtz_of(p, ok);
+    p.accs = accs;
+    if (!@ok) { ret 0; }
+    ret v;
+}
+
+# whether a position has repeated since the counter was last zeroed: then a won ending must make progress, not merely
+# keep the win (Fathom's hasRepeated)
+fun has_repeated(p: *Position) bool {
+    var n: i64 = p.halfmove;
+    if (n > p.ply) { n = p.ply; }
+    var i: i64 = 2;
+    for (i <= n) {
+        if (p.hist[p.ply - i].key == p.key) { ret true; }
+        var j: i64 = i + 2;
+        for (j <= n) {
+            if (p.hist[p.ply - i].key == p.hist[p.ply - j].key) { ret true; }
+            j = j + 2;
+        }
+        i = i + 2;
+    }
+    ret false;
+}
+
+# Fathom's root_probe_dtz, with the fifty-move rule: rank every legal move and give the root the moves of the best
+# rank (out, up to 64 of them), so the search chooses only among moves that keep the best result and, in a won
+# ending, keep it winnable inside the rule. false when the root is not in the tables.
+pub fun root_moves(p: *Position, out: *Move, count: *i64) bool {
+    @count = 0;
+    if (!probeable(p) || DTZ_TABLES == 0) { ret false; }
+    val accs: *nn.Acc = p.accs;
+    p.accs = nil;
+    var list: MoveList;
+    movegen.generate_legal(p, ?list);
+    val cnt50:    i64  = p.halfmove;
+    val repeated: bool = has_repeated(p);
+    var ranks:    [256]i64;
+    var best:     i64  = -1000000;
+    var ok:       bool = true;
+    var i:        i64  = 0;
+    for (i < list.count && ok) {
+        val m: Move = list.moves[i];
+        pos.make(p, m);
+        var v: i64 = 0;
+        if (p.halfmove == 0) {
+            var s2: i64 = 0;
+            v = 0 - wdl_full(p, ?ok, ?s2);
+            if (ok) { v = WDL_TO_DTZ[v + 2]; }
+        }
+        or {
+            v = 0 - dtz_of(p, ?ok);
+            if (v > 0) { v = v + 1; }
+            or (v < 0) { v = v - 1; }
+        }
+        if (v == 2 && is_mate(p)) { v = 1; }
+        pos.unmake(p);
+        var r: i64 = 0;
+        if (v > 0) {
+            if (v + cnt50 <= 99 && !repeated) { r = 1000; }
+            or                                { r = 1000 - (v + cnt50); }
+        }
+        or (v < 0) {
+            if (0 - v * 2 + cnt50 < 100) { r = -1000; }
+            or                           { r = -1000 + (0 - v + cnt50); }
+        }
+        ranks[i] = r;
+        if (r > best) { best = r; }
+        i = i + 1;
     }
     p.accs = accs;
-    ret result;
+    if (!ok) { ret false; }
+    i = 0;
+    for (i < list.count && @count < 64) {
+        if (ranks[i] == best) {
+            out[@count] = list.moves[i];
+            @count      = @count + 1;
+        }
+        i = i + 1;
+    }
+    ret @count > 0;
 }

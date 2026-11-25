@@ -199,4 +199,11 @@ gate "label writes farm_label15k.py's and farm_relabel.py's records byte for byt
 # the comparison the gate above rests on must be able to fail: unlabelled records against labelled ones differ
 gate "records diff reports records that differ" 3 "$records" diff "$here/fixtures/label_sample.bin" "$work/py15k.bin"
 
+# The Syzygy prober (src/syzygy.mach) against python-chess on fixtures/syzygy_reference.txt: 2,000 random 3-5 man
+# positions, 300 of them with en passant possible, each with python-chess's WDL and DTZ (harness/syzygy_reference.py
+# writes it; held at 25,000 positions with 3,600 en passant when DTZ was added, no disagreement). The tables are
+# about 1 GB and not in the repository: SYZYGY names the folder of 3-4-5 man .rtbw and .rtbz files.
+syzygy_dir="${SYZYGY:-E:/chess-data/syzygy/345}"
+gate "Syzygy WDL and DTZ agree with python-chess (tables in $syzygy_dir)" 0     "$here/out/windows-x86_64/release/bin/tbcheck.exe" "$syzygy_dir" "$here/fixtures/syzygy_reference.txt"
+
 gates_done

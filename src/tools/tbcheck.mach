@@ -1,0 +1,152 @@
+# machete.tools.tbcheck: hold the Syzygy prober (src/syzygy.mach) to reference answers, in Mach
+#
+#   tbcheck <tables dir> <reference.txt> [--show N]
+#
+# reference.txt has one position a line, "FEN;wdl;dtz", python-chess's answers for the side to move
+# (harness/syzygy_reference.py writes it). Each position is set with machete's own FEN reader and probed with
+# probe_wdl and probe_dtz; every disagreement is counted, and the first N are printed. Exit 0 when all agree, 3 when
+# any does not, 2 when the tables or the file cannot be read.
+
+use std.print;
+use std.runtime;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use A: std.allocator;
+use std.allocator.page;
+use fs:       std.filesystem;
+use io_error: std.io.error;
+
+use pos: machete.position;
+use machete.position.Position;
+use machete.syzygy;
+
+val EXIT_USAGE:  i64 = 1;
+val EXIT_FAIL:   i64 = 2;
+val EXIT_DIFFER: i64 = 3;
+
+var HEAP: A.Allocator;
+var GAME: Position;
+
+fun usage() i64 {
+    print.eprintln("usage: tbcheck <tables dir> <reference.txt> [--show N]");
+    ret EXIT_USAGE;
+}
+
+fun read_text(path: str, out: **u8, len: *i64) bool {
+    val made: err[A.Error] = page.make(?HEAP);
+    if (sel made.err) { ret false; }
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f:   fs.File                  = opened.ok;
+    val end: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_END);
+    if (sel end.err) { ret false; }
+    val size: i64                      = end.ok;
+    val back: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_SET);
+    val got:  res[*u8, A.Error]        = A.allocate[u8](?HEAP, (size + 1)::usize);
+    if (sel got.err) { ret false; }
+    val buf: *u8 = got.ok;
+    var at:  i64 = 0;
+    for (at < size) {
+        val r: res[usize, io_error.Error] = fs.read(f, ?buf[at], (size - at)::usize);
+        if (sel r.err)      { ret false; }
+        if (r.ok::i64 == 0) { ret false; }
+        at = at + r.ok::i64;
+    }
+    buf[size] = 0;
+    val shut: err[io_error.Error] = fs.close(?f);
+    @out = buf;
+    @len = size;
+    ret true;
+}
+
+# the signed integer starting at text[at], ended by ';', a line end or the end of the text; at moves past it
+fun read_int(text: *u8, at: *i64) i64 {
+    var i:   i64  = @at;
+    var neg: bool = false;
+    if (text[i] == '-') {
+        neg = true;
+        i   = i + 1;
+    }
+    var v: i64 = 0;
+    for (text[i] >= '0' && text[i] <= '9') {
+        v = v * 10 + (text[i] - '0')::i64;
+        i = i + 1;
+    }
+    @at = i;
+    if (neg) { ret 0 - v; }
+    ret v;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    if (argc < 3) { ret usage(); }
+    var show: i64 = 10;
+    if (argc >= 5 && str_equals(argv[3], "--show")) {
+        val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(argv[4], 10);
+        if (sel parsed.ok) { show = parsed.ok; }
+    }
+    pos.init();
+    val tables: i64 = syzygy.load(argv[1]);
+    if (tables == 0 || syzygy.DTZ_TABLES == 0) {
+        print.eprintlnf("no tables in {} ({} WDL, {} DTZ)", argv[1], tables, syzygy.DTZ_TABLES);
+        ret EXIT_FAIL;
+    }
+    var text: *u8 = nil;
+    var len:  i64 = 0;
+    if (!read_text(argv[2], ?text, ?len)) {
+        print.eprintlnf("cannot read {}", argv[2]);
+        ret EXIT_FAIL;
+    }
+    var positions: i64 = 0;
+    var bad_wdl:   i64 = 0;
+    var bad_dtz:   i64 = 0;
+    var unread:    i64 = 0;
+    var shown:     i64 = 0;
+    var line:      i64 = 0;
+    for (line < len) {
+        var end: i64 = line;
+        for (end < len && text[end] != '\n') { end = end + 1; }
+        var semi: i64 = line;
+        for (semi < end && text[semi] != ';') { semi = semi + 1; }
+        if (semi >= end) {
+            line = end + 1;
+            cnt;
+        }
+        text[semi] = 0;
+        var at:       i64 = semi + 1;
+        val want_wdl: i64 = read_int(text, ?at);
+        at = at + 1;
+        val want_dtz: i64 = read_int(text, ?at);
+        positions = positions + 1;
+        if (!pos.set_fen(?GAME, ?text[line])) {
+            unread = unread + 1;
+            line   = end + 1;
+            cnt;
+        }
+        var ok_w:      bool = false;
+        var ok_d:      bool = false;
+        val wdl:       i64  = syzygy.probe_wdl(?GAME, ?ok_w);
+        val dtz:       i64  = syzygy.probe_dtz(?GAME, ?ok_d);
+        val wrong_wdl: bool = !ok_w || wdl != want_wdl;
+        val wrong_dtz: bool = !ok_d || dtz != want_dtz;
+        if (wrong_wdl) { bad_wdl = bad_wdl + 1; }
+        if (wrong_dtz) { bad_dtz = bad_dtz + 1; }
+        if ((wrong_wdl || wrong_dtz) && shown < show) {
+            print.printlnf("{}: wdl {} (want {}), dtz {} (want {})", ?text[line], wdl, want_wdl, dtz, want_dtz);
+            shown = shown + 1;
+        }
+        line = end + 1;
+    }
+    print.printlnf("{} positions: {} WDL and {} DTZ disagree with the reference, {} not read ({} tables, {} with DTZ)",
+        positions, bad_wdl, bad_dtz, unread, tables, syzygy.DTZ_TABLES);
+    if (bad_wdl + bad_dtz + unread > 0) { ret EXIT_DIFFER; }
+    ret 0;
+}
