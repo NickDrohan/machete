@@ -5,6 +5,7 @@
 # negative ones with msb, and the ray beyond the blocker is removed.
 
 use bb: machete.bitboard;
+use std.types.bool.bool;
 
 # ray directions: N, NE, E, SE, S, SW, W, NW
 val DIR_FILE: [8]i64 = [8]i64{0, 1, 1, 1, 0, -1, -1, -1};
@@ -18,7 +19,7 @@ pub var RAYS: [8][64]u64;
 
 var ready: i64 = 0;
 
-fun on_board(file: i64, rank: i64) u8 {
+fun on_board(file: i64, rank: i64) bool {
     ret file >= 0 && file < 8 && rank >= 0 && rank < 8;
 }
 

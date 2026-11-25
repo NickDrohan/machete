@@ -1,3 +1,6 @@
 [submodule "dep/std"]
 	path = dep/std
 	url = https://github.com/briar-systems/mach-std
+[submodule "dep/json"]
+	path = dep/json
+	url = https://github.com/briar-systems/mach-json

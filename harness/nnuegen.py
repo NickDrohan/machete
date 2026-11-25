@@ -1,13 +1,15 @@
-"""Generate src/kernels.mach: the network's hand-encoded x86-64 kernels.
+"""Generate src/kernels.mach: the network's x86-64 kernels.
 
     python harness/nnuegen.py [--hidden 256] [--out src/kernels.mach]
 
-mach 6.5 neither lowers vectors to 256 bits nor spells AVX2, pmaddwd,
-pmaxsw/pminsw or xgetbv in inline asm (briar-systems/mach#4128, MACH_FINDINGS
-#15), so every kernel below is instruction bytes. They are generated rather
-than written so that the hidden width is one parameter: a wider network is
-this script with --hidden and nnue.HIDDEN changed to match, and a test in
-nnue.mach refuses a build where the two differ.
+Up to mach 6.10 these kernels were instruction bytes: mach 6.5 neither lowered vectors to 256 bits nor spelled AVX2,
+pmaddwd, pmaxsw/pminsw or xgetbv in inline asm (briar-systems/mach#4128, MACH_FINDINGS #15). mach 7's assembler spells
+all of them, and its register allocator refuses the old byte blocks, so from 7.0 they are written as instructions
+under the instruction-set head they need (`x86-64` for SSE2, `x86-64,avx2` for the rest). The instructions,
+registers and memory layout are the ones the bytes encoded; the assembler may pick shorter displacements.
+
+They are generated rather than written so that the hidden width is one parameter: a wider network is this script with
+--hidden and nnue.HIDDEN changed to match, and a test in nnue.mach refuses a build where the two differ.
 
 Kernels, all on 16-bit accumulator lanes:
   accumulate_screlu_avx2  accumulate_avx2 with the hidden values squared first (format 5)
@@ -18,179 +20,94 @@ Kernels, all on 16-bit accumulator lanes:
   copy_half_avx2        to = from
   carry_add_sub(_sub)_avx2  to = from + add - sub (- sub2): a move's usual
                         changes to a child's half in one pass
-Encodings: two-byte VEX (C5) where it suffices, three-byte (C4) for
-vextracti128 and for memory operands based on r8 and r9. Registers: xmm/ymm
-0-5 and rax, rcx, rdx, r8, r9, all volatile under Win64.
+Registers: xmm/ymm 0-5 and rax, rcx, rdx, r8, r9, all volatile under Win64.
 """
 import argparse
 
-RDX, RCX, RAX = 2, 1, 0
+I = "            "
 
 
-def d32(d):
-    return [d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF]
+def mem(base, d):
+    return "[%s]" % base if d == 0 else "[%s + %d]" % (base, d)
 
 
-def c5(vvvv, L, pp):
-    """Two-byte VEX: R and vvvv stored inverted; vvvv 0 means none."""
-    return [0xC5, 0x80 | ((~vvvv & 15) << 3) | (L << 2) | pp]
-
-
-def modrm_mem(reg, base):
-    return 0x80 | (reg << 3) | base
-
-
-def modrm_reg(reg, rm):
-    return 0xC0 | (reg << 3) | rm
-
-
-# ------------------------------------------------------------------ VEX.256
-def vload(n, base, d):
-    return c5(0, 1, 2) + [0x6F, modrm_mem(n, base)] + d32(d)
-
-
-def vstore(n, base, d):
-    return c5(0, 1, 2) + [0x7F, modrm_mem(n, base)] + d32(d)
-
-
-def vop_mem(op, dst, src1, base, d):
-    return c5(src1, 1, 1) + [op, modrm_mem(dst, base)] + d32(d)
-
-
-def vop_reg(op, dst, src1, src2):
-    return c5(src1, 1, 1) + [op, modrm_reg(dst, src2)]
-
-
-def vop_mem_r8(op, dst, src1, base, d):
-    """vop_mem with base r8-r15 (8-15), which needs the three-byte VEX for its B bit:
-    C4, then R X B inverted over map 0F (00001), then W vvvv L pp as in C5."""
-    assert 8 <= base < 16
-    return [0xC4, 0x80 | 0x40 | 0x01, ((~src1 & 15) << 3) | (1 << 2) | 1, op, modrm_mem(dst, base & 7)] + d32(d)
-
-
-VZEROUPPER = [0xC5, 0xF8, 0x77]
-
-# --------------------------------------------------------------- SSE2 bytes
-def sload(n, base, d):   # movdqu xmmN, [base + d]
-    return [0xF3, 0x0F, 0x6F, modrm_mem(n, base)] + d32(d)
-
-
-def sop_reg(op, dst, src):
-    return [0x66, 0x0F, op, modrm_reg(dst, src)]
-
-
-PMAXSW, PMINSW, PMADDWD, PADDD, PADDW, PSUBW, PXOR, PCMPEQW = 0xEE, 0xEA, 0xF5, 0xFE, 0xFD, 0xF9, 0xEF, 0x75
-PMULLW = 0xD5
-
-
-def line(bs, writes=None):
-    w = ", ".join(writes) if writes else ""
-    return "            .byte " + ", ".join("0x%02X" % b for b in bs) + " :: writes(%s)" % w
-
-
-def x86(body, params):
-    """A kernel's body, x86-64 only; elsewhere the function does nothing and
-    nnue never calls it."""
-    return ["    $if ($mach.build.arch == $mach.arch.x86_64) {", "        asm x86_64 {"] + \
-           ["            mov %s, {%s}" % p for p in params] + body + ["        }", "    }"]
+def x86(body, params, head="x86-64"):
+    """A kernel's body, x86-64 only; elsewhere the function does nothing and nnue never calls it."""
+    return ["    $if ($mach.build.arch == $mach.arch.x86_64) {", "        asm %s {" % head] + \
+           [I + "mov %s, {%s}" % p for p in params] + body + ["        }", "    }"]
 
 
 def accumulate_sse2(hidden):
-    body = ["            # xmm4 = 0, xmm3 = QA (255) in every lane, xmm2 = the sums",
-            line(sop_reg(PXOR, 4, 4), ["xmm4"]),
-            line(sop_reg(PCMPEQW, 3, 3), ["xmm3"]),
-            line([0x66, 0x0F, 0x71, 0xD3, 0x08], ["xmm3"]),
-            line(sop_reg(PXOR, 2, 2), ["xmm2"])]
+    body = [I + "# xmm4 = 0, xmm3 = QA (255) in every lane, xmm2 = the sums",
+            I + "pxor xmm4, xmm4",
+            I + "pcmpeqw xmm3, xmm3",
+            I + "psrlw xmm3, 8",
+            I + "pxor xmm2, xmm2"]
     for k in range(hidden // 8):
         d = 16 * k
-        body += ["            # lanes %d..%d" % (8 * k, 8 * k + 7),
-                 line(sload(0, RDX, d), ["xmm0"]),
-                 line(sop_reg(PMAXSW, 0, 4), ["xmm0"]),
-                 line(sop_reg(PMINSW, 0, 3), ["xmm0"]),
-                 line(sload(1, RCX, d), ["xmm1"]),
-                 line(sop_reg(PMADDWD, 0, 1), ["xmm0"]),
-                 line(sop_reg(PADDD, 2, 0), ["xmm2"])]
-    body += ["            # movdqu [rax], xmm2", line([0xF3, 0x0F, 0x7F, 0x10])]
+        body += [I + "# lanes %d..%d" % (8 * k, 8 * k + 7),
+                 I + "movdqu xmm0, %s" % mem("rdx", d),
+                 I + "pmaxsw xmm0, xmm4",
+                 I + "pminsw xmm0, xmm3",
+                 I + "movdqu xmm1, %s" % mem("rcx", d),
+                 I + "pmaddwd xmm0, xmm1",
+                 I + "paddd xmm2, xmm0"]
+    body += [I + "movdqu [rax], xmm2"]
     return (["# the output layer's half on SSE2: clamp to 0..QA, pmaddwd with the",
              "# weights, four 32-bit sums to `out`",
              "pub fun accumulate_sse2(values: *i16, weights: *i16, out: *i32) {"] +
             x86(body, [("rdx", "values"), ("rcx", "weights"), ("rax", "out")]) + ["}"])
 
 
-def accumulate_avx2(hidden):
-    body = ["            # ymm4 = 0, ymm3 = QA (255) in every lane, ymm2 and ymm5 = the sums",
-            line(vop_reg(PXOR, 4, 4, 4), ["xmm4"]),
-            line(vop_reg(PCMPEQW, 3, 3, 3), ["xmm3"]),
-            line(c5(3, 1, 1) + [0x71, modrm_reg(2, 3), 0x08], ["xmm3"]),
-            line(vop_reg(PXOR, 2, 2, 2), ["xmm2"]),
-            line(vop_reg(PXOR, 5, 5, 5), ["xmm5"])]
+def fold_and_store():
+    return [I + "# ymm2 += ymm5, fold the high 128 bits onto the low, store four sums",
+            I + "vpaddd ymm2, ymm2, ymm5",
+            I + "vextracti128 xmm1, ymm2, 1",
+            I + "vpaddd xmm2, xmm2, xmm1",
+            I + "vmovdqu [rax], xmm2",
+            I + "vzeroupper"]
+
+
+def accumulate_avx2(hidden, screlu=False):
+    body = [I + "# ymm4 = 0, ymm3 = QA (255) in every lane, ymm2 and ymm5 = the sums",
+            I + "vpxor ymm4, ymm4, ymm4",
+            I + "vpcmpeqw ymm3, ymm3, ymm3",
+            I + "vpsrlw ymm3, ymm3, 8",
+            I + "vpxor ymm2, ymm2, ymm2",
+            I + "vpxor ymm5, ymm5, ymm5"]
     for k in range(hidden // 16):
         d = 32 * k
         v, s = k % 2, (2 if k % 2 == 0 else 5)
-        body += ["            # lanes %d..%d" % (16 * k, 16 * k + 15),
-                 line(vload(v, RDX, d), ["xmm%d" % v]),
-                 line(vop_reg(PMAXSW, v, v, 4), ["xmm%d" % v]),
-                 line(vop_reg(PMINSW, v, v, 3), ["xmm%d" % v]),
-                 line(vop_mem(PMADDWD, v, v, RCX, d), ["xmm%d" % v]),
-                 line(vop_reg(PADDD, s, s, v), ["xmm%d" % s])]
-    body += ["            # ymm2 += ymm5, fold the high 128 bits onto the low, store four sums",
-             line(vop_reg(PADDD, 2, 2, 5), ["xmm2"]),
-             # vextracti128 xmm1, ymm2, 1: C4 E3 7D 39 /r ib, reg = source, rm = destination
-             line([0xC4, 0xE3, 0x7D, 0x39, modrm_reg(2, 1), 0x01], ["xmm1"]),
-             # vpaddd xmm2, xmm2, xmm1 (VEX.128)
-             line(c5(2, 0, 1) + [PADDD, modrm_reg(2, 1)], ["xmm2"]),
-             # vmovdqu [rax], xmm2 (VEX.128)
-             line(c5(0, 0, 2) + [0x7F, 0x10]),
-             line(VZEROUPPER)]
-    return (["# the output layer's half on AVX2, 16 lanes a step, same sums as SSE2",
-             "pub fun accumulate_avx2(values: *i16, weights: *i16, out: *i32) {"] +
-            x86(body, [("rdx", "values"), ("rcx", "weights"), ("rax", "out")]) + ["}"])
-
-
-def accumulate_screlu_avx2(hidden):
-    """accumulate_avx2 with a square between clamp and multiply: clamp to 0..QA, square, shift down by 8, pmaddwd with
-    the weights. One pass, nothing stored."""
-    body = ["            # ymm4 = 0, ymm3 = QA (255) in every lane, ymm2 and ymm5 = the sums",
-            line(vop_reg(PXOR, 4, 4, 4), ["xmm4"]),
-            line(vop_reg(PCMPEQW, 3, 3, 3), ["xmm3"]),
-            line(c5(3, 1, 1) + [0x71, modrm_reg(2, 3), 0x08], ["xmm3"]),
-            line(vop_reg(PXOR, 2, 2, 2), ["xmm2"]),
-            line(vop_reg(PXOR, 5, 5, 5), ["xmm5"])]
-    for k in range(hidden // 16):
-        d = 32 * k
-        v, s = k % 2, (2 if k % 2 == 0 else 5)
-        body += ["            # lanes %d..%d" % (16 * k, 16 * k + 15),
-                 line(vload(v, RDX, d), ["xmm%d" % v]),
-                 line(vop_reg(PMAXSW, v, v, 4), ["xmm%d" % v]),
-                 line(vop_reg(PMINSW, v, v, 3), ["xmm%d" % v]),
-                 line(vop_reg(PMULLW, v, v, v), ["xmm%d" % v]),
-                 line(c5(v, 1, 1) + [0x71, modrm_reg(2, v), 0x08], ["xmm%d" % v]),
-                 line(vop_mem(PMADDWD, v, v, RCX, d), ["xmm%d" % v]),
-                 line(vop_reg(PADDD, s, s, v), ["xmm%d" % s])]
-    body += ["            # ymm2 += ymm5, fold the high 128 bits onto the low, store four sums",
-             line(vop_reg(PADDD, 2, 2, 5), ["xmm2"]),
-             line([0xC4, 0xE3, 0x7D, 0x39, modrm_reg(2, 1), 0x01], ["xmm1"]),
-             line(c5(2, 0, 1) + [PADDD, modrm_reg(2, 1)], ["xmm2"]),
-             line(c5(0, 0, 2) + [0x7F, 0x10]),
-             line(VZEROUPPER)]
-    return (["# the output layer's half for SCReLU on AVX2: clamp, square, shift by 8, multiply-add",
-             "pub fun accumulate_screlu_avx2(values: *i16, weights: *i16, out: *i32) {"] +
-            x86(body, [("rdx", "values"), ("rcx", "weights"), ("rax", "out")]) + ["}"])
+        body += [I + "# lanes %d..%d" % (16 * k, 16 * k + 15),
+                 I + "vmovdqu ymm%d, %s" % (v, mem("rdx", d)),
+                 I + "vpmaxsw ymm%d, ymm%d, ymm4" % (v, v),
+                 I + "vpminsw ymm%d, ymm%d, ymm3" % (v, v)]
+        if screlu:
+            body += [I + "vpmullw ymm%d, ymm%d, ymm%d" % (v, v, v),
+                     I + "vpsrlw ymm%d, ymm%d, 8" % (v, v)]
+        body += [I + "vpmaddwd ymm%d, ymm%d, %s" % (v, v, mem("rcx", d)),
+                 I + "vpaddd ymm%d, ymm%d, ymm%d" % (s, s, v)]
+    body += fold_and_store()
+    if screlu:
+        head = ["# the output layer's half for SCReLU on AVX2: clamp, square, shift by 8, multiply-add",
+                "pub fun accumulate_screlu_avx2(values: *i16, weights: *i16, out: *i32) {"]
+    else:
+        head = ["# the output layer's half on AVX2, 16 lanes a step, same sums as SSE2",
+                "pub fun accumulate_avx2(values: *i16, weights: *i16, out: *i32) {"]
+    return head + x86(body, [("rdx", "values"), ("rcx", "weights"), ("rax", "out")], "x86-64,avx2") + ["}"]
 
 
 def column(op, name, verb, hidden):
     body = []
     for k in range(hidden // 16):
-        n = k % 4
-        body += [line(vload(n, RDX, 32 * k), ["xmm%d" % n]),
-                 line(vop_mem(op, n, n, RCX, 32 * k), ["xmm%d" % n]),
-                 line(vstore(n, RDX, 32 * k))]
-    body.append(line(VZEROUPPER))
-    return ["# %s one weight column: into %s= row, %d lanes" % (verb, "+" if op == PADDW else "-", hidden),
-            "pub fun %s(into: *i16, row: *i16) {" % name] + x86(body, [("rdx", "into"), ("rcx", "row")]) + ["}"]
-
-
-R8, R9 = 8, 9
+        n, d = k % 4, 32 * k
+        body += [I + "vmovdqu ymm%d, %s" % (n, mem("rdx", d)),
+                 I + "%s ymm%d, ymm%d, %s" % (op, n, n, mem("rcx", d)),
+                 I + "vmovdqu %s, ymm%d" % (mem("rdx", d), n)]
+    body.append(I + "vzeroupper")
+    return ["# %s one weight column: into %s= row, %d lanes" % (verb, "+" if op == "vpaddw" else "-", hidden),
+            "pub fun %s(into: *i16, row: *i16) {" % name] + \
+        x86(body, [("rdx", "into"), ("rcx", "row")], "x86-64,avx2") + ["}"]
 
 
 def carry(hidden, subtracts):
@@ -207,26 +124,27 @@ def carry(hidden, subtracts):
     body = []
     for k in range(hidden // 16):
         n, d = k % 4, 32 * k
-        body += [line(vload(n, RCX, d), ["xmm%d" % n]),
-                 line(vop_mem(PADDW, n, n, RAX, d), ["xmm%d" % n]),
-                 line(vop_mem_r8(PSUBW, n, n, R8, d), ["xmm%d" % n])]
+        body += [I + "vmovdqu ymm%d, %s" % (n, mem("rcx", d)),
+                 I + "vpaddw ymm%d, ymm%d, %s" % (n, n, mem("rax", d)),
+                 I + "vpsubw ymm%d, ymm%d, %s" % (n, n, mem("r8", d))]
         if subtracts == 2:
-            body.append(line(vop_mem_r8(PSUBW, n, n, R9, d), ["xmm%d" % n]))
-        body.append(line(vstore(n, RDX, d)))
-    body.append(line(VZEROUPPER))
+            body.append(I + "vpsubw ymm%d, ymm%d, %s" % (n, n, mem("r9", d)))
+        body.append(I + "vmovdqu %s, ymm%d" % (mem("rdx", d), n))
+    body.append(I + "vzeroupper")
     what = "from + add - sub" + (" - sub2" if subtracts == 2 else "")
     return ["# a child's half in one pass: to = %s, %d lanes" % (what, hidden),
-            "pub fun %s(%s) {" % (name, sig)] + x86(body, params) + ["}"]
+            "pub fun %s(%s) {" % (name, sig)] + x86(body, params, "x86-64,avx2") + ["}"]
 
 
 def copy(hidden):
     body = []
     for k in range(hidden // 16):
-        n = k % 4
-        body += [line(vload(n, RCX, 32 * k), ["xmm%d" % n]), line(vstore(n, RDX, 32 * k))]
-    body.append(line(VZEROUPPER))
+        n, d = k % 4, 32 * k
+        body += [I + "vmovdqu ymm%d, %s" % (n, mem("rcx", d)), I + "vmovdqu %s, ymm%d" % (mem("rdx", d), n)]
+    body.append(I + "vzeroupper")
     return ["# copy a half: to = from, %d lanes" % hidden,
-            "pub fun copy_half_avx2(to: *i16, from: *i16) {"] + x86(body, [("rdx", "to"), ("rcx", "from")]) + ["}"]
+            "pub fun copy_half_avx2(to: *i16, from: *i16) {"] + \
+        x86(body, [("rdx", "to"), ("rcx", "from")], "x86-64,avx2") + ["}"]
 
 
 DETECT = '''# whether this CPU runs AVX2 and its operating system saves the ymm state:
@@ -239,7 +157,7 @@ pub fun detect_avx2() bool {
         val p7:    *u64 = ?leaf7;
         val p1:    *u64 = ?leaf1;
         val px:    *u64 = ?xcr0;
-        asm x86_64 {
+        asm x86-64 {
             mov r8, {p7}
             mov r9, {p1}
             push rbx
@@ -254,11 +172,10 @@ pub fun detect_avx2() bool {
             pop rbx
         }
         if (((leaf1 >> 27) & 1) == 0) { ret false; }
-        asm x86_64 {
+        asm x86-64,xsave,osxsave {
             mov r8, {px}
             xor ecx, ecx
-            # xgetbv
-            .byte 0x0F, 0x01, 0xD0 :: writes(rax, rdx)
+            xgetbv
             mov [r8], rax
         }
         ret ((leaf7 >> 5) & 1) == 1 && (xcr0 & 6) == 6;
@@ -278,8 +195,8 @@ def main():
     assert h % 16 == 0
     out = ["# GENERATED by harness/nnuegen.py --hidden %d; edit the generator, not this file." % h,
            "#",
-           "# The network's hand-encoded x86-64 kernels for a hidden layer of %d" % h,
-           "# lanes; see the generator for why they are bytes. nnue.mach chooses",
+           "# The network's x86-64 kernels for a hidden layer of %d lanes, as" % h,
+           "# instructions; see the generator for their history. nnue.mach chooses",
            "# between them and holds each to its portable loop in tests.",
            "",
            "use std.types.bool.bool;",
@@ -287,8 +204,9 @@ def main():
            "",
            "pub val KERNEL_HIDDEN: i64 = %d;" % h,
            "", DETECT, ""]
-    for block in (accumulate_sse2(h), accumulate_avx2(h), accumulate_screlu_avx2(h), column(PADDW, "add_column_avx2", "add", h),
-                  column(PSUBW, "sub_column_avx2", "subtract", h), copy(h), carry(h, 1), carry(h, 2)):
+    for block in (accumulate_sse2(h), accumulate_avx2(h), accumulate_avx2(h, screlu=True),
+                  column("vpaddw", "add_column_avx2", "add", h), column("vpsubw", "sub_column_avx2", "subtract", h),
+                  copy(h), carry(h, 1), carry(h, 2)):
         out += block + [""]
     # LF on every host, as .gitattributes wants; print() would write CRLF on Windows
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:

@@ -1,4 +1,4 @@
-machete 0.5.6
+machete 0.6.0
 =============
 
 A UCI chess engine written in Mach (https://github.com/briar-systems/mach),
@@ -39,6 +39,20 @@ Options:
             the king taking its own rook, as Chess960 GUIs expect.
 
 Not supported yet: opening books.
+
+
+What changed since 0.5.6
+------------------------
+Built with Mach 7.0. The search is the same move for move (the same node
+count on every position tested) and 5.3% faster; the executable is 187 KB
+where it was 321 KB. The network kernels are now written as instructions,
+not bytes. The network is candidate E: 0.5.6's recipe trained again with
+every position labelled up to 18 November, including deeply searched
+middlegames and games played on from positions the bot lost. Against
+0.5.6's network on the same search: -1 +/- 15 Elo at 10+0.1 over 2,000
+games. It finds the right move in 403 of 691 positions from lost games,
+where 0.5.6's network finds 387 (16 more; not significant on its own).
+Options, the repertoire and the network file format are unchanged.
 
 
 What changed since 0.5.5
@@ -215,6 +229,7 @@ Built with Mach 6.5.0 and mach-std 9.2.0.
 
 Credits
 -------
-Built with the Mach compiler 6.5.0 and mach-std 9.2.0. The network's training
-positions were labelled by Stockfish, Berserk, Alexandria, Obsidian, Caissa,
-PlentyChess and Reckless, and by the theoden8 corpus; no engine's code is used.
+Built with the Mach compiler 7.0.0, mach-std 10.1.1 and mach-json 0.1.0. The
+network's training positions were labelled by Stockfish, Berserk, Alexandria,
+Obsidian, Caissa, PlentyChess and Reckless, and by the theoden8 corpus; no
+engine's code is used.
