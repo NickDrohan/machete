@@ -80,5 +80,10 @@
         "Hash": 512
       }
     }
-  ]
+  ],
+  "mode": "anchored",
+  "margin_cp": 30,
+  "depth_slack": 2,
+  "overhead_ms": 60,
+  "grace_ms": 40
 }
