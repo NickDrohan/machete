@@ -1,0 +1,84 @@
+{
+  "win_cp": 600,
+  "win_depth": 10,
+  "machines": [
+    {
+      "name": "pc",
+      "weight": 5.4,
+      "command": [
+        "out/windows-x86_64/release/bin/machete.exe"
+      ],
+      "options": {
+        "Threads": 8,
+        "Hash": 1024,
+        "EvalFile": "net/machete.nnue",
+        "SyzygyPath": "syzygy"
+      }
+    },
+    {
+      "name": "mac",
+      "weight": 3.7,
+      "command": [
+        "C:/Program Files/Git/usr/bin/ssh.exe",
+        "-i",
+        "~/.ssh/machete_mac",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=30",
+        "nickdrohan@10.0.0.156",
+        "cd ~/work/cluster && exec ./machete"
+      ],
+      "options": {
+        "Threads": 6,
+        "Hash": 512
+      }
+    },
+    {
+      "name": "pi-01",
+      "weight": 1.5,
+      "command": [
+        "C:/Program Files/Git/usr/bin/ssh.exe",
+        "-i",
+        "~/.ssh/machete_farm",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=30",
+        "rabbit@10.0.0.151",
+        "cd ~/work/cluster && exec ./machete"
+      ],
+      "options": {
+        "Threads": 4,
+        "Hash": 512
+      }
+    },
+    {
+      "name": "pi-02",
+      "weight": 1.5,
+      "command": [
+        "C:/Program Files/Git/usr/bin/ssh.exe",
+        "-i",
+        "~/.ssh/machete_farm",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ProxyCommand=\"C:/Program Files/Git/usr/bin/ssh.exe\" -i ~/.ssh/machete_farm -o BatchMode=yes -o ConnectTimeout=15 -W %h:%p rabbit@10.0.0.151",
+        "rabbit@10.0.0.165",
+        "cd ~/work/cluster && exec ./machete"
+      ],
+      "options": {
+        "Threads": 4,
+        "Hash": 512
+      }
+    }
+  ]
+}
