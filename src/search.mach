@@ -1623,6 +1623,21 @@ pub fun think(s: *Search, p: *Position, limits: *Limits) Move {
         s.only[o] = limits.only[o];
         o         = o + 1;
     }
+    # in a tablebase ending the main thread chooses only among the root moves the DTZ tables rank best: the moves that
+    # keep the best result and, in a won ending, keep it winnable inside the fifty-move rule (syzygy.root_moves, after
+    # Fathom's root_probe_dtz). The search still picks among them, so a mate it can see is still found the fastest way.
+    if (s.only_count == 0 && s.thread_id == 0 && syzygy.DTZ_TABLES > 0) {
+        var tb_moves: [64]Move;
+        var tb_count: i64 = 0;
+        if (syzygy.root_moves(p, ?tb_moves[0], ?tb_count) && tb_count < root.count) {
+            s.only_count = tb_count;
+            o            = 0;
+            for (o < tb_count) {
+                s.only[o] = tb_moves[o];
+                o         = o + 1;
+            }
+        }
+    }
     if (s.only_count > 0) { s.best = s.only[0]; }
 
     # the network follows the search from here, and is let go again at the end

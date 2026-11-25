@@ -1,0 +1,309 @@
+# machete.tools.records: look into and compare training-record files, in Mach
+#
+#   records stats <file.bin>                      counts, side to move, score bands, results and teachers
+#   records show  <file.bin> <first> [count]      records as FEN, score, result and teacher
+#   records diff  <a.bin> <b.bin> [--multiset]    byte for byte in order, or as unordered sets of records
+#
+# The checks training data needs again and again - how many positions are close to level, what a record holds,
+# whether a new tool wrote exactly what an old one did - written once in Mach instead of as one-off scripts.
+# A record is gen.py's 70 bytes: side to move, piece count, up to 32 piece codes and their squares, the score
+# (i16, from the side to move), the result (0 lost, 1 drew, 2 won, from the side to move) and the teacher's id.
+#
+# `diff` exits 0 when the files agree and 3 when they do not, so a gate can call it. `--multiset` sorts both files'
+# records first: two files that hold the same positions in a different order (the move-stream round trip, a
+# relabel run with work shared differently) then agree.
+
+use std.print;
+use std.runtime;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use A: std.allocator;
+use std.allocator.page;
+use std.collections.sort;
+use fs:       std.filesystem;
+use io_error: std.io.error;
+
+val EXIT_USAGE:  i64 = 1;
+val EXIT_FAIL:   i64 = 2;
+val EXIT_DIFFER: i64 = 3;
+
+val REC:   i64 = 70;
+val CLOSE: i64 = 200;
+val CLAMP: i64 = 10000;
+
+val LETTERS: str = "PNBRQKpnbrqk";
+
+# one record, as a sortable value
+rec Record {
+    b: [70]u8;
+}
+
+var HEAP:  A.Allocator;
+var READY: bool = false;
+
+fun usage() i64 {
+    print.eprintln("usage: records stats <file.bin>");
+    print.eprintln("       records show  <file.bin> <first> [count]");
+    print.eprintln("       records diff  <a.bin> <b.bin> [--multiset]");
+    ret EXIT_USAGE;
+}
+
+fun int_arg(text: str, fallback: i64) i64 {
+    val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(text, 10);
+    if (sel parsed.err) { ret fallback; }
+    ret parsed.ok;
+}
+
+# the whole file in memory; the record count is size / 70 (a trailing partial record is reported, not read)
+fun load(path: str, data: **Record, count: *i64) bool {
+    if (!READY) {
+        val made: err[A.Error] = page.make(?HEAP);
+        if (sel made.err) { ret false; }
+        READY = true;
+    }
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret false; }
+    var f:   fs.File                  = opened.ok;
+    val end: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_END);
+    if (sel end.err) { ret false; }
+    val size: i64                      = end.ok;
+    val back: res[i64, io_error.Error] = fs.seek(f, 0, fs.SEEK_SET);
+    if (size % REC != 0) { print.eprintlnf("{}: {} bytes, not a whole number of records", path, size); }
+    val n:   i64                   = size / REC;
+    val got: res[*Record, A.Error] = A.allocate[Record](?HEAP, (n + 1)::usize);
+    if (sel got.err) { ret false; }
+    val bytes: *u8 = got.ok::*u8;
+    var at:    i64 = 0;
+    for (at < n * REC) {
+        val r: res[usize, io_error.Error] = fs.read(f, ?bytes[at], (n * REC - at)::usize);
+        if (sel r.err)      { ret false; }
+        if (r.ok::i64 == 0) { ret false; }
+        at = at + r.ok::i64;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    @data  = got.ok;
+    @count = n;
+    ret true;
+}
+
+fun score(r: *Record) i64 {
+    val v: i64 = r.b[66]::i64 | (r.b[67]::i64 << 8);
+    if (v >= 32768) { ret v - 65536; }
+    ret v;
+}
+
+fun stats(path: str) i64 {
+    var data: *Record = nil;
+    var n:    i64     = 0;
+    if (!load(path, ?data, ?n)) {
+        print.eprintlnf("cannot read {}", path);
+        ret EXIT_FAIL;
+    }
+    var black:    i64 = 0;
+    var close:    i64 = 0;
+    var clamped:  i64 = 0;
+    var zero:     i64 = 0;
+    var sum:      i64 = 0;
+    var results:  [3]i64;
+    var teachers: [256]i64;
+    var men:      [33]i64;
+    var i:        i64 = 0;
+    for (i < 3) {
+        results[i] = 0;
+        i          = i + 1;
+    }
+    i = 0;
+    for (i < 256) {
+        teachers[i] = 0;
+        i           = i + 1;
+    }
+    i = 0;
+    for (i < 33) {
+        men[i] = 0;
+        i      = i + 1;
+    }
+    i = 0;
+    for (i < n) {
+        val r: *Record = ?data[i];
+        if (r.b[0] != 0) { black = black + 1; }
+        val s: i64 = score(r);
+        var a: i64 = s;
+        if (a < 0)      { a = 0 - a; }
+        if (a < CLOSE)  { close = close + 1; }
+        if (a >= CLAMP) { clamped = clamped + 1; }
+        if (s == 0)     { zero = zero + 1; }
+        sum = sum + s;
+        if (r.b[68] < 3) { results[r.b[68]::i64] = results[r.b[68]::i64] + 1; }
+        teachers[r.b[69]::i64] = teachers[r.b[69]::i64] + 1;
+        if (r.b[1] <= 32) { men[r.b[1]::i64] = men[r.b[1]::i64] + 1; }
+        i = i + 1;
+    }
+    if (n == 0) {
+        print.printlnf("{}: no records", path);
+        ret 0;
+    }
+    print.printlnf("{}: {} records", path, n);
+    print.printlnf("  side to move   white {}, black {}", n - black, black);
+    print.printlnf("  score          mean {} cp; within 200 of level {} ({} per mille); exactly 0 {}; at the clamp {}",
+        sum / n, close, close * 1000 / n, zero, clamped);
+    print.printlnf("  result         lost {}, drew {}, won {} (from the side to move)", results[0], results[1], results[2]);
+    var line: i64 = 0;
+    i = 0;
+    for (i < 256) {
+        if (teachers[i] > 0) { print.printlnf("  teacher {}      {} records", i, teachers[i]); }
+        i = i + 1;
+    }
+    var few:  i64 = 0;
+    var mid:  i64 = 0;
+    var many: i64 = 0;
+    i = 0;
+    for (i < 33) {
+        if (i <= 12) { few = few + men[i]; }
+        or (i <= 24) { mid = mid + men[i]; }
+        or           { many = many + men[i]; }
+        i = i + 1;
+    }
+    print.printlnf("  men            12 or fewer {}, 13 to 24 {}, 25 or more {}", few, mid, many);
+    ret 0;
+}
+
+fun show(path: str, first: i64, count: i64) i64 {
+    var data: *Record = nil;
+    var n:    i64     = 0;
+    if (!load(path, ?data, ?n)) {
+        print.eprintlnf("cannot read {}", path);
+        ret EXIT_FAIL;
+    }
+    var k: i64 = first;
+    for (k < first + count && k < n) {
+        val r:     *Record = ?data[k];
+        var board: [64]u8;
+        var sq:    i64     = 0;
+        for (sq < 64) {
+            board[sq] = 0;
+            sq        = sq + 1;
+        }
+        var i: i64 = 0;
+        for (i < r.b[1]::i64 && i < 32) {
+            board[r.b[34 + i]::i64 & 63] = LETTERS[r.b[2 + i]::i64 % 12];
+            i                            = i + 1;
+        }
+        var fen:  [100]u8;
+        var at:   i64 = 0;
+        var rank: i64 = 7;
+        for (rank >= 0) {
+            var empty: i64 = 0;
+            var file:  i64 = 0;
+            for (file < 8) {
+                val p: u8 = board[rank * 8 + file];
+                if (p == 0) {
+                    empty = empty + 1;
+                }
+                or {
+                    if (empty > 0) {
+                        fen[at] = ('0'::i64 + empty)::u8;
+                        at      = at + 1;
+                        empty   = 0;
+                    }
+                    fen[at] = p;
+                    at      = at + 1;
+                }
+                file = file + 1;
+            }
+            if (empty > 0) {
+                fen[at] = ('0'::i64 + empty)::u8;
+                at      = at + 1;
+            }
+            if (rank > 0) {
+                fen[at] = '/';
+                at      = at + 1;
+            }
+            rank = rank - 1;
+        }
+        fen[at] = 0;
+        var side: str = "w";
+        if (r.b[0] != 0) { side = "b"; }
+        print.printlnf("{}  {} {}  score {}  result {}  teacher {}", k, ?fen[0], side, score(r), r.b[68], r.b[69]);
+        k = k + 1;
+    }
+    ret 0;
+}
+
+fun compare_records(a: *Record, b: *Record) i64 {
+    var i: i64 = 0;
+    for (i < REC) {
+        if (a.b[i] != b.b[i]) {
+            if (a.b[i] < b.b[i]) { ret 0 - 1; }
+            ret 1;
+        }
+        i = i + 1;
+    }
+    ret 0;
+}
+
+fun diff(pa: str, pb: str, multiset: bool) i64 {
+    var a:  *Record = nil;
+    var b:  *Record = nil;
+    var na: i64     = 0;
+    var nb: i64     = 0;
+    if (!load(pa, ?a, ?na)) {
+        print.eprintlnf("cannot read {}", pa);
+        ret EXIT_FAIL;
+    }
+    if (!load(pb, ?b, ?nb)) {
+        print.eprintlnf("cannot read {}", pb);
+        ret EXIT_FAIL;
+    }
+    if (multiset) {
+        sort.sort_by[Record](a, na::usize, compare_records);
+        sort.sort_by[Record](b, nb::usize, compare_records);
+    }
+    var differ: i64 = 0;
+    var first:  i64 = 0 - 1;
+    var i:      i64 = 0;
+    var m:      i64 = na;
+    if (nb < m) { m = nb; }
+    for (i < m) {
+        if (compare_records(?a[i], ?b[i]) != 0) {
+            if (first < 0) { first = i; }
+            differ = differ + 1;
+        }
+        i = i + 1;
+    }
+    var how: str = "in order";
+    if (multiset) { how = "as sets"; }
+    if (na == nb && differ == 0) {
+        print.printlnf("identical {}: {} records", how, na);
+        ret 0;
+    }
+    print.printlnf("different {}: {} and {} records; {} of the first {} differ, the first at {}", how, na, nb, differ, m, first);
+    ret EXIT_DIFFER;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    if (argc < 3) { ret usage(); }
+    val command: str = argv[1];
+    if (str_equals(command, "stats")) { ret stats(argv[2]); }
+    if (str_equals(command, "show")) {
+        if (argc < 4) { ret usage(); }
+        var count: i64 = 10;
+        if (argc >= 5) { count = int_arg(argv[4], 10); }
+        ret show(argv[2], int_arg(argv[3], 0), count);
+    }
+    if (str_equals(command, "diff")) {
+        if (argc < 4) { ret usage(); }
+        var multiset: bool = false;
+        if (argc >= 5 && str_equals(argv[4], "--multiset")) { multiset = true; }
+        ret diff(argv[2], argv[3], multiset);
+    }
+    ret usage();
+}

@@ -1,0 +1,364 @@
+# machete.tools.label: label training records with a teacher engine, in Mach
+#
+#   label 15k     <in.bin> <out.bin> <engine> <workers>   every record scored at 15,000 nodes
+#   label relabel <in.bin> <out.bin> <engine> <workers>   close records scored again, deeper
+#
+# The Mach counterpart of the farm's farm_label15k.py and farm_relabel.py, and held to them byte for byte: the same
+# FEN for a record (no castling rights or en passant, "- - 0 1"), the same commands to the teacher for every
+# position (ucinewgame, position fen, go nodes N, on one thread with a 32 MB table), the same score (the last scored
+# info line before bestmove, bounds included; a mate is +-10000, centipawns are clamped to +-10000), written into
+# the record's score field and nowhere else.
+#
+# `15k` scores every record at 15,000 nodes and writes <out> and an empty <out>.done, as farm_label15k.py does for
+# the farm's pull. `relabel` scores again each record whose 15k label is within 200 centipawns of level, at
+# 200,000 nodes at level falling to 60,000 at two pawns (NODES_FOR, generated from farm_relabel.py's formula so the
+# two agree exactly), and leaves decided records as they are.
+#
+# Workers each run a teacher and take blocks of BLOCK records from a shared counter as they finish the last, so a run
+# of close positions (the expensive ones, which cluster) does not leave one worker last; with the teacher's state reset
+# for every position, how the records are shared does not change any score. <out> appears only when every record is
+# done: the records go to <out>.tmp, which is then renamed.
+
+use std.print;
+use std.runtime;
+use std.sync.atomic;
+use std.sync.thread;
+use std.text.parse;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+use std.types.string.str_equals;
+
+use fs:       std.filesystem;
+use io_error: std.io.error;
+use std.system.os;
+
+use machete.clock;
+use uci: machete.uci_driver;
+
+val EXIT_USAGE: i64 = 1;
+val EXIT_FAIL:  i64 = 2;
+
+val REC:       i64 = 70;
+val NODES_15K: i64 = 15000;
+val CLAMP:     i64 = 10000;
+val CLOSE:     i64 = 200;
+val DATA_CAP:  i64 = 67108864; # 958,698 records: a farm chunk is 250,000
+val BLOCK:     i64 = 64;
+
+# farm_relabel.py's nodes_for(cp) for |cp| 0..199: int(round(200000 * 0.3 ** (|cp| / 200)))
+val NODES_FOR: [200]i64 = [200]i64{
+    200000, 198800, 197606, 196421, 195242, 194070, 192905, 191747, 190596, 189453,
+    188315, 187185, 186062, 184945, 183835, 182732, 181635, 180545, 179461, 178384,
+    177314, 176249, 175192, 174140, 173095, 172056, 171023, 169997, 168977, 167963,
+    166955, 165952, 164956, 163966, 162982, 162004, 161032, 160065, 159105, 158150,
+    157201, 156257, 155319, 154387, 153461, 152539, 151624, 150714, 149809, 148910,
+    148017, 147128, 146245, 145367, 144495, 143628, 142766, 141909, 141057, 140211,
+    139369, 138533, 137701, 136875, 136053, 135237, 134425, 133618, 132816, 132019,
+    131227, 130439, 129656, 128878, 128105, 127336, 126572, 125812, 125057, 124306,
+    123560, 122819, 122081, 121349, 120620, 119897, 119177, 118462, 117751, 117044,
+    116341, 115643, 114949, 114259, 113573, 112892, 112214, 111541, 110871, 110206,
+    109545, 108887, 108234, 107584, 106938, 106296, 105658, 105024, 104394, 103767,
+    103145, 102526, 101910, 101299, 100691, 100086, 99486, 98889, 98295, 97705,
+    97119, 96536, 95956, 95380, 94808, 94239, 93673, 93111, 92552, 91997,
+    91445, 90896, 90350, 89808, 89269, 88733, 88201, 87671, 87145, 86622,
+    86102, 85586, 85072, 84561, 84054, 83549, 83048, 82549, 82054, 81562,
+    81072, 80585, 80102, 79621, 79143, 78668, 78196, 77727, 77260, 76796,
+    76336, 75877, 75422, 74969, 74519, 74072, 73628, 73186, 72746, 72310,
+    71876, 71444, 71016, 70589, 70166, 69745, 69326, 68910, 68496, 68085,
+    67677, 67271, 66867, 66465, 66067, 65670, 65276, 64884, 64495, 64108,
+    63723, 63340, 62960, 62582, 62207, 61833, 61462, 61093, 60727, 60362
+};
+
+val LETTERS: str = "PNBRQKpnbrqk";
+
+# one worker: a teacher and the records [from, to)
+rec Worker {
+    index:  i64;
+    deep:   i64;
+    failed: bool;
+    engine: uci.Engine;
+    report: uci.Report;
+    cmd:    [256]u8;
+}
+
+var DATA:    [67108864]u8;
+var WORKERS: [32]Worker;
+var THREADS: [32]thread.Thread;
+var ENGINE:  str  = nil;
+var RELABEL: bool = false;
+var DONE:    i64  = 0;
+var NEXT:    i64  = 0; # the first record no worker has taken
+var TOTAL:   i64  = 0;
+
+fun usage() i64 {
+    print.eprintln("usage: label 15k     <in.bin> <out.bin> <engine> <workers>");
+    print.eprintln("       label relabel <in.bin> <out.bin> <engine> <workers>");
+    ret EXIT_USAGE;
+}
+
+fun score_of(at: i64) i64 {
+    val v: i64 = DATA[at + 66]::i64 | (DATA[at + 67]::i64 << 8);
+    if (v >= 32768) { ret v - 65536; }
+    ret v;
+}
+
+fun set_score(at: i64, score: i64) {
+    val s: i64 = score & 0xFFFF;
+    DATA[at + 66] = (s & 0xFF)::u8;
+    DATA[at + 67] = (s >> 8)::u8;
+}
+
+fun put(out: *u8, n: i64, text: str) i64 {
+    var at: i64 = n;
+    var i:  i64 = 0;
+    for (text[i] != 0) {
+        out[at] = text[i];
+        at      = at + 1;
+        i       = i + 1;
+    }
+    ret at;
+}
+
+# "position fen <the record's FEN>", as farm_label15k.py's fen_of spells it
+fun position_command(at: i64, out: *u8) {
+    var board: [64]u8;
+    var sq:    i64 = 0;
+    for (sq < 64) {
+        board[sq] = 0;
+        sq        = sq + 1;
+    }
+    val count: i64 = DATA[at + 1]::i64;
+    var i:     i64 = 0;
+    for (i < count) {
+        board[DATA[at + 34 + i]::i64] = LETTERS[DATA[at + 2 + i]::i64];
+        i                             = i + 1;
+    }
+    var n:    i64 = put(out, 0, "position fen ");
+    var rank: i64 = 7;
+    for (rank >= 0) {
+        var empty: i64 = 0;
+        var file:  i64 = 0;
+        for (file < 8) {
+            val p: u8 = board[rank * 8 + file];
+            if (p == 0) {
+                empty = empty + 1;
+            }
+            or {
+                if (empty > 0) {
+                    out[n] = ('0'::i64 + empty)::u8;
+                    n      = n + 1;
+                    empty  = 0;
+                }
+                out[n] = p;
+                n      = n + 1;
+            }
+            file = file + 1;
+        }
+        if (empty > 0) {
+            out[n] = ('0'::i64 + empty)::u8;
+            n      = n + 1;
+        }
+        if (rank > 0) {
+            out[n] = '/';
+            n      = n + 1;
+        }
+        rank = rank - 1;
+    }
+    if (DATA[at] == 0) { n = put(out, n, " w - - 0 1"); }
+    or                 { n = put(out, n, " b - - 0 1"); }
+    out[n] = 0;
+}
+
+# the teacher's score for the record at `at`, searched to `nodes`; false if the teacher failed
+fun label_one(w: *Worker, at: i64, nodes: i64, score: *i64) bool {
+    if (!uci.send(?w.engine, "ucinewgame")) { ret false; }
+    position_command(at, ?w.cmd[0]);
+    if (!uci.send(?w.engine, ?w.cmd[0])) { ret false; }
+    var limit: [32]u8;
+    uci.fill(?limit[0], "nodes ", nodes);
+    if (!uci.go(?w.engine, ?limit[0], ?w.report)) { ret false; }
+    if (!w.report.has_score)                      { ret false; }
+    var s: i64 = w.report.score;
+    if (w.report.mate) {
+        if (s > 0) { s = CLAMP; }
+        or         { s = 0 - CLAMP; }
+    }
+    or {
+        if (s > CLAMP)     { s = CLAMP; }
+        if (s < 0 - CLAMP) { s = 0 - CLAMP; }
+    }
+    @score = s;
+    ret true;
+}
+
+fun worker_entry(arg: *u8) {
+    val w: *Worker = ?WORKERS[arg::usize::i64];
+    if (!uci.start(?w.engine, ENGINE, nil) || !uci.init(?w.engine, 1, 32)) {
+        print.eprintlnf("worker {}: cannot start the teacher", w.index);
+        w.failed = true;
+        ret;
+    }
+    for (!w.failed) {
+        val first: i64 = atomic.fetch_add(?NEXT, BLOCK);
+        if (first >= TOTAL) { brk; }
+        var last: i64 = first + BLOCK;
+        if (last > TOTAL) { last = TOTAL; }
+        var i: i64 = first;
+        for (i < last) {
+            val at:    i64 = i * REC;
+            var nodes: i64 = NODES_15K;
+            if (RELABEL) {
+                var cp: i64 = score_of(at);
+                if (cp < 0) { cp = 0 - cp; }
+                if (cp >= CLOSE) {
+                    i = i + 1;
+                    cnt;
+                }
+                nodes = NODES_FOR[cp];
+            }
+            var score: i64 = 0;
+            if (!label_one(w, at, nodes, ?score)) {
+                print.eprintlnf("worker {}: the teacher failed at record {}", w.index, i);
+                w.failed = true;
+                brk;
+            }
+            set_score(at, score);
+            w.deep = w.deep + 1;
+            val total: i64 = atomic.fetch_add(?DONE, 1);
+            i = i + 1;
+        }
+    }
+    uci.stop(?w.engine);
+}
+
+fun read_all(path: str) i64 {
+    val opened: res[fs.File, io_error.Error] = fs.open(path);
+    if (sel opened.err) { ret 0 - 1; }
+    var f:  fs.File = opened.ok;
+    var at: i64     = 0;
+    for (at < DATA_CAP) {
+        val got: res[usize, io_error.Error] = fs.read(f, ?DATA[at], (DATA_CAP - at)::usize);
+        if (sel got.err) {
+            at = 0 - 1;
+            brk;
+        }
+        if (got.ok::i64 == 0) { brk; }
+        at = at + got.ok::i64;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    ret at;
+}
+
+fun write_all(path: str, len: i64) bool {
+    val created: res[fs.File, io_error.Error] = fs.create(path, 420);
+    if (sel created.err) { ret false; }
+    var f:  fs.File = created.ok;
+    var at: i64     = 0;
+    var ok: bool    = true;
+    for (at < len) {
+        val put_: res[usize, io_error.Error] = fs.write(f, ?DATA[at], (len - at)::usize);
+        if (sel put_.err) {
+            ok = false;
+            brk;
+        }
+        at = at + put_.ok::i64;
+    }
+    val shut: err[io_error.Error] = fs.close(?f);
+    ret ok;
+}
+
+fun join_name(a: str, b: str, out: *u8) {
+    var n: i64 = put(out, 0, a);
+    n      = put(out, n, b);
+    out[n] = 0;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    if (argc < 6) { ret usage(); }
+    val mode: str = argv[1];
+    if (str_equals(mode, "relabel")) { RELABEL = true; }
+    or (!str_equals(mode, "15k"))    { ret usage(); }
+    val src: str = argv[2];
+    val dst: str = argv[3];
+    ENGINE = argv[4];
+    val parsed: res[i64, parse.ParseError] = parse.parse_i64_exact(argv[5], 10);
+    if (sel parsed.err) { ret usage(); }
+    var workers: i64 = parsed.ok;
+    if (workers < 1)  { workers = 1; }
+    if (workers > 32) { workers = 32; }
+
+    val bytes: i64 = read_all(src);
+    if (bytes < 0) {
+        print.eprintlnf("cannot read {}", src);
+        ret EXIT_FAIL;
+    }
+    if (bytes >= DATA_CAP) {
+        print.eprintlnf("{} is larger than this labeller holds ({} bytes)", src, DATA_CAP);
+        ret EXIT_FAIL;
+    }
+    val n: i64 = bytes / REC;
+    TOTAL = n;
+    val started: i64 = clock.now_ms();
+    var i:       i64 = 0;
+    for (i < workers) {
+        val w: *Worker = ?WORKERS[i];
+        w.index  = i;
+        w.deep   = 0;
+        w.failed = false;
+        var config: thread.Config;
+        thread.config_default(?config);
+        config.name = "machete-label";
+        val op: thread.Operation = thread.spawn_with_config(worker_entry, i::usize::*u8, ?config, ?THREADS[i]);
+        if (sel op.err) {
+            print.eprintln("cannot start a worker");
+            ret EXIT_FAIL;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    var deep:   i64  = 0;
+    var failed: bool = false;
+    for (i < workers) {
+        thread.join(?THREADS[i]);
+        deep = deep + WORKERS[i].deep;
+        if (WORKERS[i].failed) { failed = true; }
+        i = i + 1;
+    }
+    if (failed) {
+        print.eprintln("a teacher failed: nothing written");
+        ret EXIT_FAIL;
+    }
+    var tmp: [1100]u8;
+    join_name(dst, ".tmp", ?tmp[0]);
+    if (!write_all(?tmp[0], n * REC)) {
+        print.eprintlnf("cannot write {}", ?tmp[0]);
+        ret EXIT_FAIL;
+    }
+    val old:   err[io_error.Error] = fs.remove_file(dst);
+    val moved: err[io_error.Error] = fs.rename(?tmp[0], dst);
+    if (sel moved.err) {
+        print.eprintlnf("cannot rename {} to {}", ?tmp[0], dst);
+        ret EXIT_FAIL;
+    }
+    val seconds: i64 = (clock.now_ms() - started) / 1000;
+    if (RELABEL) {
+        print.printlnf("{}: {} positions, {} scored again deeper", dst, n, deep);
+    }
+    or {
+        var done: [1100]u8;
+        join_name(dst, ".done", ?done[0]);
+        if (!write_all(?done[0], 0)) {
+            print.eprintlnf("cannot write {}", ?done[0]);
+            ret EXIT_FAIL;
+        }
+        print.printlnf("{}: {} positions labelled at {} nodes", dst, n, NODES_15K);
+    }
+    print.eprintlnf("{} s", seconds);
+    ret 0;
+}
