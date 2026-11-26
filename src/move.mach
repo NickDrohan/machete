@@ -41,11 +41,11 @@ pub fun flag(m: Move) u32 {
     ret (m >> 12) & 15;
 }
 
-pub fun is_capture(m: Move) u8 {
+pub fun is_capture(m: Move) bool {
     ret (flag(m) & 4) != 0;
 }
 
-pub fun is_promotion(m: Move) u8 {
+pub fun is_promotion(m: Move) bool {
     ret (flag(m) & 8) != 0;
 }
 

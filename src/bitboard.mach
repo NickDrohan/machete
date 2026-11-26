@@ -4,6 +4,7 @@
 # implementation can change in one place.
 
 use std.math.bits;
+use std.types.bool.bool;
 
 pub val FILE_A: u64 = 0x0101010101010101;
 pub val FILE_H: u64 = 0x8080808080808080;
@@ -16,7 +17,7 @@ pub fun bit(sq: i64) u64 {
     ret 1u64 << sq::u64;
 }
 
-pub fun has(b: u64, sq: i64) u8 {
+pub fun has(b: u64, sq: i64) bool {
     ret (b & bit(sq)) != 0;
 }
 
@@ -45,10 +46,9 @@ pub fun msb_software(b: u64) i64 {
 pub fun count(b: u64) i64 {
     $if ($mach.build.arch == $mach.arch.x86_64) {
         var r: u64 = 0;
-        asm x86_64 {
+        asm x86-64,popcnt {
             mov rax, {b}
-            # popcnt rax, rax - not in the assembler's mnemonic table, so raw
-            .byte 0xF3, 0x48, 0x0F, 0xB8, 0xC0 :: writes(rax)
+            popcnt rax, rax
             mov {r}, rax
         }
         ret r::i64;
@@ -62,10 +62,9 @@ pub fun count(b: u64) i64 {
 pub fun lsb(b: u64) i64 {
     $if ($mach.build.arch == $mach.arch.x86_64) {
         var r: u64 = 0;
-        asm x86_64 {
+        asm x86-64 {
             mov rax, {b}
-            # bsf rax, rax - raw for the same reason
-            .byte 0x48, 0x0F, 0xBC, 0xC0 :: writes(rax)
+            bsf rax, rax
             mov {r}, rax
         }
         ret r::i64;
@@ -79,10 +78,9 @@ pub fun lsb(b: u64) i64 {
 pub fun msb(b: u64) i64 {
     $if ($mach.build.arch == $mach.arch.x86_64) {
         var r: u64 = 0;
-        asm x86_64 {
+        asm x86-64 {
             mov rax, {b}
-            # bsr rax, rax - raw for the same reason
-            .byte 0x48, 0x0F, 0xBD, 0xC0 :: writes(rax)
+            bsr rax, rax
             mov {r}, rax
         }
         ret r::i64;

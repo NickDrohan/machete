@@ -26,9 +26,11 @@ use std.types.size.usize;
 use std.types.string.str;
 use std.types.string.str_equals;
 
-use A: std.allocator;
+use jerror: json.error;
+use jparse: json.parse;
+use jvalue: json.value;
+use A:      std.allocator;
 use std.allocator.fixed;
-use std.data.json;
 use fs:       std.filesystem;
 use io_error: std.io.error;
 
@@ -189,9 +191,9 @@ fun each_chunk(path: str, stride: i64, visit: binpack.Visit, r: *Run) i64 {
     ret status;
 }
 
-fun number_of(v: *json.Value) f64 {
-    if (json.value_is_float(v)) { ret json.value_float(v); }
-    ret json.value_number(v)::f64;
+fun number_of(v: *jvalue.Value) f64 {
+    if (jvalue.value_is_float(v)) { ret jvalue.value_float(v); }
+    ret jvalue.value_number(v)::f64;
 }
 
 # the scale table, with the leading zero leela.py's load_scale prepends
@@ -207,24 +209,24 @@ fun load_scale(path: str) bool {
     var state: fixed.FixedState;
     val made:  err[A.Error] = fixed.make(?a, ?state, ?JSON_MEM[0], 1048576);
     if (sel made.err) { ret false; }
-    val parsed: res[json.Value, json.JsonError] = json.parse(?JSON_IN[0], got.ok, ?a);
+    val parsed: res[jvalue.Value, jerror.JsonError] = jparse.parse(?JSON_IN[0], got.ok, ?a);
     if (sel parsed.err) { ret false; }
-    var root: json.Value = parsed.ok;
+    var root: jvalue.Value = parsed.ok;
 
-    val leela: opt[*json.Value] = json.value_find(?root, "leela");
+    val leela: opt[*jvalue.Value] = jvalue.value_find(?root, "leela");
     if (!sel leela.some) { ret false; }
-    val teachers: opt[*json.Value] = json.value_find(?root, "teachers");
+    val teachers: opt[*jvalue.Value] = jvalue.value_find(?root, "teachers");
     if (!sel teachers.some) { ret false; }
-    val count: usize = json.value_count(leela.some);
-    if (count != json.value_count(teachers.some)) { ret false; }
+    val count: usize = jvalue.value_count(leela.some);
+    if (count != jvalue.value_count(teachers.some)) { ret false; }
 
     SCALE.n = 0;
     if (!binpack.scale_add(?SCALE, 0.0, 0.0)) { ret false; }
     var i: usize = 0;
     for (i < count) {
-        val x: opt[*json.Value] = json.value_get(leela.some, i);
+        val x: opt[*jvalue.Value] = jvalue.value_get(leela.some, i);
         if (!sel x.some) { ret false; }
-        val y: opt[*json.Value] = json.value_get(teachers.some, i);
+        val y: opt[*jvalue.Value] = jvalue.value_get(teachers.some, i);
         if (!sel y.some)                                                      { ret false; }
         if (!binpack.scale_add(?SCALE, number_of(x.some), number_of(y.some))) { ret false; }
         i = i + 1;
