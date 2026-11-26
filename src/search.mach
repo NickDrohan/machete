@@ -419,7 +419,7 @@ pub rec Limits {
 pub rec Search {
     nodes: i64;
     # positions the tablebases settled
-    tb_hits:       i64;
+    tb_hits: i64;
     # nodes an enhanced transposition cutoff ended (EtcDepth)
     etc_cuts:      i64;
     stop:          i64;
@@ -1171,7 +1171,7 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
     # repeats a position (the table does not know the path that makes it a draw), and never on a mate score.
     if (ETC_DEPTH > 0 && depth >= ETC_DEPTH && ply > 0 && !is_pv && excluded == mv.NONE && tb_cap == INFINITE) {
         val etc_pins: u64 = pos.pinned(p, p.side);
-        var e: i64 = 0;
+        var e:        i64 = 0;
         for (e < list.count) {
             val m: Move = list.moves[e];
             e = e + 1;
@@ -1431,7 +1431,7 @@ fun copy_pv(s: *Search, m: Move, ply: i64) {
 }
 
 fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
-    if (s.quiet != 0) { ret; }
+    if (s.quiet != 0)  { ret; }
     if (ETC_DEPTH > 0) { print.printlnf("info string etccuts {}", s.etc_cuts); }
     val nodes: i64 = reported_nodes(s);
     var nps:   i64 = 0;
