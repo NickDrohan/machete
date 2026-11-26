@@ -1,40 +1,40 @@
 [project]
 id = "machete"
-version = "0.5.4"
-mach = "^6.10"
-src = "src"
-out = "out/{target.name}/{profile.name}"
+version = "0.5.6"
+mach = "^7"
+src  = "src"
+work = "out/{target.name}/{profile.name}"
 
 [target.windows-x86_64]
-isa = "x86_64"
-os  = "windows"
-abi = "win64"
+arch = "x86_64"
+sys  = "windows"
+abi  = "win64"
 
 [target.linux-x86_64]
-isa = "x86_64"
-os  = "linux"
-abi = "sysv64"
+arch = "x86_64"
+sys  = "linux"
+abi  = "sysv64"
 
 [target.linux-aarch64]
-isa = "aarch64"
-os  = "linux"
-abi = "aapcs64"
+arch = "aarch64"
+sys  = "linux"
+abi  = "aapcs64"
 
 [target.darwin-x86_64]
-isa = "x86_64"
-os  = "darwin"
-abi = "sysv64"
+arch = "x86_64"
+sys  = "darwin"
+abi  = "sysv64"
 
 [target.darwin-aarch64]
-isa = "aarch64"
-os  = "darwin"
-abi = "aapcs64"
+arch = "aarch64"
+sys  = "darwin"
+abi  = "darwinpcs"
 
 [artifact.machete]
 default = true
 kind = "bin"
 entry = "root.mach"
-out = "bin/machete{artifact.suffix}"
+out = "{project.work}/bin/machete{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -43,7 +43,7 @@ need = []
 [artifact.arena]
 kind = "bin"
 entry = "tools/arena.mach"
-out = "bin/arena{artifact.suffix}"
+out = "{project.work}/bin/arena{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -52,7 +52,7 @@ need = []
 [artifact.gen]
 kind = "bin"
 entry = "tools/gen.mach"
-out = "bin/gen{artifact.suffix}"
+out = "{project.work}/bin/gen{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -61,7 +61,7 @@ need = []
 [artifact.trainer]
 kind = "bin"
 entry = "tools/train.mach"
-out = "bin/train{artifact.suffix}"
+out = "{project.work}/bin/train{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -70,7 +70,7 @@ need = []
 [artifact.binpack]
 kind = "bin"
 entry = "tools/binpack.mach"
-out = "bin/binpack{artifact.suffix}"
+out = "{project.work}/bin/binpack{artifact.suffix}"
 targets = ["*"]
 link = ["kernel32"]
 need = []
@@ -78,26 +78,26 @@ need = []
 [link.kernel32]
 source = "system"
 name = "kernel32.dll"
-os = ["windows"]
-isa = ["*"]
-abi = ["*"]
+sys = ["windows"]
+arch = ["*"]
+abi  = ["*"]
 export = false
 
 [profile.debug]
 default = true
-opt = 0
+optimize = false
 debug = true
 simd = "scalarize"
-vectorize = false
-float_reassoc = false
 
 [profile.release]
-opt = 2
+optimize = true
 debug = false
 simd = "scalarize"
-vectorize = true
-float_reassoc = false
 
 [dep.std]
 git = "https://github.com/briar-systems/mach-std"
-version = "^9.5"
+version = "^10.1"
+
+[dep.json]
+git = "https://github.com/briar-systems/mach-json"
+version = "^0.1"

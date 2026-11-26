@@ -20,7 +20,7 @@ import sys
 import chess
 import chess.polyglot
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, "D:/Dev/Claude/machete-050/harness")
 import lichess_review as lr
 
 OUT = "E:/machete/experience/"
@@ -116,12 +116,64 @@ def check(games):
     print("other newer games:       %d, against rating %+.3f +/- %.3f" % ((len(rest),) + stats(rest)))
 
 
+# the book against bots rated below the bot (lichess-bot's get_book_move picks it by rating): book.bin with
+# weaker_lines()' positions' moves replaced. Ruy Lopez after 8.c3, the closed 8...d6 for the Marshall's 8...d5: against 0.3.0 as
+# Black, 500 games each, it won 59% to 53% and drew 34% to 44% (RUY-CLOSED/MARSHALL-VS-030, 2026-11-05), after
+# TGkqTnOC drew a Marshall in 143 moves against a bot 270 below.
+def weaker_lines():
+    """WEAKER_LINES by position key, filled from the moves that reach each position."""
+    b = chess.Board()
+    for san in "e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 O-O c3".split():
+        b.push_san(san)
+    return {" ".join(b.fen().split()[:4]): {"d7d6": 325}}
+
+
+# The owner's choices against the queen's pawn (2026-11-15): 1...Nf6 or 1...d5 at random, the Queen's Gambit Declined
+# after 1...d5, and 3...d5 in place of the Bogo-Indian (3...Bb4+ scored -0.16 a game over 121 games; Stockfish has
+# 3...d5 best). Each move was checked at 20M Stockfish nodes, all within 12 cp of the best. These replace whatever
+# the bot's own record put in those positions, avoid list included.
+REPERTOIRE_LINES = [
+    ("d4", {"Nf6": 60, "d5": 40}),
+    ("d4 Nf6 c4 e6 Nf3", {"d5": 100}),
+    ("d4 Nf6 c4 e6 Nf3 d5 Nc3", {"Be7": 60, "Bb4": 40}),
+    ("d4 Nf6 c4 e6 Nf3 d5 g3", {"Be7": 100}),
+    ("d4 d5 c4", {"e6": 100}),
+    ("d4 d5 c4 e6 Nc3", {"Nf6": 100}),
+    ("d4 d5 c4 e6 Nf3", {"Nf6": 100}),
+    ("d4 d5 c4 e6 Nc3 Nf6 Nf3", {"Be7": 60, "Bb4": 40}),
+    ("d4 d5 c4 e6 Nc3 Nf6 Bg5", {"Be7": 100}),
+    ("d4 d5 c4 e6 Nc3 Nf6 cxd5", {"exd5": 100}),
+    ("d4 d5 Nf3", {"Nf6": 100}),
+]
+
+
+def repertoire_lines():
+    """REPERTOIRE_LINES by position key, the moves in UCI."""
+    out = {}
+    for line, moves in REPERTOIRE_LINES:
+        b = chess.Board()
+        for san in line.split():
+            b.push_san(san)
+        out[" ".join(b.fen().split()[:4])] = {b.parse_san(m).uci(): w for m, w in moves.items()}
+    return out
+
+
 def write_book(avoid):
-    """book.bin in polyglot's format: book_moves.json (book_build.py) less the avoid list, weighted by visits."""
+    """book.bin in polyglot's format: book_moves.json (book_build.py) less the avoid list, weighted by visits; and
+    book_weaker.bin, the same with WEAKER_LINES' moves in their positions."""
     try:
         moves = json.load(open(OUT + "book_moves.json"))
     except OSError:
         return
+    chosen = repertoire_lines()
+    moves = dict(moves, **chosen)
+    # the owner's choice stands over the bot's own record (3...d5 after 3.Nf3 was on the avoid list from 9 games)
+    avoid = {k: v for k, v in avoid.items() if k not in chosen}
+    write_polyglot(moves, avoid, "book.bin")
+    write_polyglot(dict(moves, **weaker_lines()), avoid, "book_weaker.bin")
+
+
+def write_polyglot(moves, avoid, name):
     rows = []
     for key, kept in moves.items():
         b = chess.Board(key + " 0 1")
@@ -136,11 +188,11 @@ def write_book(avoid):
             raw = to | (m.from_square << 6)
             rows.append(struct.pack(">QHHI", z, raw, min(n, 65535), 0))
     rows.sort()
-    with open(OUT + "book.bin.tmp", "wb") as f:
+    with open(OUT + name + ".tmp", "wb") as f:
         f.write(b"".join(rows))
     # lichess-bot opens the book for each move: if it holds it right now the next run replaces it
     try:
-        os.replace(OUT + "book.bin.tmp", OUT + "book.bin")
+        os.replace(OUT + name + ".tmp", OUT + name)
     except OSError:
         pass
 

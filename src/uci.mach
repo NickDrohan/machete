@@ -32,6 +32,7 @@ use machete.position.Position;
 use rep: machete.repertoire;
 use machete.search;
 use machete.smp;
+use machete.syzygy;
 use machete.tt;
 
 val LINE_CAP:   usize = 8192;
@@ -304,7 +305,7 @@ pub fun loop(exe: str) i64 {
         val command: str = t.item[0];
 
         if (str_equals(command, "uci")) {
-            print.println("id name machete 0.5.4");
+            print.println("id name machete 0.5.6");
             print.println("id author Nick Drohan");
             print.printlnf("option name Hash type spin default {} min 1 max {}", tt.DEFAULT_MEGABYTES, tt.MAX_MEGABYTES);
             print.printlnf("option name Threads type spin default 1 min 1 max {}", smp.MAX_THREADS);
@@ -313,6 +314,8 @@ pub fun loop(exe: str) i64 {
             # the SSE2 kernels on a CPU with AVX2, for timing the two; results are identical
             print.println("option name Avx2 type check default true");
             print.println("option name OrderingStats type check default false");
+            print.println("option name UCI_Chess960 type check default false");
+            print.println("option name SyzygyPath type string default <empty>");
             search.print_tunables();
             if (DEFAULT_NET[0] != 0) {
                 print.printlnf("option name EvalFile type string default {}", ?DEFAULT_NET[0]);
@@ -346,6 +349,13 @@ pub fun loop(exe: str) i64 {
         or (str_equals(command, "ponderhit")) {
             if (is_thinking()) { search.ponderhit(?ENGINE, ?ponder_budget, ponder_started); }
         }
+        or (str_equals(command, "tbwdl")) {
+            # debugging: the tablebase's verdict on the current position, for the side to move
+            var ok:  bool = false;
+            val wdl: i64  = syzygy.probe_wdl(?GAME, ?ok);
+            if (ok) { print.printlnf("info string wdl {}", wdl); }
+            or      { print.println("info string wdl none"); }
+        }
         or (str_equals(command, "stop")) {
             halt();
         }
@@ -361,6 +371,17 @@ pub fun loop(exe: str) i64 {
                 threads = wanted;
             }
             or (t.count >= 5 && search.set_tunable(t.item[2], token_i64(?t, 4, 0))) {}
+            or (t.count >= 5 && str_equals(t.item[2], "SyzygyPath")) {
+                # between searches only: the search reads the tables
+                halt();
+                var dir: [512]u8;
+                join_tokens(?t, 4, t.count, ?dir[0], 512);
+                val found: i64 = syzygy.load(?dir[0]);
+                print.printlnf("info string {} syzygy tables, up to {} men", found, syzygy.LARGEST);
+            }
+            or (t.count >= 5 && str_equals(t.item[2], "UCI_Chess960")) {
+                mv.CHESS960 = str_equals(t.item[4], "true");
+            }
             or (t.count >= 5 && str_equals(t.item[2], "OrderingStats")) {
                 search.ORDERING = str_equals(t.item[4], "true");
             }

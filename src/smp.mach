@@ -55,10 +55,9 @@ use std.types.size.usize;
 fun helper_entry(arg: *u8) {
     val index: i64     = arg::usize::i64;
     val h:     *Helper = ?HELPERS[index];
-    search.reset(?h.engine);
+    # helper 0 is the main thread, so helpers take stacks and history tables 1 and up
+    search.reset_as(?h.engine, index);
     h.engine.quiet = 1;
-    # helper 0 is the main thread, so helpers take stacks 1 and up
-    h.engine.thread_id = index;
     # helpers never print and never own the clock: they run until stopped
     var limits: search.Limits;
     limits.depth    = search.MAX_PLY - 2;
