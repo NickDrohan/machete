@@ -133,6 +133,9 @@ pub var ASP_WINDOW: i64 = 19;
 pub var QS_DELTA: i64 = 203;
 # internal iterative reduction from this depth
 pub var IIR_DEPTH: i64 = 5;
+# enhanced transposition cutoff from this depth (0 off): before searching any move at a non-PV node, each child is
+# looked up in the table, and a child already stored deep enough to refute the opponent cuts the node unsearched
+pub var ETC_DEPTH: i64 = 0;
 # continuation history (see CONT): 0 off, 1 the opponent's last move and this side's previous one, 2 the opponent's
 # last move only (half the table reads)
 pub var CONT_HIST: i64 = 1;
@@ -195,6 +198,9 @@ pub fun set_tunable(name: str, value: i64) bool {
     or (tune_one(name, "IirDepth", value, ?IIR_DEPTH, 3, 12)) {
         ret true;
     }
+    or (tune_one(name, "EtcDepth", value, ?ETC_DEPTH, 0, 20)) {
+        ret true;
+    }
     or (tune_one(name, "Variety", value, ?VARIETY, 0, 50)) {
         ret true;
     }
@@ -254,6 +260,7 @@ pub fun print_tunables() {
     print.printlnf("option name AspWindow type spin default {} min 8 max 100", ASP_WINDOW);
     print.printlnf("option name QsDelta type spin default {} min 50 max 500", QS_DELTA);
     print.printlnf("option name IirDepth type spin default {} min 3 max 12", IIR_DEPTH);
+    print.printlnf("option name EtcDepth type spin default {} min 0 max 20", ETC_DEPTH);
     print.printlnf("option name ContHist type spin default {} min 0 max 2", CONT_HIST);
     print.printlnf("option name Variety type spin default {} min 0 max 50", VARIETY);
     print.printlnf("option name VarietyMoves type spin default {} min 0 max 40", VARIETY_MOVES);
@@ -413,6 +420,8 @@ pub rec Search {
     nodes: i64;
     # positions the tablebases settled
     tb_hits:       i64;
+    # nodes an enhanced transposition cutoff ended (EtcDepth)
+    etc_cuts:      i64;
     stop:          i64;
     deadline:      i64;
     soft:          i64;
@@ -527,6 +536,7 @@ pub fun reset_as(s: *Search, id: i64) {
 pub fun next_search(s: *Search) {
     s.nodes      = 0;
     s.tb_hits    = 0;
+    s.etc_cuts   = 0;
     s.thread_id  = 0;
     s.stop       = 0;
     s.deadline   = 0;
@@ -1152,6 +1162,43 @@ fun search_node(s: *Search, p: *Position, depth_in: i64, alpha_in: i64, beta: i6
 
     var list: MoveList;
     movegen.generate(p, ?list, false);
+
+    # enhanced transposition cutoff (EtcDepth): the same position is often reached by more than one move order, and
+    # the table merges them only once the search arrives there. Before any move is searched, each one is made and its
+    # position looked up: a child stored at least depth - 1 deep whose score, from its side, is at most -beta (exact,
+    # or an upper bound) means this move already refutes the opponent, and the node is cut without searching anything.
+    # Only at non-PV nodes, never in a singular-extension search, never past a tablebase cap, never through a move that
+    # repeats a position (the table does not know the path that makes it a draw), and never on a mate score.
+    if (ETC_DEPTH > 0 && depth >= ETC_DEPTH && ply > 0 && !is_pv && excluded == mv.NONE && tb_cap == INFINITE) {
+        val etc_pins: u64 = pos.pinned(p, p.side);
+        var e: i64 = 0;
+        for (e < list.count) {
+            val m: Move = list.moves[e];
+            e = e + 1;
+            val test: bool = pos.needs_test(p, m, etc_pins, in_check);
+            pos.make(p, m);
+            if (test && pos.left_in_check(p)) {
+                pos.unmake(p);
+                cnt;
+            }
+            var child:  tt.Entry;
+            var refute: bool = false;
+            var value:  i64  = 0;
+            if (!is_draw(p) && tt.probe(p.key, ?child) && child.depth >= depth - 1
+                && child.score < MATE_FOUND && child.score > 0 - MATE_FOUND
+                && (child.flag == tt.EXACT || child.flag == tt.UPPER) && 0 - child.score >= beta) {
+                refute = true;
+                value  = 0 - child.score;
+            }
+            pos.unmake(p);
+            if (refute) {
+                s.etc_cuts = s.etc_cuts + 1;
+                tt.store(p.key, m, table_score(value, ply), depth, tt.LOWER);
+                ret value;
+            }
+        }
+    }
+
     var scores: [256]i64;
     var i:      i64 = 0;
     for (i < list.count) {
@@ -1385,6 +1432,7 @@ fun copy_pv(s: *Search, m: Move, ply: i64) {
 
 fun print_info(s: *Search, depth: i64, score: i64, elapsed: i64) {
     if (s.quiet != 0) { ret; }
+    if (ETC_DEPTH > 0) { print.printlnf("info string etccuts {}", s.etc_cuts); }
     val nodes: i64 = reported_nodes(s);
     var nps:   i64 = 0;
     if (elapsed > 0) { nps = nodes * 1000 / elapsed; }
